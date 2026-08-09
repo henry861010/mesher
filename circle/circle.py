@@ -107,6 +107,11 @@ def _delete_element(mesh: Mesh, indices) -> Mesh:
     return mesh
 
 
+def _delete(mesh: Mesh, indices) -> Mesh:
+    """Backward-compatible name for :func:`_delete_element`."""
+    return _delete_element(mesh, indices)
+
+
 def _clear_node(mesh: Mesh) -> np.ndarray:
     """Remove unreferenced nodes and return their old-to-new index mapping.
 
@@ -355,7 +360,105 @@ def _get_boundary(mesh: Mesh, indices=None) -> list[np.ndarray]:
     return boundaries
 
 
-def _node_to_circle(mesh: Mesh, x, y, radius, indices)
+def _node_to_circle(
+    mesh: Mesh,
+    center_x,
+    center_y,
+    radius,
+    indices,
+) -> Mesh:
+    """Project selected nodes radially onto a circle in the XY plane.
+
+    Each selected node is moved to the intersection of the circle and the ray
+    that starts at ``(center_x, center_y)`` and passes through that node.  For
+    three-dimensional nodes, the Z coordinate is left unchanged.  The mesh is
+    updated in place and returned.
+
+    Projection work and temporary storage are both O(K), where K is the number
+    of selected nodes.  Node arrays not already stored as writable ``float64``
+    are promoted once so projected coordinates cannot be truncated.
+    """
+    if not isinstance(mesh, Mesh):
+        raise TypeError("mesh must be a Mesh instance")
+
+    nodes = np.asarray(mesh.nodes)
+    if nodes.ndim != 2 or nodes.shape[1] not in (2, 3):
+        raise ValueError("nodes must have shape (N, 2) or (N, 3)")
+    if not np.issubdtype(nodes.dtype, np.number) or np.issubdtype(
+        nodes.dtype, np.complexfloating
+    ):
+        raise ValueError("nodes must have a real numeric dtype")
+
+    center_x = float(center_x)
+    center_y = float(center_y)
+    radius = float(radius)
+    if not np.all(np.isfinite([center_x, center_y, radius])):
+        raise ValueError("center_x, center_y, and radius must be finite")
+    if radius < 0.0:
+        raise ValueError("radius must be non-negative")
+
+    node_indices = np.asarray(indices)
+    if node_indices.ndim != 1:
+        raise ValueError("indices must be a one-dimensional sequence")
+    if node_indices.size:
+        if not np.issubdtype(node_indices.dtype, np.integer) or np.issubdtype(
+            node_indices.dtype, np.bool_
+        ):
+            raise TypeError("indices must contain integers")
+        if np.any(node_indices < 0) or np.any(node_indices >= nodes.shape[0]):
+            raise IndexError("indices contain a node index that is out of range")
+        node_indices = node_indices.astype(np.intp, copy=False)
+    else:
+        return mesh
+
+    center = np.array([center_x, center_y], dtype=np.float64)
+    # Advanced indexing already returns a copy, so this is also the single
+    # persistent K-by-2 work array used throughout the projection.
+    projected_xy = nodes[node_indices, :2].astype(np.float64, copy=False)
+    if not np.all(np.isfinite(projected_xy)):
+        raise ValueError("selected node coordinates must be finite")
+
+    # Normalize after scaling each offset by its largest component.  This
+    # avoids overflow in hypot for very large, but still finite, coordinates.
+    with np.errstate(over="ignore", invalid="ignore"):
+        projected_xy -= center
+    overflowed_offset = ~np.all(np.isfinite(projected_xy), axis=1)
+    if np.any(overflowed_offset):
+        # Finite values can still overflow when opposite-signed float64
+        # coordinates are subtracted.  Halving both operands preserves the
+        # direction while keeping this rare fallback representable.
+        overflowed_xy = nodes[
+            node_indices[overflowed_offset], :2
+        ].astype(np.float64, copy=False)
+        projected_xy[overflowed_offset] = (
+            overflowed_xy * 0.5 - center * 0.5
+        )
+    if not np.all(np.isfinite(projected_xy)):
+        raise ValueError("selected node offsets must be representable as float64")
+
+    offset_scale = np.empty(projected_xy.shape[0], dtype=np.float64)
+    np.abs(projected_xy[:, 0], out=offset_scale)
+    np.maximum(offset_scale, np.abs(projected_xy[:, 1]), out=offset_scale)
+    if np.any(offset_scale == 0.0):
+        raise ValueError("a selected node cannot coincide with the circle center")
+
+    projected_xy /= offset_scale[:, None]
+    np.hypot(projected_xy[:, 0], projected_xy[:, 1], out=offset_scale)
+    projected_xy /= offset_scale[:, None]
+    projected_xy *= radius
+    with np.errstate(over="ignore", invalid="ignore"):
+        projected_xy += center
+    if not np.all(np.isfinite(projected_xy)):
+        raise ValueError("projected node coordinates exceed float64 range")
+
+    # Delay conversion and mutation until every input and projected coordinate
+    # has passed validation, so failures leave the mesh unchanged.
+    float_nodes = nodes.astype(np.float64, copy=False)
+    if not float_nodes.flags.writeable:
+        float_nodes = float_nodes.copy()
+    float_nodes[node_indices, :2] = projected_xy
+    mesh.nodes = float_nodes
+    return mesh
 
 
 def circle(
@@ -380,6 +483,11 @@ def circle(
     node_indices_outer = node_map[node_indices_outer]
     node_indices_inner = node_map[node_indices_inner]
     
-    #view_mesh(mesh, node_indices=node_indices_inner)
+    view_mesh(mesh)
+    
+    mesh = _node_to_circle(mesh, x, y, radius-buffer/3, node_indices_inner)
+    mesh = _node_to_circle(mesh, x, y, radius+buffer/3, node_indices_outer)
+    
+    view_mesh(mesh)
     
     return mesh

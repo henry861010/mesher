@@ -17,7 +17,8 @@ class CheckerboardIntegrationTests(unittest.TestCase):
         )
 
         self.assertIsInstance(mesh, Mesh)
-        points = mesh.nodes[mesh.elements, :2].astype(np.float64)
+        self.assertEqual(mesh.nodes.dtype, np.dtype(np.float64))
+        points = mesh.nodes[mesh.elements, :2]
         first_edges = points[:, 1] - points[:, 0]
         second_edges = points[:, 3] - points[:, 0]
         signed_corner_areas = (

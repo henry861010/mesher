@@ -5,7 +5,7 @@ from mesh import Mesh
 
 def _sort(float_list, tolerance=1e-3):
     # Convert to a numpy array and sort it
-    arr = np.sort(np.array(float_list))
+    arr = np.sort(np.asarray(float_list, dtype=np.float64))
     
     if arr.size == 0:
         return arr
@@ -31,11 +31,11 @@ def _densify(element_size, arr):
                 out.append(a)
             continue
         nseg = max(1, int(np.ceil(length / element_size)))
-        seg = np.linspace(a, b, nseg + 1, endpoint=True, dtype=np.float32)
+        seg = np.linspace(a, b, nseg + 1, endpoint=True, dtype=np.float64)
         if out:
             seg = seg[1:]  # avoid boundary duplicate
         out.extend(seg.tolist())
-    return np.asarray(out, dtype=np.float32)
+    return np.asarray(out, dtype=np.float64)
 
 
 def checkerboard_box(element_size, x_list, y_list) -> Mesh:
@@ -53,7 +53,9 @@ def checkerboard_box(element_size, x_list, y_list) -> Mesh:
     ### nodes (x varies fastest)
     X, Y = np.meshgrid(x, y, indexing="xy")
     Z = np.zeros_like(X)
-    nodes = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()]).astype(np.float32)  # (Ny*Nx, 3)
+    nodes = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()]).astype(
+        np.float64, copy=False
+    )  # (Ny*Nx, 3)
 
     ### element node ids
     ix = np.arange(Nx - 1, dtype=np.int32)

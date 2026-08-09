@@ -411,11 +411,11 @@ class MixedMeshAndReportTests(unittest.TestCase):
         self.assertEqual(result.summary.worst_index, 1)
         np.testing.assert_array_equal(result.invalid_indices, [2])
 
-    def test_calculation_arrays_use_float64(self):
+    def test_calculation_arrays_remain_float64(self):
         checker = _checker(
             np.array(
                 [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-                dtype=np.float32,
+                dtype=np.float64,
             ),
             np.array([[0, 1, 2, 3]], dtype=np.int32),
         )
@@ -545,6 +545,7 @@ class GeneratedMeshTests(unittest.TestCase):
         )
 
         self.assertIsInstance(mesh, Mesh)
+        self.assertEqual(mesh.nodes.dtype, np.dtype(np.float64))
         report = MeshQualityChecker(mesh).check_jacobian()
         self.assertEqual(report.failed_indices.size, 0)
         self.assertEqual(report.invalid_indices.size, 0)
