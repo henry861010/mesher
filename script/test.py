@@ -52,7 +52,8 @@ def main():
     y_list = generate_random_float_list(-100, 100, 2)
     mesh = checkerboard_box(5, x_list, y_list)
     
-    mesh = circle(mesh, 0, 0, 50, 5)
+    print(x_list[50])
+    mesh = circle(mesh, 0, 0, 50, 5, lines=[[[x_list[50], 100],[x_list[50], -100]]])
 
 
 if __name__ == "__main__":
