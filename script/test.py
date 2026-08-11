@@ -90,6 +90,7 @@ def main():
         mesh, 
         element_indices = low_quality_indices,
         reference_circles=[[0, 0, 50]],    
+        reference_lines=[[[x_list[50], -200],[x_list[50], 200]]],    
     )
 
 

@@ -1293,8 +1293,8 @@ def circle(
     buffer: float,
     lines=None,
 ):
-    indices_inner = _search_circle(mesh, x, y, radius - buffer, type="ALL")
-    indices_outer = _search_circle(mesh, x, y, radius + buffer, type="PART")
+    indices_inner = _search_circle(mesh, x, y, radius - buffer - buffer/10, type="ALL")
+    indices_outer = _search_circle(mesh, x, y, radius + buffer + buffer/10, type="PART")
 
     indices_delete = indices_outer[~np.isin(indices_outer, indices_inner)]
 
@@ -1306,7 +1306,7 @@ def circle(
     node_map = _clear_node(mesh)
     node_indices_outer = node_map[node_indices_outer]
     node_indices_inner = node_map[node_indices_inner]
-
+    
     mesh = _to_circle(
         mesh,
         x,
