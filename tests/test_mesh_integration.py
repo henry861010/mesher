@@ -165,6 +165,72 @@ class CheckerboardIntegrationTests(unittest.TestCase):
         plotter.add_points.assert_not_called()
         plotter.show.assert_called_once_with()
 
+    def test_view_mesh_draws_reference_circles_boxes_and_lines(self):
+        mesh = Mesh(
+            nodes=np.empty((0, 3), dtype=np.float64),
+            elements=np.empty((0, 4), dtype=np.int64),
+        )
+        plotter = MagicMock()
+
+        with patch("viewer.viewer.pv.Plotter", return_value=plotter):
+            view_mesh(
+                mesh,
+                reference_circles=[1.0, 2.0, 0.5],
+                reference_boxes=[[-1.0, -2.0], [3.0, 4.0]],
+                reference_lines=[[-3.0, 1.0], [5.0, 2.0]],
+            )
+
+        reference_segments = plotter.add_lines.call_args.args[0]
+        self.assertEqual(reference_segments.shape, (266, 3))
+        np.testing.assert_array_equal(
+            reference_segments[-2:],
+            np.array([[-3.0, 1.0, 0.0], [5.0, 2.0, 0.0]]),
+        )
+        self.assertEqual(plotter.add_lines.call_args.kwargs["color"], "black")
+        self.assertEqual(plotter.add_lines.call_args.kwargs["width"], 2)
+        self.assertFalse(plotter.add_lines.call_args.kwargs["connected"])
+
+    def test_view_mesh_accepts_multiple_reference_shapes(self):
+        mesh = Mesh(
+            nodes=np.empty((0, 3), dtype=np.float64),
+            elements=np.empty((0, 4), dtype=np.int64),
+        )
+        plotter = MagicMock()
+
+        with patch("viewer.viewer.pv.Plotter", return_value=plotter):
+            view_mesh(
+                mesh,
+                reference_circles=[[0.0, 0.0, 1.0], [2.0, 2.0, 0.5]],
+                reference_boxes=[
+                    [[0.0, 0.0], [1.0, 1.0]],
+                    [[2.0, 2.0], [3.0, 3.0]],
+                ],
+                reference_lines=[
+                    [[0.0, 0.0], [1.0, 1.0]],
+                    [[1.0, 0.0], [0.0, 1.0]],
+                ],
+            )
+
+        self.assertEqual(plotter.add_lines.call_args.args[0].shape, (532, 3))
+
+    def test_view_mesh_validates_reference_geometry(self):
+        mesh = Mesh(
+            nodes=np.empty((0, 3), dtype=np.float64),
+            elements=np.empty((0, 4), dtype=np.int64),
+        )
+        invalid_cases = (
+            ({"reference_circles": [0.0, 0.0, 0.0]}, ValueError),
+            ({"reference_circles": [0.0, 1.0]}, ValueError),
+            ({"reference_boxes": [[1.0, 0.0], [0.0, 1.0]]}, ValueError),
+            ({"reference_lines": [[0.0, 0.0], [np.inf, 1.0]]}, ValueError),
+            ({"reference_lines": [["x", 0.0], [1.0, 1.0]]}, TypeError),
+        )
+
+        for kwargs, expected_error in invalid_cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(expected_error):
+                    view_mesh(mesh, **kwargs)
+
     def test_view_mesh_validates_node_indices(self):
         mesh = Mesh(
             nodes=np.array(

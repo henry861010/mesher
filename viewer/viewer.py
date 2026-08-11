@@ -50,7 +50,108 @@ def _validate_highlight_indices(
     return selected_indices
 
 
-def view_mesh(mesh: Mesh, element_indices=None, node_indices=None):
+def _normalize_reference_geometry(values, item_shape, parameter_name):
+    """Return reference geometry as a finite float array of individual items."""
+    if values is None:
+        return np.empty((0, *item_shape), dtype=np.float64)
+
+    try:
+        geometry = np.asarray(values, dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"{parameter_name} must contain numeric coordinates") from error
+
+    if geometry.size == 0:
+        return np.empty((0, *item_shape), dtype=np.float64)
+
+    if geometry.shape == item_shape:
+        geometry = geometry.reshape((1, *item_shape))
+    elif geometry.ndim != len(item_shape) + 1 or geometry.shape[1:] != item_shape:
+        expected_shape = "(" + ", ".join(map(str, item_shape)) + ")"
+        raise ValueError(
+            f"each item in {parameter_name} must have shape {expected_shape}"
+        )
+
+    if not np.all(np.isfinite(geometry)):
+        raise ValueError(f"{parameter_name} must contain only finite values")
+
+    return geometry
+
+
+def _build_reference_segments(
+    reference_circles,
+    reference_boxes,
+    reference_lines,
+):
+    """Build paired 3D endpoints for the reference geometry."""
+    circles = _normalize_reference_geometry(
+        reference_circles,
+        (3,),
+        "reference_circles",
+    )
+    boxes = _normalize_reference_geometry(
+        reference_boxes,
+        (2, 2),
+        "reference_boxes",
+    )
+    lines = _normalize_reference_geometry(
+        reference_lines,
+        (2, 2),
+        "reference_lines",
+    )
+
+    if circles.size and np.any(circles[:, 2] <= 0.0):
+        raise ValueError("circle radii in reference_circles must be positive")
+    if boxes.size and np.any(boxes[:, 0] > boxes[:, 1]):
+        raise ValueError(
+            "each reference_boxes bottom-left coordinate must not exceed "
+            "its top-right coordinate"
+        )
+
+    segments = []
+    circle_angles = np.linspace(0.0, 2.0 * np.pi, 129)
+    for x, y, radius in circles:
+        circle_points = np.column_stack(
+            (
+                x + radius * np.cos(circle_angles),
+                y + radius * np.sin(circle_angles),
+                np.zeros_like(circle_angles),
+            )
+        )
+        segments.append(
+            np.column_stack((circle_points[:-1], circle_points[1:])).reshape(-1, 3)
+        )
+
+    for bottom_left, top_right in boxes:
+        x_min, y_min = bottom_left
+        x_max, y_max = top_right
+        corners = np.array(
+            [
+                [x_min, y_min, 0.0],
+                [x_max, y_min, 0.0],
+                [x_max, y_max, 0.0],
+                [x_min, y_max, 0.0],
+            ]
+        )
+        next_corners = np.roll(corners, -1, axis=0)
+        segments.append(np.column_stack((corners, next_corners)).reshape(-1, 3))
+
+    if lines.size:
+        line_points = np.pad(lines, ((0, 0), (0, 0), (0, 1)))
+        segments.append(line_points.reshape(-1, 3))
+
+    if not segments:
+        return np.empty((0, 3), dtype=np.float64)
+    return np.concatenate(segments)
+
+
+def view_mesh(
+    mesh: Mesh,
+    element_indices=None,
+    node_indices=None,
+    reference_circles=None,
+    reference_boxes=None,
+    reference_lines=None,
+):
     """Display a mesh with highlighted elements and nodes.
 
     Parameters
@@ -62,6 +163,15 @@ def view_mesh(mesh: Mesh, element_indices=None, node_indices=None):
         are shown in light blue.
     node_indices:
         Zero-based node indices to highlight in yellow.
+    reference_circles:
+        One circle ``[x, y, radius]`` or a sequence of circles to draw as
+        black reference lines.
+    reference_boxes:
+        One box ``[[bottom_left_x, bottom_left_y], [top_right_x, top_right_y]]``
+        or a sequence of boxes to draw as black reference lines.
+    reference_lines:
+        One line ``[[x1, y1], [x2, y2]]`` or a sequence of lines to draw as
+        black reference lines.
     """
     if not isinstance(mesh, Mesh):
         raise TypeError("mesh must be a Mesh instance")
@@ -84,6 +194,11 @@ def view_mesh(mesh: Mesh, element_indices=None, node_indices=None):
         poly_data.n_points,
         "node_indices",
         "node",
+    )
+    reference_segments = _build_reference_segments(
+        reference_circles,
+        reference_boxes,
+        reference_lines,
     )
 
     # Initialize the interactive plotter
@@ -114,6 +229,14 @@ def view_mesh(mesh: Mesh, element_indices=None, node_indices=None):
             color="yellow",
             point_size=12,
             render_points_as_spheres=True,
+        )
+
+    if reference_segments.size:
+        plotter.add_lines(
+            reference_segments,
+            color="black",
+            width=2,
+            connected=False,
         )
 
     # Keep this 2D viewer in a top-down XY view.  Parallel projection avoids

@@ -1,13 +1,16 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
+from checkerboard import checkerboard_box
 from circle.circle import (
     _clear_node,
     _delete,
     _delete_element,
     _search_circle,
     _to_circle,
+    circle,
 )
 from mesh import Mesh
 from mesh_quality import MeshQualityChecker
@@ -337,6 +340,79 @@ class ToCircleTests(unittest.TestCase):
 
         np.testing.assert_allclose(mesh.nodes[7, :2], [np.sqrt(3.75), 0.5])
 
+    def test_vertical_pattern_can_overlap_a_boundary_edge(self):
+        mesh = self._outward_mesh()
+        original_xy = mesh.nodes.copy()
+        mesh.nodes = np.column_stack((-original_xy[:, 1], original_xy[:, 0]))
+
+        _to_circle(
+            mesh,
+            0.0,
+            0.0,
+            2.0,
+            [3, 4, 5],
+            lines=[[[-0.5, 0.5], [-0.5, 2.0]]],
+        )
+
+        np.testing.assert_allclose(mesh.nodes[8, :2], [-0.5, np.sqrt(3.75)])
+        triangle_indices = np.flatnonzero(
+            mesh.elements[:, 2] == mesh.elements[:, 3]
+        )
+        np.testing.assert_array_equal(triangle_indices, [3, 4])
+        report = MeshQualityChecker(mesh).check_jacobian(indices=[2, 3, 4])
+        self.assertEqual(report.invalid_indices.size, 0)
+        self.assertTrue(np.all(report.values > 0.0))
+
+    def test_multi_edge_overlap_uses_the_vertex_nearest_the_circle(self):
+        x_coordinates = np.array([-1.0, 0.0, 0.5, 1.0])
+        mesh = Mesh(
+            nodes=np.vstack(
+                (
+                    np.column_stack((x_coordinates, np.zeros(4))),
+                    np.column_stack((x_coordinates, np.full(4, 0.5))),
+                )
+            ),
+            elements=np.array(
+                [[0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6]],
+                dtype=np.int32,
+            ),
+        )
+
+        _to_circle(
+            mesh,
+            0.0,
+            0.0,
+            2.0,
+            [4, 5, 6, 7],
+            lines=[[[0.0, 0.5], [2.0, 0.5]]],
+        )
+
+        np.testing.assert_allclose(mesh.nodes[11, :2], [np.sqrt(3.75), 0.5])
+        self.assertEqual(
+            np.count_nonzero(mesh.elements[:, 2] == mesh.elements[:, 3]),
+            2,
+        )
+        new_indices = list(range(3, mesh.elements.shape[0]))
+        report = MeshQualityChecker(mesh).check_jacobian(indices=new_indices)
+        self.assertEqual(report.invalid_indices.size, 0)
+        self.assertTrue(np.all(report.values > 0.0))
+
+    def test_pattern_inside_collinear_edge_without_vertex_is_atomic_error(self):
+        mesh = self._outward_mesh()
+        snapshot = self.snapshot_mesh(mesh)
+
+        with self.assertRaisesRegex(ValueError, "without a vertex"):
+            _to_circle(
+                mesh,
+                0.0,
+                0.0,
+                2.0,
+                [3, 4, 5],
+                lines=[[[0.6, 0.5], [0.9, 0.5]]],
+            )
+
+        self.assert_mesh_unchanged(mesh, snapshot)
+
     def test_closed_pattern_redistributes_neighbouring_circle_nodes(self):
         mesh, boundary_indices, line, expected_anchor = self._closed_pattern_mesh()
         original_node_count = mesh.nodes.shape[0]
@@ -662,6 +738,33 @@ class ToCircleTests(unittest.TestCase):
             )
 
         self.assert_mesh_unchanged(mesh, snapshot)
+
+
+class CircleIntegrationTests(unittest.TestCase):
+    def test_pattern_overlap_is_supported_on_both_circle_boundaries(self):
+        mesh = checkerboard_box(
+            5.0,
+            np.arange(-70.0, 71.0, 2.0),
+            np.arange(-70.0, 71.0, 3.0),
+        )
+
+        with patch("circle.circle.view_mesh"):
+            circle(
+                mesh,
+                x=0.0,
+                y=0.0,
+                radius=50.0,
+                buffer=5.0,
+                lines=[[[-20.0, 70.0], [-20.0, -70.0]]],
+            )
+
+        self.assertEqual(
+            np.count_nonzero(mesh.elements[:, 2] == mesh.elements[:, 3]),
+            4,
+        )
+        report = MeshQualityChecker(mesh).check_jacobian()
+        self.assertEqual(report.invalid_indices.size, 0)
+        self.assertTrue(np.all(report.values > 0.0))
 
 
 class DeleteElementTests(unittest.TestCase):

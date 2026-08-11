@@ -371,17 +371,21 @@ def _to_circle(
 ) -> Mesh:
     """Extend an ordered boundary chain to a circle with Quad4 elements.
 
-    One circle node is created for every node in ``node_indices`` and one
-    quadrilateral is created for every boundary edge.  By default a chain is
-    treated as closed when its last and first nodes also form an exposed
-    boundary edge; pass ``closed=False`` to keep such a chain open explicitly.
-    Closed input lists contain each node once (the first node is not repeated).
+    One circle node is created for every node in ``node_indices`` and normally
+    one quadrilateral is created for every boundary edge.  A quadrilateral with
+    a pattern-induced straight corner is split into two padded Tri3 elements.
+    By default a chain is treated as closed when its last and first nodes also
+    form an exposed boundary edge; pass ``closed=False`` to keep such a chain
+    open explicitly.  Closed input lists contain each node once (the first node
+    is not repeated).
 
     ``lines`` contains finite horizontal or vertical pattern segments.  When a
     segment meets a chain vertex, that vertex is connected to the matching
-    segment/circle intersection.  Neighbouring circle nodes are redistributed
-    locally when necessary so the exact pattern connector does not reverse the
-    circle-node order.
+    segment/circle intersection.  If a segment meets multiple vertices,
+    including along overlapping boundary edges, the vertex nearest each
+    matching circle intersection is used.  Neighbouring circle nodes are
+    redistributed locally when necessary so the exact pattern connector does
+    not reverse the circle-node order.
 
     The mesh is mutated only after every geometric and topological validation
     succeeds, and the same :class:`Mesh` instance is returned.
@@ -662,13 +666,32 @@ def _to_circle(
             if a_on_axis and b_on_axis:
                 overlap_lower = max(min(varying_a, varying_b), lower)
                 overlap_upper = min(max(varying_a, varying_b), upper)
+                a_on_segment = (
+                    lower - segment_tolerance
+                    <= varying_a
+                    <= upper + segment_tolerance
+                )
+                b_on_segment = (
+                    lower - segment_tolerance
+                    <= varying_b
+                    <= upper + segment_tolerance
+                )
                 if overlap_upper > overlap_lower + segment_tolerance:
-                    raise ValueError(
-                        "a pattern segment must not overlap a boundary edge"
-                    )
-                if lower - segment_tolerance <= varying_a <= upper + segment_tolerance:
+                    overlap_candidates: set[int] = set()
+                    if a_on_segment:
+                        overlap_candidates.add(int(start_position))
+                    if b_on_segment:
+                        overlap_candidates.add(int(end_position))
+                    if not overlap_candidates:
+                        raise ValueError(
+                            "a pattern segment intersects a boundary edge "
+                            "without a vertex"
+                        )
+                    vertex_hits.update(overlap_candidates)
+                    continue
+                if a_on_segment:
                     vertex_hits.add(int(start_position))
-                if lower - segment_tolerance <= varying_b <= upper + segment_tolerance:
+                if b_on_segment:
                     vertex_hits.add(int(end_position))
                 continue
 
@@ -759,7 +782,7 @@ def _to_circle(
                 "an active pattern segment does not reach the target circle"
             )
 
-        for vertex_position in vertex_hits:
+        def nearest_root(vertex_position):
             source = selected_xy[vertex_position]
             varying_source = source[1 if vertical else 0]
             root_distances = np.abs(np.asarray(varying_roots) - varying_source)
@@ -773,6 +796,25 @@ def _to_circle(
                     raise ValueError(
                         "a pattern segment has ambiguous circle intersections"
                     )
+            return nearest, float(root_distances[nearest])
+
+        # One analytic circle intersection can support only one connector from
+        # a given pattern segment.  This also collapses every collinear overlap
+        # to the boundary vertex closest to the corresponding circle root.
+        representatives: dict[int, tuple[float, int]] = {}
+        for vertex_position in sorted(vertex_hits):
+            nearest, root_distance = nearest_root(vertex_position)
+            representative = (root_distance, vertex_position)
+            previous = representatives.get(nearest)
+            if previous is None or representative < previous:
+                representatives[nearest] = representative
+        vertex_hits = {
+            vertex_position
+            for _, vertex_position in representatives.values()
+        }
+
+        for vertex_position in vertex_hits:
+            nearest, _ = nearest_root(vertex_position)
             if vertical:
                 candidate = np.array(
                     [fixed, varying_roots[nearest]], dtype=np.float64
@@ -1004,16 +1046,19 @@ def _to_circle(
     target_starts = target_indices[pair_start_positions]
     target_ends = target_indices[pair_end_positions]
     if chain_matches_element_direction:
-        new_elements = np.column_stack(
+        new_quads = np.column_stack(
             (
                 source_ends,
                 source_starts,
                 target_starts,
                 target_ends,
             )
+        )
+        quad_source_positions = np.column_stack(
+            (pair_end_positions, pair_start_positions)
         )
     else:
-        new_elements = np.column_stack(
+        new_quads = np.column_stack(
             (
                 source_starts,
                 source_ends,
@@ -1021,39 +1066,147 @@ def _to_circle(
                 target_starts,
             )
         )
+        quad_source_positions = np.column_stack(
+            (pair_start_positions, pair_end_positions)
+        )
+
+    # A pattern connector can be collinear with an incident source edge, either
+    # because the pattern overlaps that edge or ends exactly at its vertex.
+    # The corresponding four-node polygon has a straight corner, so split it
+    # along the opposite diagonal into two conforming Tri3 elements instead of
+    # emitting a degenerate Quad4.
+    collinear_edge_anchors: dict[int, set[int]] = {}
+    for edge_position, source_positions in enumerate(quad_source_positions):
+        first_source_position = int(source_positions[0])
+        second_source_position = int(source_positions[1])
+        for source_position, neighbour_position in (
+            (first_source_position, second_source_position),
+            (second_source_position, first_source_position),
+        ):
+            if source_position not in constrained_targets:
+                continue
+            boundary_vector = (
+                selected_xy[neighbour_position] - selected_xy[source_position]
+            )
+            connector_vector = (
+                target_xy[source_position] - selected_xy[source_position]
+            )
+            boundary_length = np.hypot(*boundary_vector)
+            connector_length = np.hypot(*connector_vector)
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                boundary_unit = boundary_vector / boundary_length
+                connector_unit = connector_vector / connector_length
+                normalized_cross = (
+                    boundary_unit[0] * connector_unit[1]
+                    - boundary_unit[1] * connector_unit[0]
+                )
+            if abs(normalized_cross) <= angular_tolerance:
+                collinear_edge_anchors.setdefault(edge_position, set()).add(
+                    source_position
+                )
+
+    if collinear_edge_anchors:
+        new_element_rows: list[np.ndarray] = []
+        for edge_position, quad in enumerate(new_quads):
+            anchors = collinear_edge_anchors.get(edge_position)
+            if not anchors:
+                new_element_rows.append(quad)
+                continue
+
+            first_source_position = int(quad_source_positions[edge_position, 0])
+            second_source_position = int(quad_source_positions[edge_position, 1])
+            first_is_anchor = first_source_position in anchors
+            second_is_anchor = second_source_position in anchors
+            if first_is_anchor and second_is_anchor:
+                raise ValueError(
+                    "pattern connectors cannot be collinear at both endpoints "
+                    "of one boundary edge"
+                )
+            if first_is_anchor:
+                new_element_rows.extend(
+                    (
+                        np.array([quad[0], quad[1], quad[2], quad[2]]),
+                        np.array([quad[0], quad[2], quad[3], quad[3]]),
+                    )
+                )
+            elif second_is_anchor:
+                new_element_rows.extend(
+                    (
+                        np.array([quad[0], quad[1], quad[3], quad[3]]),
+                        np.array([quad[1], quad[2], quad[3], quad[3]]),
+                    )
+                )
+            else:
+                raise RuntimeError(
+                    "collinear anchor is not an endpoint of its boundary edge"
+                )
+        new_elements = np.asarray(new_element_rows, dtype=np.int64)
+    else:
+        new_elements = new_quads
 
     proposed_xy = np.vstack((float_nodes[:, :2], target_xy))
-    quad_points = proposed_xy[new_elements]
-    forward_edges = np.roll(quad_points, -1, axis=1) - quad_points
-    backward_edges = np.roll(quad_points, 1, axis=1) - quad_points
-    forward_lengths = np.hypot(forward_edges[:, :, 0], forward_edges[:, :, 1])
-    backward_lengths = np.hypot(
-        backward_edges[:, :, 0], backward_edges[:, :, 1]
-    )
-    if np.any(forward_lengths <= tolerance):
-        raise ValueError("a generated quadrilateral has a zero-length edge")
-    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        forward_unit = forward_edges / forward_lengths[:, :, None]
-        backward_unit = backward_edges / backward_lengths[:, :, None]
-        corner_orientation = (
-            forward_unit[:, :, 0] * backward_unit[:, :, 1]
-            - forward_unit[:, :, 1] * backward_unit[:, :, 0]
+    is_triangle = new_elements[:, 2] == new_elements[:, 3]
+    if np.any(is_triangle):
+        triangle_points = proposed_xy[new_elements[is_triangle, :3]]
+        triangle_edges = np.roll(triangle_points, -1, axis=1) - triangle_points
+        triangle_lengths = np.hypot(
+            triangle_edges[:, :, 0], triangle_edges[:, :, 1]
         )
-    if not np.all(np.isfinite(corner_orientation)) or np.any(
-        corner_orientation <= angular_tolerance
-    ):
-        raise ValueError(
-            "generated quadrilaterals must be non-degenerate and counter-clockwise"
-        )
+        if np.any(triangle_lengths <= tolerance):
+            raise ValueError("a generated triangle has a zero-length edge")
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            first_triangle_edge = triangle_edges[:, 0] / triangle_lengths[:, 0, None]
+            closing_triangle_edge = (
+                -triangle_edges[:, 2] / triangle_lengths[:, 2, None]
+            )
+            triangle_orientation = (
+                first_triangle_edge[:, 0] * closing_triangle_edge[:, 1]
+                - first_triangle_edge[:, 1] * closing_triangle_edge[:, 0]
+            )
+        if not np.all(np.isfinite(triangle_orientation)) or np.any(
+            triangle_orientation <= angular_tolerance
+        ):
+            raise ValueError(
+                "generated triangles must be non-degenerate and counter-clockwise"
+            )
 
-    # Positive corner Jacobians rule out a folded individual quad.  A separate
-    # edge check prevents two otherwise-valid, non-neighbouring quads from
-    # crossing elsewhere in the strip.
+    if np.any(~is_triangle):
+        quad_points = proposed_xy[new_elements[~is_triangle]]
+        forward_edges = np.roll(quad_points, -1, axis=1) - quad_points
+        backward_edges = np.roll(quad_points, 1, axis=1) - quad_points
+        forward_lengths = np.hypot(
+            forward_edges[:, :, 0], forward_edges[:, :, 1]
+        )
+        backward_lengths = np.hypot(
+            backward_edges[:, :, 0], backward_edges[:, :, 1]
+        )
+        if np.any(forward_lengths <= tolerance):
+            raise ValueError("a generated quadrilateral has a zero-length edge")
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            forward_unit = forward_edges / forward_lengths[:, :, None]
+            backward_unit = backward_edges / backward_lengths[:, :, None]
+            corner_orientation = (
+                forward_unit[:, :, 0] * backward_unit[:, :, 1]
+                - forward_unit[:, :, 1] * backward_unit[:, :, 0]
+            )
+        if not np.all(np.isfinite(corner_orientation)) or np.any(
+            corner_orientation <= angular_tolerance
+        ):
+            raise ValueError(
+                "generated quadrilaterals must be non-degenerate and "
+                "counter-clockwise"
+            )
+
+    # Positive element orientations rule out folded individual cells.  A
+    # separate edge check prevents two otherwise-valid, non-neighbouring cells
+    # from crossing elsewhere in the strip.
     strip_edges: dict[tuple[int, int], tuple[int, int]] = {}
     for element in new_elements:
         for start, end in zip(element, np.roll(element, -1)):
             start = int(start)
             end = int(end)
+            if start == end:
+                continue
             key = (min(start, end), max(start, end))
             strip_edges.setdefault(key, (start, end))
 
@@ -1140,8 +1293,8 @@ def circle(
     buffer: float,
     lines=None,
 ):
-    indices_inner = _search_circle(mesh, x, y, radius - buffer)
-    indices_outer = _search_circle(mesh, x, y, radius + buffer)
+    indices_inner = _search_circle(mesh, x, y, radius - buffer, type="ALL")
+    indices_outer = _search_circle(mesh, x, y, radius + buffer, type="PART")
 
     indices_delete = indices_outer[~np.isin(indices_outer, indices_inner)]
 
@@ -1158,12 +1311,22 @@ def circle(
         mesh,
         x,
         y,
-        radius,
+        radius + buffer,
         node_indices_outer,
         lines=lines,
         closed=True,
     )
 
-    view_mesh(mesh, node_indices=node_indices_outer)
+    mesh = _to_circle(
+        mesh,
+        x,
+        y,
+        radius - buffer,
+        node_indices_inner,
+        lines=lines,
+        closed=True,
+    )
+
+    #view_mesh(mesh)
 
     return mesh

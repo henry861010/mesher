@@ -11,6 +11,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from viewer import view_mesh
 from checkerboard import checkerboard_box
 from circle import circle 
+from mesh_quality import MeshQualityChecker
+
+
+JACOBIAN_THRESHOLD = 0.3
+
+random.seed(1)
 
 def generate_random_float_list(begin, end, a, max_step=None):
     """
@@ -48,12 +54,43 @@ def generate_random_float_list(begin, end, a, max_step=None):
     return result
 
 def main():
+    element_size = 5
+
     x_list = generate_random_float_list(-100, 100, 1)
     y_list = generate_random_float_list(-100, 100, 2)
-    mesh = checkerboard_box(5, x_list, y_list)
+    mesh = checkerboard_box(element_size, x_list, y_list)
     
-    print(x_list[50])
-    mesh = circle(mesh, 0, 0, 50, 5, lines=[[[x_list[50], 100],[x_list[50], -100]]])
+    # view_mesh(
+    #     mesh, 
+    #     reference_circles=[
+    #         [0, 0, 50],
+    #         [0, 0, 50 - element_size],
+    #         [0, 0, 50 + element_size]
+    #     ],    
+    # )
+
+    mesh = circle(
+        mesh = mesh,
+        x = 0,
+        y = 0,
+        radius = 50,
+        buffer = element_size,
+        lines=[[[x_list[50], y_list[49]],[x_list[50], y_list[5]]]]
+    )
+
+    checker = MeshQualityChecker(mesh)
+    report = checker.check_scaled_jacobian(minimum=0.3)
+    low_quality_indices = report.failed_indices
+
+    print(
+        f"Elements with Jacobian < {JACOBIAN_THRESHOLD}: "
+        f"{low_quality_indices.tolist()}"
+    )
+    view_mesh(
+        mesh, 
+        element_indices = low_quality_indices,
+        reference_circles=[[0, 0, 50]],    
+    )
 
 
 if __name__ == "__main__":
