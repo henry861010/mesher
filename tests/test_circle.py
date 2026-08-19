@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from collections import Counter
 
 import numpy as np
 
@@ -8,6 +8,8 @@ from circle.circle import (
     _clear_node,
     _delete,
     _delete_element,
+    _generate_pattern_circle_nodes,
+    _get_boundary,
     _search_circle,
     _to_circle,
     circle,
@@ -741,30 +743,393 @@ class ToCircleTests(unittest.TestCase):
 
 
 class CircleIntegrationTests(unittest.TestCase):
-    def test_pattern_overlap_is_supported_on_both_circle_boundaries(self):
+    center_x = 0.0
+    center_y = 0.0
+    radius = 50.0
+    buffer = 5.0
+
+    @staticmethod
+    def _build_mesh(dimensions=3):
         mesh = checkerboard_box(
             5.0,
             np.arange(-70.0, 71.0, 2.0),
             np.arange(-70.0, 71.0, 3.0),
         )
+        if dimensions == 2:
+            mesh.nodes = mesh.nodes[:, :2].copy()
+        return mesh
 
-        with patch("circle.circle.view_mesh"):
-            circle(
-                mesh,
-                x=0.0,
-                y=0.0,
-                radius=50.0,
-                buffer=5.0,
-                lines=[[[-20.0, 70.0], [-20.0, -70.0]]],
-            )
+    @staticmethod
+    def _edge_counts(mesh):
+        counts = Counter()
+        for element in np.asarray(mesh.elements):
+            if element[2] == element[3]:
+                perimeter = element[:3]
+            else:
+                perimeter = element
+            for start, end in zip(perimeter, np.roll(perimeter, -1)):
+                counts[tuple(sorted((int(start), int(end))))] += 1
+        return counts
 
-        self.assertEqual(
-            np.count_nonzero(mesh.elements[:, 2] == mesh.elements[:, 3]),
-            4,
+    def _circle_node_indices_and_gaps(self, mesh, radius):
+        offsets = np.asarray(mesh.nodes)[:, :2] - np.array(
+            [self.center_x, self.center_y]
         )
+        distances = np.hypot(offsets[:, 0], offsets[:, 1])
+        tolerance = 1.0e-10 * max(1.0, radius)
+        indices = np.flatnonzero(np.abs(distances - radius) <= tolerance)
+        self.assertGreaterEqual(indices.size, 3)
+
+        angles = np.mod(
+            np.arctan2(offsets[indices, 1], offsets[indices, 0]),
+            2.0 * np.pi,
+        )
+        order = np.argsort(angles)
+        indices = indices[order]
+        angles = angles[order]
+        gaps = np.diff(np.concatenate((angles, angles[:1] + 2.0 * np.pi)))
+        self.assertTrue(np.all(gaps > 0.0))
+        return indices, gaps
+
+    def assert_pattern_circle_edges(self, mesh):
+        pattern_nodes, gaps = self._circle_node_indices_and_gaps(
+            mesh, self.radius
+        )
+        edge_counts = self._edge_counts(mesh)
+        for start, end in zip(pattern_nodes, np.roll(pattern_nodes, -1)):
+            self.assertEqual(
+                edge_counts[tuple(sorted((int(start), int(end))))],
+                2,
+            )
+        return pattern_nodes, gaps
+
+    def _node_at(self, mesh, point):
+        point = np.asarray(point, dtype=np.float64)
+        distances = np.hypot(
+            mesh.nodes[:, 0] - point[0],
+            mesh.nodes[:, 1] - point[1],
+        )
+        node = int(np.argmin(distances))
+        self.assertLessEqual(float(distances[node]), 1.0e-9)
+        return node
+
+    def assert_mesh_unchanged(self, mesh, snapshot):
+        nodes, elements, node_values, element_values = snapshot
+        self.assertIs(mesh.nodes, nodes)
+        self.assertIs(mesh.elements, elements)
+        np.testing.assert_array_equal(mesh.nodes, node_values)
+        np.testing.assert_array_equal(mesh.elements, element_values)
+
+    def test_pattern_circle_is_an_interior_edge_loop_and_fills_the_hole(self):
+        mesh = self._build_mesh()
+
+        result = circle(
+            mesh,
+            x=self.center_x,
+            y=self.center_y,
+            radius=self.radius,
+            buffer=self.buffer,
+        )
+
+        self.assertIs(result, mesh)
+        pattern_nodes, _ = self.assert_pattern_circle_edges(mesh)
+        boundaries = _get_boundary(mesh)
+        self.assertEqual(len(boundaries), 1)
+        self.assertTrue(set(pattern_nodes).isdisjoint(set(boundaries[0])))
+
         report = MeshQualityChecker(mesh).check_jacobian()
         self.assertEqual(report.invalid_indices.size, 0)
         self.assertTrue(np.all(report.values > 0.0))
+
+    def test_pattern_overlap_is_supported_through_both_annular_strips(self):
+        mesh = self._build_mesh()
+        pattern_x = -20.0
+        lines = [[[pattern_x, 70.0], [pattern_x, -70.0]]]
+
+        circle(
+            mesh,
+            x=self.center_x,
+            y=self.center_y,
+            radius=self.radius,
+            buffer=self.buffer,
+            lines=lines,
+        )
+
+        edge_counts = self._edge_counts(mesh)
+        for sign in (-1.0, 1.0):
+            nodes = []
+            for circle_radius in (
+                self.radius - self.buffer,
+                self.radius,
+                self.radius + self.buffer,
+            ):
+                intersection_y = sign * np.sqrt(circle_radius**2 - pattern_x**2)
+                nodes.append(self._node_at(mesh, [pattern_x, intersection_y]))
+            self.assertEqual(edge_counts[tuple(sorted(nodes[:2]))], 2)
+            self.assertEqual(edge_counts[tuple(sorted(nodes[1:]))], 2)
+
+        self.assert_pattern_circle_edges(mesh)
+        self.assertEqual(len(_get_boundary(mesh)), 1)
+        report = MeshQualityChecker(mesh).check_jacobian()
+        self.assertEqual(report.invalid_indices.size, 0)
+        self.assertTrue(np.all(report.values > 0.0))
+
+    def test_default_and_explicit_element_sizes_bound_pattern_arc_spacing(self):
+        cases = (
+            ("default", {}, self.buffer),
+            ("explicit", {"element_size": 3.0}, 3.0),
+        )
+
+        for name, kwargs, expected_size in cases:
+            with self.subTest(name=name):
+                mesh = self._build_mesh()
+                circle(
+                    mesh,
+                    x=self.center_x,
+                    y=self.center_y,
+                    radius=self.radius,
+                    buffer=self.buffer,
+                    **kwargs,
+                )
+
+                pattern_nodes, gaps = self.assert_pattern_circle_edges(mesh)
+                expected_count = max(
+                    3,
+                    int(np.ceil(2.0 * np.pi * self.radius / expected_size)),
+                )
+                self.assertEqual(pattern_nodes.size, expected_count)
+                self.assertLessEqual(
+                    float(np.max(self.radius * gaps)),
+                    expected_size + 1.0e-10,
+                )
+
+    def test_invalid_inputs_leave_the_original_mesh_unchanged(self):
+        cases = (
+            {"x": np.nan},
+            {"y": np.inf},
+            {"radius": np.nan},
+            {"radius": self.buffer},
+            {"buffer": 0.0},
+            {"buffer": np.inf},
+            {"element_size": 0.0},
+            {"element_size": -1.0},
+            {"element_size": np.nan},
+            {"element_size": np.inf},
+            {"lines": [[[0.0, 0.0], [1.0, 1.0]]]},
+        )
+
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                mesh = self._build_mesh()
+                snapshot = (
+                    mesh.nodes,
+                    mesh.elements,
+                    mesh.nodes.copy(),
+                    mesh.elements.copy(),
+                )
+                arguments = {
+                    "x": self.center_x,
+                    "y": self.center_y,
+                    "radius": self.radius,
+                    "buffer": self.buffer,
+                }
+                arguments.update(overrides)
+
+                with self.assertRaises(ValueError):
+                    circle(mesh, **arguments)
+
+                self.assert_mesh_unchanged(mesh, snapshot)
+
+    def test_second_strip_failure_leaves_the_original_mesh_unchanged(self):
+        mesh = self._build_mesh()
+        snapshot = (
+            mesh.nodes,
+            mesh.elements,
+            mesh.nodes.copy(),
+            mesh.elements.copy(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsupported outer-circle chord"):
+            circle(
+                mesh,
+                x=self.center_x,
+                y=self.center_y,
+                radius=self.radius,
+                buffer=self.buffer,
+                # This reaches r+buffer but lies outside the pattern circle,
+                # so only the second triangular strip sees an active chord.
+                lines=[[[52.0, -70.0], [52.0, 70.0]]],
+            )
+
+        self.assert_mesh_unchanged(mesh, snapshot)
+
+    def test_pattern_node_generation_handles_tangent_duplicate_and_irrelevant_lines(self):
+        center_x = 7.0
+        center_y = -11.0
+        radius = 5.0
+        element_size = 1.3
+        empty_mesh = Mesh(
+            nodes=np.empty((0, 2), dtype=np.float64),
+            elements=np.empty((0, 4), dtype=np.int32),
+        )
+
+        tangent = [[12.0, -20.0], [12.0, 0.0]]
+        tangent_nodes = _generate_pattern_circle_nodes(
+            empty_mesh,
+            center_x,
+            center_y,
+            radius,
+            element_size,
+            lines=[tangent],
+        )
+        tangent_anchor_distances = np.hypot(
+            tangent_nodes[:, 0] - 12.0,
+            tangent_nodes[:, 1] + 11.0,
+        )
+        self.assertLessEqual(float(np.min(tangent_anchor_distances)), 1.0e-12)
+        tangent_angles = np.sort(
+            np.mod(
+                np.arctan2(
+                    tangent_nodes[:, 1] - center_y,
+                    tangent_nodes[:, 0] - center_x,
+                ),
+                2.0 * np.pi,
+            )
+        )
+        tangent_gaps = np.diff(
+            np.concatenate((tangent_angles, tangent_angles[:1] + 2.0 * np.pi))
+        )
+        self.assertLessEqual(
+            float(np.max(radius * tangent_gaps)),
+            element_size + 1.0e-10,
+        )
+
+        constrained_lines = [
+            [[7.0, -20.0], [7.0, 0.0]],
+            [[7.0, 0.0], [7.0, -20.0]],
+            [[-5.0, -11.0], [20.0, -11.0]],
+            [[20.0, -20.0], [20.0, 0.0]],
+        ]
+        constrained_nodes = _generate_pattern_circle_nodes(
+            empty_mesh,
+            center_x,
+            center_y,
+            radius,
+            element_size,
+            lines=constrained_lines,
+        )
+        for anchor in (
+            [12.0, -11.0],
+            [7.0, -6.0],
+            [2.0, -11.0],
+            [7.0, -16.0],
+        ):
+            distances = np.hypot(
+                constrained_nodes[:, 0] - anchor[0],
+                constrained_nodes[:, 1] - anchor[1],
+            )
+            self.assertLessEqual(float(np.min(distances)), 1.0e-12)
+
+        plain_nodes = _generate_pattern_circle_nodes(
+            empty_mesh,
+            center_x,
+            center_y,
+            radius,
+            element_size,
+        )
+        far_irrelevant_nodes = _generate_pattern_circle_nodes(
+            empty_mesh,
+            center_x,
+            center_y,
+            radius,
+            element_size,
+            lines=[[[1.0e15, -1.0e6], [1.0e15, 1.0e6]]],
+        )
+        np.testing.assert_array_equal(far_irrelevant_nodes, plain_nodes)
+
+    def test_pattern_circle_tangent_is_preserved_end_to_end(self):
+        mesh = checkerboard_box(
+            0.5,
+            np.arange(-8.0, 8.01, 0.5),
+            np.arange(-8.0, 8.01, 0.5),
+        )
+
+        circle(
+            mesh,
+            x=0.0,
+            y=0.0,
+            radius=5.0,
+            buffer=1.0,
+            element_size=1.3,
+            lines=[[[5.0, -8.0], [5.0, 8.0]]],
+        )
+
+        pattern_tangent = self._node_at(mesh, [5.0, 0.0])
+        outer_lower = self._node_at(mesh, [5.0, -np.sqrt(11.0)])
+        outer_upper = self._node_at(mesh, [5.0, np.sqrt(11.0)])
+        edge_counts = self._edge_counts(mesh)
+        self.assertEqual(
+            edge_counts[tuple(sorted((pattern_tangent, outer_lower)))],
+            2,
+        )
+        self.assertEqual(
+            edge_counts[tuple(sorted((pattern_tangent, outer_upper)))],
+            2,
+        )
+        self.assertEqual(len(_get_boundary(mesh)), 1)
+        report = MeshQualityChecker(mesh).check_jacobian()
+        self.assertEqual(report.invalid_indices.size, 0)
+
+    def test_large_element_size_is_refined_enough_to_contain_the_inner_ring(self):
+        mesh = checkerboard_box(
+            0.5,
+            np.arange(-8.0, 8.01, 0.5),
+            np.arange(-8.0, 8.01, 0.5),
+        )
+
+        circle(
+            mesh,
+            x=0.0,
+            y=0.0,
+            radius=5.0,
+            buffer=1.0,
+            element_size=200.0,
+        )
+
+        distances = np.hypot(mesh.nodes[:, 0], mesh.nodes[:, 1])
+        pattern_nodes = np.flatnonzero(
+            np.isclose(distances, 5.0, rtol=0.0, atol=5.0e-10)
+        )
+        self.assertGreaterEqual(pattern_nodes.size, 5)
+        self.assertEqual(len(_get_boundary(mesh)), 1)
+        report = MeshQualityChecker(mesh).check_jacobian()
+        self.assertEqual(report.invalid_indices.size, 0)
+
+    def test_supports_two_and_three_coordinate_node_arrays(self):
+        for dimensions in (2, 3):
+            with self.subTest(dimensions=dimensions):
+                mesh = self._build_mesh(dimensions)
+
+                circle(
+                    mesh,
+                    x=self.center_x,
+                    y=self.center_y,
+                    radius=self.radius,
+                    buffer=self.buffer,
+                    element_size=4.0,
+                )
+
+                self.assertEqual(mesh.nodes.shape[1], dimensions)
+                pattern_nodes, _ = self.assert_pattern_circle_edges(mesh)
+                if dimensions == 3:
+                    np.testing.assert_array_equal(
+                        mesh.nodes[pattern_nodes, 2],
+                        np.zeros(pattern_nodes.size),
+                    )
+                self.assertEqual(len(_get_boundary(mesh)), 1)
+                report = MeshQualityChecker(mesh).check_jacobian()
+                self.assertEqual(report.invalid_indices.size, 0)
+                self.assertTrue(np.all(report.values > 0.0))
 
 
 class DeleteElementTests(unittest.TestCase):

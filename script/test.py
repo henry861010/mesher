@@ -75,7 +75,8 @@ def main():
         y = 0,
         radius = 50,
         buffer = element_size,
-        lines=[[[x_list[50], y_list[49]],[x_list[50], y_list[5]]]]
+        element_size = 2,
+        lines=[[[x_list[50], y_list[-1]], [x_list[50], y_list[0]]]]
     )
 
     checker = MeshQualityChecker(mesh)
