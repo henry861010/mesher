@@ -79,7 +79,7 @@ def main():
     )
 
     checker = MeshQualityChecker(mesh)
-    report = checker.check_scaled_jacobian(minimum=0.3)
+    report = checker.check_scaled_jacobian(minimum=0.4)
     low_quality_indices = report.failed_indices
 
     print(
