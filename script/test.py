@@ -83,10 +83,6 @@ def main():
     report = checker.check_scaled_jacobian(minimum=0.4)
     low_quality_indices = report.failed_indices
 
-    print(
-        f"Elements with Jacobian < {JACOBIAN_THRESHOLD}: "
-        f"{low_quality_indices.tolist()}"
-    )
     view_mesh(
         mesh, 
         element_indices = low_quality_indices,

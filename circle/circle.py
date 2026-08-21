@@ -1,5 +1,7 @@
 """Circle-based element selection helpers."""
 
+from typing import NamedTuple
+
 import numpy as np
 
 from mesh import Mesh
@@ -1321,292 +1323,264 @@ def _to_circle(
     return mesh
 
 
-def _mesh_inner_outer_circle(
-    mesh: Mesh,
-    inner_nodes,
-    outer_nodes,
-    lines=None,
-    closed: bool = True,
-) -> Mesh:
-    """Triangulate the strip between two concentric circular boundaries.
+class _StripScore(NamedTuple):
+    worst_mismatch: float
+    total_squared_mismatch: float
+    minimum_quality: float
 
-    The supplied node collections may have different sizes.  Closed rings may
-    be in any order; for open arcs the first and last entries are retained as
-    endpoints while the interior entries are reordered geometrically.  No
-    nodes are created or moved.  Tri3 elements are appended using the
-    repository convention ``[n0, n1, n2, n2]``.
 
-    Horizontal and vertical pattern segments are represented by forced edges
-    between existing inner/outer circle-intersection nodes.  A segment that
-    enters the annular material but cannot be represented without a new node
-    is rejected.  The mesh is mutated only after all validation succeeds.
-    """
-    if not isinstance(mesh, Mesh):
-        raise TypeError("mesh must be a Mesh instance")
+class _CircularStripMesher:
+    """Build a conforming triangular strip between two concentric boundaries."""
 
-    nodes = np.asarray(mesh.nodes)
-    elements = np.asarray(mesh.elements)
-    if nodes.ndim != 2 or nodes.shape[1] not in (2, 3):
-        raise ValueError("nodes must have shape (N, 2) or (N, 3)")
-    if (
-        not np.issubdtype(nodes.dtype, np.number)
-        or np.issubdtype(nodes.dtype, np.bool_)
-        or np.issubdtype(nodes.dtype, np.complexfloating)
-    ):
-        raise ValueError("nodes must have a real numeric dtype")
-    if elements.ndim != 2 or elements.shape[1] != 4:
-        raise ValueError("elements must have shape (M, 4)")
-    if not np.issubdtype(elements.dtype, np.integer) or np.issubdtype(
-        elements.dtype, np.bool_
-    ):
-        raise ValueError("elements must have an integer dtype")
-    if not isinstance(closed, (bool, np.bool_)):
-        raise TypeError("closed must be True or False")
-    is_closed = bool(closed)
+    def __init__(self, mesh, inner_nodes, outer_nodes, lines, closed):
+        self.mesh = mesh
+        self.inner_input = inner_nodes
+        self.outer_input = outer_nodes
+        self.lines_input = lines
+        self.closed_input = closed
 
-    try:
-        float_nodes = nodes.astype(np.float64, copy=False)
-    except (TypeError, ValueError, OverflowError) as error:
-        raise ValueError("nodes must be representable as float64") from error
-    if not np.all(np.isfinite(float_nodes)):
-        raise ValueError("nodes must contain finite float64 coordinates")
-    xy = float_nodes[:, :2]
+    def build(self):
+        self._read_inputs()
+        self._fit_concentric_geometry()
+        self._read_existing_topology()
+        self._order_boundaries()
+        self._validate_existing_geometry()
+        self._collect_pattern_connectors()
+        triangles = self._triangulate()
+        self._validate_completed_strip(triangles)
+        self._commit(triangles)
+        return self.mesh
 
-    def normalize_indices(values, name):
+    def _read_inputs(self):
+        if not isinstance(self.mesh, Mesh):
+            raise TypeError("mesh must be a Mesh instance")
+        if not isinstance(self.closed_input, (bool, np.bool_)):
+            raise TypeError("closed must be True or False")
+        self.closed = bool(self.closed_input)
+
+        self.nodes = np.asarray(self.mesh.nodes)
+        self.elements = np.asarray(self.mesh.elements)
+        if self.nodes.ndim != 2 or self.nodes.shape[1] not in (2, 3):
+            raise ValueError("nodes must have shape (N, 2) or (N, 3)")
+        if (
+            not np.issubdtype(self.nodes.dtype, np.number)
+            or np.issubdtype(self.nodes.dtype, np.bool_)
+            or np.issubdtype(self.nodes.dtype, np.complexfloating)
+        ):
+            raise ValueError("nodes must have a real numeric dtype")
+        if self.elements.ndim != 2 or self.elements.shape[1] != 4:
+            raise ValueError("elements must have shape (M, 4)")
+        if (
+            not np.issubdtype(self.elements.dtype, np.integer)
+            or np.issubdtype(self.elements.dtype, np.bool_)
+        ):
+            raise ValueError("elements must have an integer dtype")
+
+        try:
+            float_nodes = self.nodes.astype(np.float64, copy=False)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("nodes must be representable as float64") from error
+        if not np.all(np.isfinite(float_nodes)):
+            raise ValueError("nodes must contain finite float64 coordinates")
+        self.xy = float_nodes[:, :2]
+
+        self.inner_indices = self._normalize_indices(
+            self.inner_input, "inner_nodes"
+        )
+        self.outer_indices = self._normalize_indices(
+            self.outer_input, "outer_nodes"
+        )
+        if np.intersect1d(self.inner_indices, self.outer_indices).size:
+            raise ValueError("inner_nodes and outer_nodes must be disjoint")
+        if np.any(self.elements < 0) or np.any(
+            self.elements >= self.nodes.shape[0]
+        ):
+            raise ValueError("elements contain an out-of-range node index")
+
+        if self.lines_input is None:
+            self.pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
+            return
+        try:
+            pattern_lines = np.asarray(self.lines_input, dtype=np.float64)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("lines must have shape (L, 2, 2)") from error
+        if pattern_lines.size == 0:
+            if pattern_lines.shape not in ((0,), (0, 2, 2)):
+                raise ValueError("lines must have shape (L, 2, 2)")
+            pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
+        elif pattern_lines.ndim != 3 or pattern_lines.shape[1:] != (2, 2):
+            raise ValueError("lines must have shape (L, 2, 2)")
+        if not np.all(np.isfinite(pattern_lines)):
+            raise ValueError("lines must contain finite coordinates")
+        self.pattern_lines = pattern_lines
+
+    def _normalize_indices(self, values, name):
         indices = np.asarray(values)
         if indices.ndim != 1:
             raise ValueError(f"{name} must be a one-dimensional sequence")
-        minimum_size = 3 if is_closed else 2
-        if indices.size < minimum_size:
-            boundary_kind = "ring" if is_closed else "arc"
+        minimum = 3 if self.closed else 2
+        if indices.size < minimum:
+            kind = "ring" if self.closed else "arc"
             raise ValueError(
-                f"{name} must contain at least {minimum_size} nodes for a "
-                f"{boundary_kind}"
+                f"{name} must contain at least {minimum} nodes for a {kind}"
             )
-        if not np.issubdtype(indices.dtype, np.integer) or np.issubdtype(
-            indices.dtype, np.bool_
+        if (
+            not np.issubdtype(indices.dtype, np.integer)
+            or np.issubdtype(indices.dtype, np.bool_)
         ):
             raise TypeError(f"{name} must contain integers")
-        if np.any(indices < 0) or np.any(indices >= nodes.shape[0]):
+        if np.any(indices < 0) or np.any(indices >= self.nodes.shape[0]):
             raise IndexError(f"{name} contain an out-of-range node index")
-        indices = indices.astype(np.intp, copy=False)
+        indices = indices.astype(np.int64, copy=False)
         if np.unique(indices).size != indices.size:
             raise ValueError(f"{name} must not contain duplicates")
         return indices
 
-    inner_indices = normalize_indices(inner_nodes, "inner_nodes")
-    outer_indices = normalize_indices(outer_nodes, "outer_nodes")
-    if np.intersect1d(inner_indices, outer_indices).size:
-        raise ValueError("inner_nodes and outer_nodes must be disjoint")
+    def _fit_concentric_geometry(self):
+        selected = np.vstack(
+            (self.xy[self.inner_indices], self.xy[self.outer_indices])
+        )
+        origin = selected[0].copy()
+        centered = selected - origin
+        if not np.all(np.isfinite(centered)):
+            raise ValueError("selected circle-coordinate differences exceed float64")
+        scale = float(np.max(np.abs(centered)))
+        if scale == 0.0:
+            raise ValueError("the selected nodes do not determine circle radii")
 
-    if np.any(elements < 0) or np.any(elements >= nodes.shape[0]):
-        raise ValueError("elements contain an out-of-range node index")
-
-    # Validate the existing mixed Quad4 / padded-Tri3 topology and retain its
-    # directed edge uses for the final atomic compatibility check.
-    existing_edge_uses: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    existing_perimeters: list[tuple[int, ...]] = []
-    for element in elements:
-        values = [int(value) for value in element]
-        if values[2] == values[3]:
-            perimeter = values[:3]
-            if len(set(perimeter)) != 3:
-                raise ValueError(
-                    "a padded Tri3 must contain three distinct perimeter nodes"
-                )
-        else:
-            perimeter = values
-            if len(set(perimeter)) != 4:
-                raise ValueError("a Quad4 must contain four distinct nodes")
-        existing_perimeters.append(tuple(perimeter))
-        for start, end in zip(perimeter, perimeter[1:] + perimeter[:1]):
-            key = (min(start, end), max(start, end))
-            uses = existing_edge_uses.setdefault(key, [])
-            uses.append((start, end))
-            if len(uses) > 2:
-                raise ValueError(
-                    "mesh contains a non-manifold edge shared by more than "
-                    "two elements"
-                )
-    for uses in existing_edge_uses.values():
-        if len(uses) == 2 and uses[0] != uses[1][::-1]:
+        normalized = centered / scale
+        design = np.zeros((selected.shape[0], 4), dtype=np.float64)
+        design[:, :2] = 2.0 * normalized
+        design[: self.inner_indices.size, 2] = 1.0
+        design[self.inner_indices.size :, 3] = 1.0
+        rhs = np.einsum("ij,ij->i", normalized, normalized)
+        try:
+            fit, _, rank, _ = np.linalg.lstsq(design, rhs, rcond=None)
+        except np.linalg.LinAlgError as error:
+            raise ValueError("the common circle fit could not be solved") from error
+        if rank != 4 or not np.all(np.isfinite(fit)):
             raise ValueError(
-                "elements sharing an edge must traverse it in opposite directions"
+                "the selected arcs do not determine two concentric circles"
             )
 
-    # Fit both rings at once.  Centering/scaling keeps the four-column least
-    # squares problem stable for large translated coordinates.
-    selected_xy = np.vstack((xy[inner_indices], xy[outer_indices]))
-    # Use one observed point as the origin rather than summing absolute
-    # coordinates in a mean; the latter can overflow for large but finite
-    # translations.  Scaling by the local spread also keeps very small circles
-    # well-conditioned instead of forcing their design columns toward zero.
-    fit_origin = selected_xy[0].copy()
-    centered_xy = selected_xy - fit_origin
-    if not np.all(np.isfinite(centered_xy)):
-        raise ValueError("selected circle-coordinate differences exceed float64")
-    fit_scale = float(np.max(np.abs(centered_xy)))
-    if fit_scale == 0.0:
-        raise ValueError("the selected nodes do not determine circle radii")
-    normalized_xy = centered_xy / fit_scale
-    design = np.zeros((selected_xy.shape[0], 4), dtype=np.float64)
-    design[:, :2] = 2.0 * normalized_xy
-    design[: inner_indices.size, 2] = 1.0
-    design[inner_indices.size :, 3] = 1.0
-    right_hand_side = np.einsum("ij,ij->i", normalized_xy, normalized_xy)
-    try:
-        fit, _, fit_rank, _ = np.linalg.lstsq(
-            design, right_hand_side, rcond=None
+        normalized_center = fit[:2]
+        center_norm_squared = float(np.dot(normalized_center, normalized_center))
+        inner_squared = float(fit[2] + center_norm_squared)
+        outer_squared = float(fit[3] + center_norm_squared)
+        if (
+            not np.isfinite(inner_squared)
+            or not np.isfinite(outer_squared)
+            or inner_squared <= 0.0
+            or outer_squared <= 0.0
+        ):
+            raise ValueError("the fitted circle radii must be positive")
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            self.center = origin + scale * normalized_center
+            self.inner_radius = scale * np.sqrt(inner_squared)
+            self.outer_radius = scale * np.sqrt(outer_squared)
+        if (
+            not np.all(np.isfinite(self.center))
+            or not np.isfinite(self.inner_radius)
+            or not np.isfinite(self.outer_radius)
+        ):
+            raise ValueError("the fitted circle geometry exceeds float64")
+
+        coordinate_scale = max(
+            float(np.max(np.abs(selected))),
+            float(np.max(np.abs(self.center))),
+            self.outer_radius,
         )
-    except np.linalg.LinAlgError as error:
-        raise ValueError("the common circle fit could not be solved") from error
-    if fit_rank != 4 or not np.all(np.isfinite(fit)):
-        raise ValueError("the selected arcs do not determine two concentric circles")
-
-    normalized_center = fit[:2]
-    inner_radius_squared = fit[2] + np.dot(
-        normalized_center, normalized_center
-    )
-    outer_radius_squared = fit[3] + np.dot(
-        normalized_center, normalized_center
-    )
-    if (
-        not np.isfinite(inner_radius_squared)
-        or not np.isfinite(outer_radius_squared)
-        or inner_radius_squared <= 0.0
-        or outer_radius_squared <= 0.0
-    ):
-        raise ValueError("the fitted circle radii must be positive")
-
-    with np.errstate(over="ignore", invalid="ignore"):
-        center = fit_origin + fit_scale * normalized_center
-        inner_radius = fit_scale * np.sqrt(inner_radius_squared)
-        outer_radius = fit_scale * np.sqrt(outer_radius_squared)
-    if (
-        not np.all(np.isfinite(center))
-        or not np.isfinite(inner_radius)
-        or not np.isfinite(outer_radius)
-    ):
-        raise ValueError("the fitted circle geometry exceeds float64")
-    coordinate_scale = max(
-        float(np.max(np.abs(selected_xy))),
-        float(np.max(np.abs(center))),
-        outer_radius,
-    )
-    coordinate_ulp = abs(float(np.spacing(coordinate_scale)))
-    local_scale = max(fit_scale, outer_radius)
-    machine_tolerance = max(
-        8.0 * coordinate_ulp,
-        256.0 * np.finfo(np.float64).eps * local_scale,
-    )
-    geometry_tolerance = max(machine_tolerance, 1.0e-10 * outer_radius)
-    if inner_radius >= outer_radius - geometry_tolerance:
-        raise ValueError("inner_nodes must lie on the smaller fitted circle")
-
-    inner_distances = np.hypot(
-        xy[inner_indices, 0] - center[0],
-        xy[inner_indices, 1] - center[1],
-    )
-    outer_distances = np.hypot(
-        xy[outer_indices, 0] - center[0],
-        xy[outer_indices, 1] - center[1],
-    )
-    fit_tolerance = max(geometry_tolerance, 1.0e-9 * outer_radius)
-    if np.any(np.abs(inner_distances - inner_radius) > fit_tolerance) or np.any(
-        np.abs(outer_distances - outer_radius) > fit_tolerance
-    ):
-        raise ValueError("inner_nodes and outer_nodes must lie on concentric circles")
-    angular_tolerance = max(
-        256.0 * np.finfo(np.float64).eps,
-        geometry_tolerance / inner_radius,
-    )
-
-    def node_angles(indices):
-        offsets = xy[indices] - center
-        return np.mod(np.arctan2(offsets[:, 1], offsets[:, 0]), 2.0 * np.pi)
-
-    inner_angles = node_angles(inner_indices)
-    outer_angles = node_angles(outer_indices)
-
-    def closed_order(indices, angles, name):
-        order = np.lexsort((indices.astype(np.int64, copy=False), angles))
-        ordered = indices[order]
-        ordered_angles = angles[order]
-        steps = np.mod(
-            np.roll(ordered_angles, -1) - ordered_angles, 2.0 * np.pi
+        coordinate_ulp = abs(float(np.spacing(coordinate_scale)))
+        local_scale = max(scale, self.outer_radius)
+        machine_tolerance = max(
+            8.0 * coordinate_ulp,
+            256.0 * np.finfo(np.float64).eps * local_scale,
         )
-        if np.any(steps <= angular_tolerance):
-            raise ValueError(f"{name} contain duplicate angular positions")
-        return ordered.astype(np.int64, copy=False)
+        self.geometry_tolerance = max(
+            machine_tolerance, 1.0e-10 * self.outer_radius
+        )
+        if (
+            self.inner_radius
+            >= self.outer_radius - self.geometry_tolerance
+        ):
+            raise ValueError("inner_nodes must lie on the smaller fitted circle")
 
-    def open_orders(indices, angles, name):
-        interior_positions = np.arange(1, indices.size - 1, dtype=np.intp)
-        candidates = []
-        for start_position, end_position in ((0, indices.size - 1), (indices.size - 1, 0)):
-            start_angle = angles[start_position]
-            span = float(
-                np.mod(angles[end_position] - start_angle, 2.0 * np.pi)
+        inner_distances = np.hypot(
+            self.xy[self.inner_indices, 0] - self.center[0],
+            self.xy[self.inner_indices, 1] - self.center[1],
+        )
+        outer_distances = np.hypot(
+            self.xy[self.outer_indices, 0] - self.center[0],
+            self.xy[self.outer_indices, 1] - self.center[1],
+        )
+        self.fit_tolerance = max(
+            self.geometry_tolerance, 1.0e-9 * self.outer_radius
+        )
+        if np.any(
+            np.abs(inner_distances - self.inner_radius) > self.fit_tolerance
+        ) or np.any(
+            np.abs(outer_distances - self.outer_radius) > self.fit_tolerance
+        ):
+            raise ValueError(
+                "inner_nodes and outer_nodes must lie on concentric circles"
             )
-            if span <= angular_tolerance:
-                continue
-            interior_steps = np.mod(
-                angles[interior_positions] - start_angle, 2.0 * np.pi
-            )
-            if interior_steps.size and (
-                np.any(interior_steps <= angular_tolerance)
-                or np.any(interior_steps >= span - angular_tolerance)
-            ):
-                continue
-            interior_order = interior_positions[
-                np.lexsort(
-                    (
-                        indices[interior_positions].astype(np.int64, copy=False),
-                        interior_steps,
+        self.angular_tolerance = max(
+            256.0 * np.finfo(np.float64).eps,
+            self.geometry_tolerance / self.inner_radius,
+        )
+        offsets = self.xy - self.center
+        self.node_angles = np.mod(
+            np.arctan2(offsets[:, 1], offsets[:, 0]), 2.0 * np.pi
+        )
+
+    def _read_existing_topology(self):
+        self.existing_edge_uses = {}
+        self.existing_perimeters = []
+        for element in self.elements:
+            values = [int(value) for value in element]
+            if values[2] == values[3]:
+                perimeter = values[:3]
+                if len(set(perimeter)) != 3:
+                    raise ValueError(
+                        "a padded Tri3 must contain three distinct perimeter nodes"
                     )
+            else:
+                perimeter = values
+                if len(set(perimeter)) != 4:
+                    raise ValueError(
+                        "a Quad4 must contain four distinct nodes"
+                    )
+            self.existing_perimeters.append(tuple(perimeter))
+            for start, end in zip(
+                perimeter, perimeter[1:] + perimeter[:1]
+            ):
+                key = self._edge_key((start, end))
+                uses = self.existing_edge_uses.setdefault(key, [])
+                uses.append((start, end))
+                if len(uses) > 2:
+                    raise ValueError(
+                        "mesh contains a non-manifold edge shared by more than "
+                        "two elements"
+                    )
+        for uses in self.existing_edge_uses.values():
+            if len(uses) == 2 and uses[0] != uses[1][::-1]:
+                raise ValueError(
+                    "elements sharing an edge must traverse it in opposite "
+                    "directions"
                 )
-            ]
-            if interior_order.size:
-                sorted_steps = np.mod(
-                    angles[interior_order] - start_angle, 2.0 * np.pi
-                )
-                if np.any(np.diff(sorted_steps) <= angular_tolerance):
-                    continue
-            ordered = np.concatenate(
-                (
-                    indices[[start_position]],
-                    indices[interior_order],
-                    indices[[end_position]],
-                )
-            ).astype(np.int64, copy=False)
-            key = tuple(int(value) for value in ordered)
-            if all(tuple(int(value) for value in item) != key for item in candidates):
-                candidates.append(ordered)
-        if not candidates:
-            raise ValueError(
-                f"the interior nodes of {name} do not lie on one endpoint-bounded arc"
-            )
-        return candidates
 
-    if is_closed:
-        ordered_inner = closed_order(inner_indices, inner_angles, "inner_nodes")
-        ordered_outer = closed_order(outer_indices, outer_angles, "outer_nodes")
-        inner_order_candidates = [ordered_inner]
-        outer_order_candidates = [ordered_outer]
-    else:
-        inner_order_candidates = open_orders(
-            inner_indices, inner_angles, "inner_nodes"
-        )
-        outer_order_candidates = open_orders(
-            outer_indices, outer_angles, "outer_nodes"
-        )
+    @staticmethod
+    def _edge_key(edge):
+        first, second = map(int, edge)
+        return (min(first, second), max(first, second))
 
-    def cross_2d(first, second):
+    @staticmethod
+    def _cross(first, second):
         return first[0] * second[1] - first[1] * second[0]
 
-    def polygon_area(indices):
-        points = xy[np.asarray(indices, dtype=np.intp)]
-        # Translate before applying the shoelace formula.  This preserves the
-        # small local area of circles placed far from the coordinate origin.
+    def _polygon_area(self, indices):
+        points = self.xy[np.asarray(indices, dtype=np.intp)]
         points = points - points[0]
         following = np.roll(points, -1, axis=0)
         return 0.5 * float(
@@ -1616,27 +1590,37 @@ def _mesh_inner_outer_circle(
             )
         )
 
-    def boundary_edges(indices, include_closing):
-        edge_count = indices.size if include_closing else indices.size - 1
+    def _area_tolerance(self, vertex_count):
+        return (
+            self.geometry_tolerance
+            * max(self.geometry_tolerance, self.outer_radius)
+            * max(1, int(vertex_count))
+        )
+
+    @staticmethod
+    def _boundary_edges(indices, closing):
+        indices = np.asarray(indices, dtype=np.int64)
+        count = indices.size if closing else indices.size - 1
         return [
             (
                 int(indices[position]),
                 int(indices[(position + 1) % indices.size]),
             )
-            for position in range(edge_count)
+            for position in range(count)
         ]
 
-    def segment_relation(first_edge, second_edge):
-        first_start, first_end = xy[list(first_edge)]
-        second_start, second_end = xy[list(second_edge)]
+    def _segment_relation(self, first_edge, second_edge):
+        first_start, first_end = self.xy[list(first_edge)]
+        second_start, second_end = self.xy[list(second_edge)]
         first_vector = first_end - first_start
         second_vector = second_end - second_start
         length_scale = max(
-            geometry_tolerance,
+            self.geometry_tolerance,
             float(np.hypot(*first_vector)),
             float(np.hypot(*second_vector)),
         )
-        area_tolerance = geometry_tolerance * length_scale
+        area_tolerance = self.geometry_tolerance * length_scale
+
         if (
             max(
                 min(first_start[0], first_end[0]),
@@ -1646,7 +1630,7 @@ def _mesh_inner_outer_circle(
                 max(first_start[0], first_end[0]),
                 max(second_start[0], second_end[0]),
             )
-            + geometry_tolerance
+            + self.geometry_tolerance
             or max(
                 min(first_start[1], first_end[1]),
                 min(second_start[1], second_end[1]),
@@ -1655,16 +1639,16 @@ def _mesh_inner_outer_circle(
                 max(first_start[1], first_end[1]),
                 max(second_start[1], second_end[1]),
             )
-            + geometry_tolerance
+            + self.geometry_tolerance
         ):
             return "none"
 
-        orientations = np.array(
+        orientations = np.asarray(
             [
-                cross_2d(first_vector, second_start - first_start),
-                cross_2d(first_vector, second_end - first_start),
-                cross_2d(second_vector, first_start - second_start),
-                cross_2d(second_vector, first_end - second_start),
+                self._cross(first_vector, second_start - first_start),
+                self._cross(first_vector, second_end - first_start),
+                self._cross(second_vector, first_start - second_start),
+                self._cross(second_vector, first_end - second_start),
             ],
             dtype=np.float64,
         )
@@ -1672,12 +1656,13 @@ def _mesh_inner_outer_circle(
             axis = int(np.argmax(np.abs(first_vector)))
             first_interval = sorted((first_start[axis], first_end[axis]))
             second_interval = sorted((second_start[axis], second_end[axis]))
-            overlap = min(first_interval[1], second_interval[1]) - max(
-                first_interval[0], second_interval[0]
+            overlap = (
+                min(first_interval[1], second_interval[1])
+                - max(first_interval[0], second_interval[0])
             )
-            if overlap > geometry_tolerance:
+            if overlap > self.geometry_tolerance:
                 return "overlap"
-            if overlap >= -geometry_tolerance:
+            if overlap >= -self.geometry_tolerance:
                 return "touch"
             return "none"
 
@@ -1690,36 +1675,41 @@ def _mesh_inner_outer_circle(
             return "cross"
         return "none"
 
-    def edges_are_compatible(first_edge, second_edge):
-        first_key = tuple(sorted(first_edge))
-        second_key = tuple(sorted(second_edge))
-        if first_key == second_key:
+    def _edges_are_compatible(self, first_edge, second_edge):
+        if self._edge_key(first_edge) == self._edge_key(second_edge):
             return True
-        relation = segment_relation(first_edge, second_edge)
+        relation = self._segment_relation(first_edge, second_edge)
         if relation == "none":
             return True
         shared = set(first_edge).intersection(second_edge)
-        # Two straight segments that share an endpoint cannot meet again unless
-        # they overlap collinearly.  The general orientation test labels an
-        # ordinary non-collinear endpoint meeting as ``cross`` because one or
-        # more orientation samples are zero, so both ``touch`` and ``cross``
-        # are admissible here.
         return bool(shared) and relation != "overlap"
 
-    def point_on_segment_geometry(point, start, end):
+    def _point_on_segment(self, point, start, end):
         vector = end - start
         offset = point - start
         length = float(np.hypot(*vector))
-        if length <= geometry_tolerance:
-            return float(np.hypot(*offset)) <= geometry_tolerance
-        if abs(cross_2d(vector, offset)) > geometry_tolerance * length:
+        if length <= self.geometry_tolerance:
+            return float(np.hypot(*offset)) <= self.geometry_tolerance
+        if (
+            abs(self._cross(vector, offset))
+            > self.geometry_tolerance * length
+        ):
             return False
         projection = float(np.dot(offset, vector))
-        margin = geometry_tolerance * length
+        margin = self.geometry_tolerance * length
         return -margin <= projection <= length * length + margin
 
-    def point_in_polygon(point, polygon_ids):
-        polygon = xy[np.asarray(polygon_ids, dtype=np.intp)]
+    def _point_on_polygon(self, point, polygon_ids):
+        polygon = self.xy[np.asarray(polygon_ids, dtype=np.intp)]
+        return any(
+            self._point_on_segment(point, start, end)
+            for start, end in zip(
+                polygon, np.roll(polygon, -1, axis=0)
+            )
+        )
+
+    def _point_in_polygon(self, point, polygon_ids):
+        polygon = self.xy[np.asarray(polygon_ids, dtype=np.intp)]
         following = np.roll(polygon, -1, axis=0)
         crosses_y = (polygon[:, 1] > point[1]) != (
             following[:, 1] > point[1]
@@ -1736,23 +1726,19 @@ def _mesh_inner_outer_circle(
         )
         return bool(np.count_nonzero(point[0] < intersection_x) % 2)
 
-    def point_on_polygon_boundary(point, polygon_ids):
-        polygon = xy[np.asarray(polygon_ids, dtype=np.intp)]
-        return any(
-            point_on_segment_geometry(point, start, end)
-            for start, end in zip(polygon, np.roll(polygon, -1, axis=0))
-        )
-
-    def polygon_is_simple(polygon_ids):
-        edges = boundary_edges(np.asarray(polygon_ids, dtype=np.int64), True)
+    def _polygon_is_simple(self, polygon_ids):
+        edges = self._boundary_edges(polygon_ids, True)
         for first_position, first_edge in enumerate(edges):
             for second_position in range(first_position + 1, len(edges)):
                 second_edge = edges[second_position]
                 adjacent = (
                     second_position == first_position + 1
-                    or (first_position == 0 and second_position == len(edges) - 1)
+                    or (
+                        first_position == 0
+                        and second_position == len(edges) - 1
+                    )
                 )
-                relation = segment_relation(first_edge, second_edge)
+                relation = self._segment_relation(first_edge, second_edge)
                 if relation == "none":
                     continue
                 if adjacent and relation != "overlap":
@@ -1760,35 +1746,175 @@ def _mesh_inner_outer_circle(
                 return False
         return True
 
-    def polygon_area_tolerance(vertex_count):
-        return (
-            geometry_tolerance
-            * max(geometry_tolerance, outer_radius)
-            * max(1, int(vertex_count))
+    def _closed_order(self, indices, name):
+        angles = self.node_angles[indices]
+        order = np.lexsort((indices, angles))
+        ordered = indices[order]
+        ordered_angles = angles[order]
+        steps = np.mod(
+            np.roll(ordered_angles, -1) - ordered_angles, 2.0 * np.pi
         )
+        if np.any(steps <= self.angular_tolerance):
+            raise ValueError(f"{name} contain duplicate angular positions")
+        return ordered.astype(np.int64, copy=False)
 
-    # Open inputs can describe more than one endpoint-bounded circular arc.
-    # Material activity for a finite pattern segment must therefore be tested
-    # against the union of the geometrically viable strip polygons, rather
-    # than against the two complete circles.
-    open_geometry_candidates = []
-    if not is_closed:
-        for outer_order in outer_order_candidates:
-            for inner_order in inner_order_candidates:
-                boundary_polygon = np.concatenate(
-                    (outer_order, inner_order[::-1])
-                ).astype(np.int64, copy=False)
-                if polygon_area(boundary_polygon) <= polygon_area_tolerance(
-                    boundary_polygon.size
+    def _open_orders(self, indices, name):
+        angles = self.node_angles[indices]
+        interior_positions = np.arange(1, indices.size - 1, dtype=np.intp)
+        candidates = []
+        endpoints = ((0, indices.size - 1), (indices.size - 1, 0))
+        for start_position, end_position in endpoints:
+            start_angle = angles[start_position]
+            span = float(
+                np.mod(angles[end_position] - start_angle, 2.0 * np.pi)
+            )
+            if span <= self.angular_tolerance:
+                continue
+            steps = np.mod(
+                angles[interior_positions] - start_angle, 2.0 * np.pi
+            )
+            if steps.size and (
+                np.any(steps <= self.angular_tolerance)
+                or np.any(steps >= span - self.angular_tolerance)
+            ):
+                continue
+            order = interior_positions[
+                np.lexsort((indices[interior_positions], steps))
+            ]
+            if order.size:
+                sorted_steps = np.mod(
+                    angles[order] - start_angle, 2.0 * np.pi
+                )
+                if np.any(
+                    np.diff(sorted_steps) <= self.angular_tolerance
                 ):
                     continue
-                if not polygon_is_simple(boundary_polygon):
+            candidate = np.concatenate(
+                (
+                    indices[[start_position]],
+                    indices[order],
+                    indices[[end_position]],
+                )
+            ).astype(np.int64, copy=False)
+            signature = tuple(map(int, candidate))
+            if all(tuple(map(int, item)) != signature for item in candidates):
+                candidates.append(candidate)
+        if not candidates:
+            raise ValueError(
+                f"the interior nodes of {name} do not lie on one "
+                "endpoint-bounded arc"
+            )
+        return candidates
+
+    def _order_boundaries(self):
+        if self.closed:
+            self.inner_order_candidates = [
+                self._closed_order(self.inner_indices, "inner_nodes")
+            ]
+            self.outer_order_candidates = [
+                self._closed_order(self.outer_indices, "outer_nodes")
+            ]
+            self.open_geometry_candidates = []
+            return
+
+        self.inner_order_candidates = self._open_orders(
+            self.inner_indices, "inner_nodes"
+        )
+        self.outer_order_candidates = self._open_orders(
+            self.outer_indices, "outer_nodes"
+        )
+        self.open_geometry_candidates = []
+        for outer_order in self.outer_order_candidates:
+            for inner_order in self.inner_order_candidates:
+                boundary = np.concatenate(
+                    (outer_order, inner_order[::-1])
+                ).astype(np.int64, copy=False)
+                if self._polygon_area(boundary) <= self._area_tolerance(
+                    boundary.size
+                ):
                     continue
-                open_geometry_candidates.append(
-                    (outer_order, inner_order, boundary_polygon)
+                if not self._polygon_is_simple(boundary):
+                    continue
+                self.open_geometry_candidates.append(
+                    (outer_order, inner_order, boundary)
                 )
 
-    def axis_interval_enters_open_strip(
+    def _triangle_quality(self, first, second, third):
+        if len({int(first), int(second), int(third)}) != 3:
+            return -np.inf
+        points = self.xy[[first, second, third]]
+        forward = np.roll(points, -1, axis=0) - points
+        lengths = np.hypot(forward[:, 0], forward[:, 1])
+        if np.any(lengths <= self.geometry_tolerance):
+            return -np.inf
+        backward = np.roll(points, 1, axis=0) - points
+        corner_cross = (
+            forward[:, 0] * backward[:, 1]
+            - forward[:, 1] * backward[:, 0]
+        )
+        length_scale = max(
+            self.geometry_tolerance, float(np.max(lengths))
+        )
+        if np.any(
+            corner_cross <= self.geometry_tolerance * length_scale
+        ):
+            return -np.inf
+        quality = (
+            (2.0 / np.sqrt(3.0))
+            * corner_cross
+            / (lengths * np.roll(lengths, 1))
+        )
+        if not np.all(np.isfinite(quality)):
+            return -np.inf
+        return float(np.min(quality))
+
+    def _validate_existing_geometry(self):
+        for perimeter in self.existing_perimeters:
+            if not self._polygon_is_simple(perimeter):
+                raise ValueError(
+                    "existing elements must have simple perimeters"
+                )
+            if len(perimeter) == 3:
+                if not np.isfinite(self._triangle_quality(*perimeter)):
+                    raise ValueError(
+                        "existing Tri3 elements must be non-degenerate and "
+                        "counter-clockwise"
+                    )
+                continue
+
+            points = self.xy[np.asarray(perimeter, dtype=np.intp)]
+            forward = np.roll(points, -1, axis=0) - points
+            backward = np.roll(points, 1, axis=0) - points
+            forward_lengths = np.hypot(
+                forward[:, 0], forward[:, 1]
+            )
+            backward_lengths = np.hypot(
+                backward[:, 0], backward[:, 1]
+            )
+            if np.any(forward_lengths <= self.geometry_tolerance):
+                raise ValueError(
+                    "existing Quad4 elements have a zero-length edge"
+                )
+            corner_cross = (
+                forward[:, 0] * backward[:, 1]
+                - forward[:, 1] * backward[:, 0]
+            )
+            normalized_turn = corner_cross / (
+                forward_lengths * backward_lengths
+            )
+            if (
+                not np.all(np.isfinite(normalized_turn))
+                or np.any(
+                    normalized_turn <= self.angular_tolerance
+                )
+            ):
+                raise ValueError(
+                    "existing Quad4 elements must be non-degenerate and "
+                    "counter-clockwise"
+                )
+
+    def _axis_interval_enters_open_strip(
+        self,
         fixed_axis,
         varying_axis,
         fixed_value,
@@ -1796,19 +1922,24 @@ def _mesh_inner_outer_circle(
         interval_upper,
         tolerance,
     ):
-        if is_closed:
+        if self.closed:
             return interval_upper - interval_lower > tolerance
         if interval_upper - interval_lower <= tolerance:
             return False
 
-        for _, _, polygon_ids in open_geometry_candidates:
-            polygon = xy[np.asarray(polygon_ids, dtype=np.intp)]
+        for _, _, polygon_ids in self.open_geometry_candidates:
+            polygon = self.xy[np.asarray(polygon_ids, dtype=np.intp)]
             cuts = [float(interval_lower), float(interval_upper)]
-            for start, end in zip(polygon, np.roll(polygon, -1, axis=0)):
+            for start, end in zip(
+                polygon, np.roll(polygon, -1, axis=0)
+            ):
                 fixed_start = float(start[fixed_axis])
                 fixed_end = float(end[fixed_axis])
-                if fixed_value < min(fixed_start, fixed_end) - tolerance or (
-                    fixed_value > max(fixed_start, fixed_end) + tolerance
+                if (
+                    fixed_value
+                    < min(fixed_start, fixed_end) - tolerance
+                    or fixed_value
+                    > max(fixed_start, fixed_end) + tolerance
                 ):
                     continue
                 fixed_delta = fixed_end - fixed_start
@@ -1821,7 +1952,9 @@ def _mesh_inner_outer_circle(
                             )
                         )
                     continue
-                fraction = (fixed_value - fixed_start) / fixed_delta
+                fraction = (
+                    fixed_value - fixed_start
+                ) / fixed_delta
                 if -tolerance <= fraction <= 1.0 + tolerance:
                     cuts.append(
                         float(
@@ -1840,106 +1973,171 @@ def _mesh_inner_outer_circle(
             )
             distinct = []
             for value in clipped:
-                if not distinct or value - distinct[-1] > tolerance:
+                if (
+                    not distinct
+                    or value - distinct[-1] > tolerance
+                ):
                     distinct.append(value)
                 else:
-                    distinct[-1] = 0.5 * (distinct[-1] + value)
+                    distinct[-1] = 0.5 * (
+                        distinct[-1] + value
+                    )
             for lower, upper in zip(distinct, distinct[1:]):
                 if upper - lower <= tolerance:
                     continue
                 midpoint = np.empty(2, dtype=np.float64)
                 midpoint[fixed_axis] = fixed_value
                 midpoint[varying_axis] = 0.5 * (lower + upper)
-                if point_on_polygon_boundary(midpoint, polygon_ids):
+                if self._point_on_polygon(midpoint, polygon_ids):
                     continue
-                if point_in_polygon(midpoint, polygon_ids):
+                if self._point_in_polygon(midpoint, polygon_ids):
                     return True
         return False
 
-    # Normalize and analytically classify every axis-aligned pattern segment.
-    if lines is None:
-        pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
-    else:
-        try:
-            pattern_lines = np.asarray(lines, dtype=np.float64)
-        except (TypeError, ValueError, OverflowError) as error:
-            raise ValueError("lines must have shape (L, 2, 2)") from error
-        if pattern_lines.size == 0:
-            if pattern_lines.shape not in ((0,), (0, 2, 2)):
-                raise ValueError("lines must have shape (L, 2, 2)")
-            pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
-        elif pattern_lines.ndim != 3 or pattern_lines.shape[1:] != (2, 2):
-            raise ValueError("lines must have shape (L, 2, 2)")
-    if not np.all(np.isfinite(pattern_lines)):
-        raise ValueError("lines must contain finite coordinates")
-
-    def match_circle_node(indices, target, description, tolerance):
+    def _match_circle_node(
+        self, indices, target, description, tolerance
+    ):
         distances = np.hypot(
-            xy[indices, 0] - target[0], xy[indices, 1] - target[1]
+            self.xy[indices, 0] - target[0],
+            self.xy[indices, 1] - target[1],
         )
         matches = np.flatnonzero(distances <= tolerance)
         if matches.size == 0:
             return None
         if matches.size > 1:
             raise ValueError(
-                f"an active pattern segment has an ambiguous {description} node"
+                f"an active pattern segment has an ambiguous "
+                f"{description} node"
             )
         return int(indices[int(matches[0])])
 
-    forced_connector_set: set[tuple[int, int]] = set()
-    for segment in pattern_lines:
-        delta = segment[1] - segment[0]
-        axis_scales = np.max(np.abs(segment), axis=0)
-        axis_ulps = np.abs(np.spacing(axis_scales))
-        axis_tolerances = np.maximum(
-            geometry_tolerance,
-            8.0 * axis_ulps,
-        )
-        vertical = (
-            abs(delta[0]) <= axis_tolerances[0]
-            and abs(delta[1]) > axis_tolerances[1]
-        )
-        horizontal = (
-            abs(delta[1]) <= axis_tolerances[1]
-            and abs(delta[0]) > axis_tolerances[0]
-        )
-        if vertical == horizontal:
-            raise ValueError(
-                "each pattern segment must be non-zero and horizontal or vertical"
+    def _collect_pattern_connectors(self):
+        connectors = set()
+        for segment in self.pattern_lines:
+            delta = segment[1] - segment[0]
+            axis_scales = np.max(np.abs(segment), axis=0)
+            axis_tolerances = np.maximum(
+                self.geometry_tolerance,
+                8.0 * np.abs(np.spacing(axis_scales)),
+            )
+            vertical = (
+                abs(delta[0]) <= axis_tolerances[0]
+                and abs(delta[1]) > axis_tolerances[1]
+            )
+            horizontal = (
+                abs(delta[1]) <= axis_tolerances[1]
+                and abs(delta[0]) > axis_tolerances[0]
+            )
+            if vertical == horizontal:
+                raise ValueError(
+                    "each pattern segment must be non-zero and horizontal "
+                    "or vertical"
+                )
+
+            fixed_axis = 0 if vertical else 1
+            varying_axis = 1 - fixed_axis
+            fixed_tolerance = float(axis_tolerances[fixed_axis])
+            bound_tolerance = float(axis_tolerances[varying_axis])
+            intersection_tolerance = max(
+                self.geometry_tolerance, fixed_tolerance
+            )
+            fixed = float(segment[0, fixed_axis])
+            segment_lower = float(
+                np.min(segment[:, varying_axis])
+            )
+            segment_upper = float(
+                np.max(segment[:, varying_axis])
+            )
+            fixed_distance = abs(fixed - self.center[fixed_axis])
+            if (
+                fixed_distance
+                > self.outer_radius + fixed_tolerance
+            ):
+                continue
+            if (
+                abs(fixed_distance - self.outer_radius)
+                <= fixed_tolerance
+            ):
+                continue
+
+            normalized_outer = min(
+                fixed_distance / self.outer_radius, 1.0
+            )
+            outer_root = self.outer_radius * np.sqrt(
+                max(0.0, 1.0 - normalized_outer**2)
+            )
+            if outer_root <= intersection_tolerance:
+                continue
+            outer_lower = (
+                self.center[varying_axis] - outer_root
+            )
+            outer_upper = (
+                self.center[varying_axis] + outer_root
             )
 
-        fixed_axis = 0 if vertical else 1
-        varying_axis = 1 - fixed_axis
-        fixed_tolerance = float(axis_tolerances[fixed_axis])
-        bound_tolerance = float(axis_tolerances[varying_axis])
-        intersection_tolerance = max(geometry_tolerance, fixed_tolerance)
-        fixed = float(segment[0, fixed_axis])
-        segment_lower = float(np.min(segment[:, varying_axis]))
-        segment_upper = float(np.max(segment[:, varying_axis]))
-        fixed_distance = abs(fixed - center[fixed_axis])
-        if fixed_distance > outer_radius + fixed_tolerance:
-            continue
-        if abs(fixed_distance - outer_radius) <= fixed_tolerance:
-            # A tangent to the outer circle has no interval inside this strip.
-            # Classify it before computing the square root: a tiny circle-fit
-            # error is otherwise amplified into a spurious finite chord.
-            continue
+            if (
+                fixed_distance
+                > self.inner_radius + fixed_tolerance
+            ):
+                overlap_lower = max(segment_lower, outer_lower)
+                overlap_upper = min(segment_upper, outer_upper)
+                active = (
+                    overlap_upper - overlap_lower
+                    > intersection_tolerance
+                    and self._axis_interval_enters_open_strip(
+                        fixed_axis,
+                        varying_axis,
+                        fixed,
+                        overlap_lower,
+                        overlap_upper,
+                        intersection_tolerance,
+                    )
+                )
+                if active:
+                    raise ValueError(
+                        "an active pattern segment forms an unsupported "
+                        "outer-circle chord"
+                    )
+                continue
 
-        normalized_outer_offset = min(fixed_distance / outer_radius, 1.0)
-        outer_root = outer_radius * np.sqrt(
-            max(0.0, 1.0 - normalized_outer_offset**2)
-        )
-        if outer_root <= intersection_tolerance:
-            continue
-        outer_lower = center[varying_axis] - outer_root
-        outer_upper = center[varying_axis] + outer_root
+            if (
+                abs(fixed_distance - self.inner_radius)
+                <= fixed_tolerance
+            ):
+                inner_lower = inner_upper = self.center[varying_axis]
+            else:
+                normalized_inner = min(
+                    fixed_distance / self.inner_radius, 1.0
+                )
+                inner_root = self.inner_radius * np.sqrt(
+                    max(0.0, 1.0 - normalized_inner**2)
+                )
+                inner_lower = (
+                    self.center[varying_axis] - inner_root
+                )
+                inner_upper = (
+                    self.center[varying_axis] + inner_root
+                )
 
-        if fixed_distance > inner_radius + fixed_tolerance:
-            overlap_lower = max(segment_lower, outer_lower)
-            overlap_upper = min(segment_upper, outer_upper)
-            if overlap_upper - overlap_lower > intersection_tolerance and (
-                is_closed
-                or axis_interval_enters_open_strip(
+            for first_value, second_value in (
+                (outer_lower, inner_lower),
+                (inner_upper, outer_upper),
+            ):
+                branch_lower = min(first_value, second_value)
+                branch_upper = max(first_value, second_value)
+                if (
+                    branch_upper - branch_lower
+                    <= intersection_tolerance
+                ):
+                    continue
+                overlap_lower = max(segment_lower, branch_lower)
+                overlap_upper = min(segment_upper, branch_upper)
+                if (
+                    overlap_upper - overlap_lower
+                    <= intersection_tolerance
+                ):
+                    continue
+                active = self._axis_interval_enters_open_strip(
                     fixed_axis,
                     varying_axis,
                     fixed,
@@ -1947,167 +2145,155 @@ def _mesh_inner_outer_circle(
                     overlap_upper,
                     intersection_tolerance,
                 )
-            ):
-                raise ValueError(
-                    "an active pattern segment forms an unsupported outer-circle chord"
+                if not active:
+                    continue
+                if not (
+                    segment_lower
+                    <= branch_lower + bound_tolerance
+                    and segment_upper
+                    >= branch_upper - bound_tolerance
+                ):
+                    raise ValueError(
+                        "a pattern segment ends inside the annular material"
+                    )
+
+                if first_value in (outer_lower, outer_upper):
+                    outer_value = first_value
+                    inner_value = second_value
+                else:
+                    outer_value = second_value
+                    inner_value = first_value
+                outer_target = np.empty(2, dtype=np.float64)
+                inner_target = np.empty(2, dtype=np.float64)
+                outer_target[fixed_axis] = fixed
+                outer_target[varying_axis] = outer_value
+                inner_target[fixed_axis] = fixed
+                inner_target[varying_axis] = inner_value
+                match_tolerance = max(
+                    self.fit_tolerance,
+                    fixed_tolerance,
+                    self.geometry_tolerance,
                 )
-            continue
+                outer_node = self._match_circle_node(
+                    self.outer_indices,
+                    outer_target,
+                    "outer circle",
+                    match_tolerance,
+                )
+                inner_node = self._match_circle_node(
+                    self.inner_indices,
+                    inner_target,
+                    "inner circle",
+                    match_tolerance,
+                )
+                if outer_node is None:
+                    raise ValueError(
+                        "an active pattern segment reaches outer circle "
+                        "without a node"
+                    )
+                if inner_node is None:
+                    raise ValueError(
+                        "an active pattern segment reaches inner circle "
+                        "without a node"
+                    )
+                connectors.add((outer_node, inner_node))
 
-        if abs(fixed_distance - inner_radius) <= fixed_tolerance:
-            inner_lower = inner_upper = center[varying_axis]
-        else:
-            normalized_inner_offset = min(fixed_distance / inner_radius, 1.0)
-            inner_root = inner_radius * np.sqrt(
-                max(0.0, 1.0 - normalized_inner_offset**2)
-            )
-            inner_lower = center[varying_axis] - inner_root
-            inner_upper = center[varying_axis] + inner_root
+        self.forced_connectors = sorted(connectors)
+        for position, first in enumerate(self.forced_connectors):
+            for second in self.forced_connectors[position + 1 :]:
+                if not self._edges_are_compatible(first, second):
+                    raise ValueError(
+                        "pattern connectors cross or overlap"
+                    )
 
-        branches = (
-            (outer_lower, inner_lower),
-            (inner_upper, outer_upper),
+    def _connector_mismatch(self, outer_node, inner_node):
+        difference = (
+            self.node_angles[int(outer_node)]
+            - self.node_angles[int(inner_node)]
         )
-        for first_value, second_value in branches:
-            branch_lower = min(first_value, second_value)
-            branch_upper = max(first_value, second_value)
-            if branch_upper - branch_lower <= intersection_tolerance:
-                continue
-            overlap_lower = max(segment_lower, branch_lower)
-            overlap_upper = min(segment_upper, branch_upper)
-            if overlap_upper - overlap_lower <= intersection_tolerance:
-                continue
-            branch_is_active = is_closed or axis_interval_enters_open_strip(
-                fixed_axis,
-                varying_axis,
-                fixed,
-                overlap_lower,
-                overlap_upper,
-                intersection_tolerance,
-            )
-            if not branch_is_active:
-                continue
-            covers_branch = (
-                segment_lower <= branch_lower + bound_tolerance
-                and segment_upper >= branch_upper - bound_tolerance
-            )
-            if not covers_branch:
-                raise ValueError(
-                    "a pattern segment ends inside the annular material"
-                )
-
-            if first_value in (outer_lower, outer_upper):
-                outer_value, inner_value = first_value, second_value
-            else:
-                outer_value, inner_value = second_value, first_value
-            outer_target = np.empty(2, dtype=np.float64)
-            inner_target = np.empty(2, dtype=np.float64)
-            outer_target[fixed_axis] = fixed
-            outer_target[varying_axis] = outer_value
-            inner_target[fixed_axis] = fixed
-            inner_target[varying_axis] = inner_value
-            match_tolerance = max(
-                fit_tolerance,
-                fixed_tolerance,
-                geometry_tolerance,
-            )
-            outer_node = match_circle_node(
-                outer_indices,
-                outer_target,
-                "outer circle",
-                match_tolerance,
-            )
-            inner_node = match_circle_node(
-                inner_indices,
-                inner_target,
-                "inner circle",
-                match_tolerance,
-            )
-            if outer_node is None:
-                raise ValueError(
-                    "an active pattern segment reaches outer circle without a node"
-                )
-            if inner_node is None:
-                raise ValueError(
-                    "an active pattern segment reaches inner circle without a node"
-                )
-            forced_connector_set.add((outer_node, inner_node))
-
-    forced_connectors = sorted(forced_connector_set)
-    for first_position, first_connector in enumerate(forced_connectors):
-        for second_connector in forced_connectors[first_position + 1 :]:
-            if not edges_are_compatible(first_connector, second_connector):
-                raise ValueError("pattern connectors cross or overlap")
-
-    def triangle_quality(first, second, third):
-        if len({int(first), int(second), int(third)}) != 3:
-            return -np.inf
-        points = xy[[first, second, third]]
-        forward = np.roll(points, -1, axis=0) - points
-        lengths = np.hypot(forward[:, 0], forward[:, 1])
-        length_scale = max(geometry_tolerance, float(np.max(lengths)))
-        if np.any(lengths <= geometry_tolerance):
-            return -np.inf
-        backward = np.roll(points, 1, axis=0) - points
-        corner_cross = (
-            forward[:, 0] * backward[:, 1]
-            - forward[:, 1] * backward[:, 0]
+        return abs(
+            float(np.arctan2(np.sin(difference), np.cos(difference)))
         )
-        area_tolerance = geometry_tolerance * length_scale
-        if np.any(corner_cross <= area_tolerance):
-            return -np.inf
-        denominator = lengths * np.roll(lengths, 1)
-        qualities = (2.0 / np.sqrt(3.0)) * corner_cross / denominator
-        if not np.all(np.isfinite(qualities)):
-            return -np.inf
-        return float(np.min(qualities))
 
-    # The final overlap/topology checks assume ordinary simple, positively
-    # oriented element perimeters.  Validate that precondition explicitly so
-    # an inverted existing face cannot mask a geometric overlap by presenting
-    # the opposite half-edge direction.
-    for perimeter in existing_perimeters:
-        if not polygon_is_simple(perimeter):
-            raise ValueError("existing elements must have simple perimeters")
-        if len(perimeter) == 3:
-            if not np.isfinite(triangle_quality(*perimeter)):
-                raise ValueError(
-                    "existing Tri3 elements must be non-degenerate and "
-                    "counter-clockwise"
-                )
-            continue
-
-        points = xy[np.asarray(perimeter, dtype=np.intp)]
-        forward = np.roll(points, -1, axis=0) - points
-        backward = np.roll(points, 1, axis=0) - points
-        forward_lengths = np.hypot(forward[:, 0], forward[:, 1])
-        backward_lengths = np.hypot(backward[:, 0], backward[:, 1])
-        if np.any(forward_lengths <= geometry_tolerance):
-            raise ValueError("existing Quad4 elements have a zero-length edge")
-        corner_cross = (
-            forward[:, 0] * backward[:, 1]
-            - forward[:, 1] * backward[:, 0]
+    def _score_better(self, candidate, current):
+        """Compare path scores in connector-locality priority order."""
+        if current is None:
+            return True
+        angular_epsilon = max(
+            self.angular_tolerance, 32.0 * np.finfo(np.float64).eps
         )
-        normalized_turn = corner_cross / (forward_lengths * backward_lengths)
-        if not np.all(np.isfinite(normalized_turn)) or np.any(
-            normalized_turn <= angular_tolerance
+        if (
+            candidate.worst_mismatch
+            < current.worst_mismatch - angular_epsilon
         ):
-            raise ValueError(
-                "existing Quad4 elements must be non-degenerate and "
-                "counter-clockwise"
-            )
+            return True
+        if (
+            candidate.worst_mismatch
+            > current.worst_mismatch + angular_epsilon
+        ):
+            return False
+        sum_epsilon = max(
+            1.0e-15,
+            angular_epsilon
+            * max(
+                1.0,
+                abs(candidate.total_squared_mismatch),
+                abs(current.total_squared_mismatch),
+            ),
+        )
+        if (
+            candidate.total_squared_mismatch
+            < current.total_squared_mismatch - sum_epsilon
+        ):
+            return True
+        if (
+            candidate.total_squared_mismatch
+            > current.total_squared_mismatch + sum_epsilon
+        ):
+            return False
+        quality_epsilon = 1.0e-15
+        return (
+            candidate.minimum_quality
+            > current.minimum_quality + quality_epsilon
+        )
 
-    def triangulate_sector(outer_arc, inner_arc, connector_is_valid):
+    @staticmethod
+    def _combine_scores(scores):
+        return _StripScore(
+            max(score.worst_mismatch for score in scores),
+            sum(score.total_squared_mismatch for score in scores),
+            min(score.minimum_quality for score in scores),
+        )
+
+    def _triangulate_sector(
+        self, outer_arc, inner_arc, connector_is_valid
+    ):
+        """Return the globally most local monotone triangulation of one sector."""
         outer_arc = np.asarray(outer_arc, dtype=np.int64)
         inner_arc = np.asarray(inner_arc, dtype=np.int64)
         outer_steps = outer_arc.size - 1
         inner_steps = inner_arc.size - 1
-        best = np.full(
-            (outer_steps + 1, inner_steps + 1), -np.inf, dtype=np.float64
+        worst = np.full(
+            (outer_steps + 1, inner_steps + 1),
+            np.inf,
+            dtype=np.float64,
         )
-        predecessor = np.zeros(best.shape, dtype=np.int8)
-        if not connector_is_valid(int(outer_arc[0]), int(inner_arc[0])):
-            raise ValueError("a sector start connector leaves the annular material")
-        best[0, 0] = np.inf
+        total = np.full_like(worst, np.inf)
+        minimum_quality = np.full_like(worst, -np.inf)
+        predecessor = np.zeros(worst.shape, dtype=np.int8)
+
+        start_outer = int(outer_arc[0])
+        start_inner = int(inner_arc[0])
+        if not connector_is_valid(start_outer, start_inner):
+            raise ValueError(
+                "a sector start connector leaves the annular material"
+            )
+        start_mismatch = self._connector_mismatch(
+            start_outer, start_inner
+        )
+        worst[0, 0] = start_mismatch
+        total[0, 0] = start_mismatch**2
+        minimum_quality[0, 0] = np.inf
 
         for outer_position in range(outer_steps + 1):
             for inner_position in range(inner_steps + 1):
@@ -2117,79 +2303,157 @@ def _mesh_inner_outer_circle(
                 inner_node = int(inner_arc[inner_position])
                 if not connector_is_valid(outer_node, inner_node):
                     continue
+                mismatch = self._connector_mismatch(
+                    outer_node, inner_node
+                )
+                chosen_score = None
+                chosen_source = 0
 
-                chosen_score = -np.inf
-                chosen_predecessor = 0
-                if outer_position > 0 and not np.isneginf(
-                    best[outer_position - 1, inner_position]
+                if (
+                    outer_position > 0
+                    and np.isfinite(
+                        worst[outer_position - 1, inner_position]
+                    )
                 ):
-                    quality = triangle_quality(
+                    quality = self._triangle_quality(
                         int(outer_arc[outer_position - 1]),
                         outer_node,
                         inner_node,
                     )
                     if np.isfinite(quality):
-                        chosen_score = min(
-                            best[outer_position - 1, inner_position], quality
+                        candidate = _StripScore(
+                            max(
+                                worst[
+                                    outer_position - 1, inner_position
+                                ],
+                                mismatch,
+                            ),
+                            total[
+                                outer_position - 1, inner_position
+                            ]
+                            + mismatch**2,
+                            min(
+                                minimum_quality[
+                                    outer_position - 1, inner_position
+                                ],
+                                quality,
+                            ),
                         )
-                        chosen_predecessor = 1
+                        if self._score_better(
+                            candidate, chosen_score
+                        ):
+                            chosen_score = candidate
+                            chosen_source = 1
 
-                if inner_position > 0 and not np.isneginf(
-                    best[outer_position, inner_position - 1]
+                if (
+                    inner_position > 0
+                    and np.isfinite(
+                        worst[outer_position, inner_position - 1]
+                    )
                 ):
-                    quality = triangle_quality(
+                    quality = self._triangle_quality(
                         outer_node,
                         inner_node,
                         int(inner_arc[inner_position - 1]),
                     )
                     if np.isfinite(quality):
-                        candidate_score = min(
-                            best[outer_position, inner_position - 1], quality
+                        candidate = _StripScore(
+                            max(
+                                worst[
+                                    outer_position, inner_position - 1
+                                ],
+                                mismatch,
+                            ),
+                            total[
+                                outer_position, inner_position - 1
+                            ]
+                            + mismatch**2,
+                            min(
+                                minimum_quality[
+                                    outer_position,
+                                    inner_position - 1,
+                                ],
+                                quality,
+                            ),
                         )
-                        if candidate_score > chosen_score + 1.0e-15:
-                            chosen_score = candidate_score
-                            chosen_predecessor = 2
+                        if self._score_better(
+                            candidate, chosen_score
+                        ):
+                            chosen_score = candidate
+                            chosen_source = 2
 
-                if chosen_predecessor:
-                    best[outer_position, inner_position] = chosen_score
-                    predecessor[outer_position, inner_position] = chosen_predecessor
+                if chosen_score is not None:
+                    worst[outer_position, inner_position] = (
+                        chosen_score.worst_mismatch
+                    )
+                    total[outer_position, inner_position] = (
+                        chosen_score.total_squared_mismatch
+                    )
+                    minimum_quality[
+                        outer_position, inner_position
+                    ] = chosen_score.minimum_quality
+                    predecessor[
+                        outer_position, inner_position
+                    ] = chosen_source
 
-        final_score = best[outer_steps, inner_steps]
-        if not np.isfinite(final_score):
-            raise ValueError("the constrained sector has no valid triangulation")
+        score = _StripScore(
+            worst[outer_steps, inner_steps],
+            total[outer_steps, inner_steps],
+            minimum_quality[outer_steps, inner_steps],
+        )
+        if not np.all(np.isfinite(score)):
+            raise ValueError(
+                "the constrained sector has no valid triangulation"
+            )
 
         rows = []
         outer_position = outer_steps
         inner_position = inner_steps
         while outer_position or inner_position:
-            source = int(predecessor[outer_position, inner_position])
+            source = int(
+                predecessor[outer_position, inner_position]
+            )
             if source == 1:
-                first = int(outer_arc[outer_position - 1])
-                second = int(outer_arc[outer_position])
-                third = int(inner_arc[inner_position])
+                triangle = [
+                    int(outer_arc[outer_position - 1]),
+                    int(outer_arc[outer_position]),
+                    int(inner_arc[inner_position]),
+                ]
                 outer_position -= 1
             elif source == 2:
-                first = int(outer_arc[outer_position])
-                second = int(inner_arc[inner_position])
-                third = int(inner_arc[inner_position - 1])
+                triangle = [
+                    int(outer_arc[outer_position]),
+                    int(inner_arc[inner_position]),
+                    int(inner_arc[inner_position - 1]),
+                ]
                 inner_position -= 1
             else:
-                raise RuntimeError("missing triangulation predecessor")
-            rows.append([first, second, third, third])
+                raise RuntimeError(
+                    "missing triangulation predecessor"
+                )
+            rows.append([*triangle, triangle[-1]])
         rows.reverse()
-        return np.asarray(rows, dtype=np.int64), float(final_score)
+        return np.asarray(rows, dtype=np.int64), score
 
-    def protected_connector_check(edge, protected_edges):
-        for protected in protected_edges:
-            if not edges_are_compatible(edge, protected):
-                return False
-        return True
+    def _protected_connector_is_valid(self, edge, protected_edges):
+        return all(
+            self._edges_are_compatible(edge, protected)
+            for protected in protected_edges
+        )
 
-    def validate_closed_geometry(outer_order, inner_order):
-        if polygon_area(outer_order) <= 0.0 or polygon_area(inner_order) <= 0.0:
-            raise ValueError("circle rings could not be normalized counter-clockwise")
-        for order, name in ((outer_order, "outer"), (inner_order, "inner")):
-            points = xy[order]
+    def _validate_closed_boundaries(self, outer_order, inner_order):
+        if (
+            self._polygon_area(outer_order) <= 0.0
+            or self._polygon_area(inner_order) <= 0.0
+        ):
+            raise ValueError(
+                "circle rings could not be normalized counter-clockwise"
+            )
+        for order, name in (
+            (outer_order, "outer"),
+            (inner_order, "inner"),
+        ):
+            points = self.xy[order]
             previous = points - np.roll(points, 1, axis=0)
             following = np.roll(points, -1, axis=0) - points
             turns = (
@@ -2197,132 +2461,151 @@ def _mesh_inner_outer_circle(
                 - previous[:, 1] * following[:, 0]
             )
             local_scale = np.maximum(
-                geometry_tolerance,
+                self.geometry_tolerance,
                 np.maximum(
                     np.hypot(previous[:, 0], previous[:, 1]),
                     np.hypot(following[:, 0], following[:, 1]),
                 ),
             )
-            if np.any(turns <= geometry_tolerance * local_scale):
-                raise ValueError(f"the {name} circle polygon must be strictly convex")
+            if np.any(
+                turns <= self.geometry_tolerance * local_scale
+            ):
+                raise ValueError(
+                    f"the {name} circle polygon must be strictly convex"
+                )
 
-        outer_points = xy[outer_order]
-        inner_points = xy[inner_order]
-        for start, end in zip(outer_points, np.roll(outer_points, -1, axis=0)):
+        outer_points = self.xy[outer_order]
+        inner_points = self.xy[inner_order]
+        for start, end in zip(
+            outer_points, np.roll(outer_points, -1, axis=0)
+        ):
             edge = end - start
             signed_offsets = (
                 edge[0] * (inner_points[:, 1] - start[1])
                 - edge[1] * (inner_points[:, 0] - start[0])
             )
-            if np.any(
-                signed_offsets
-                <= geometry_tolerance
-                * max(geometry_tolerance, float(np.hypot(*edge)))
-            ):
+            threshold = self.geometry_tolerance * max(
+                self.geometry_tolerance, float(np.hypot(*edge))
+            )
+            if np.any(signed_offsets <= threshold):
                 raise ValueError(
-                    "the outer circle polygon must strictly contain the inner polygon"
+                    "the outer circle polygon must strictly contain the "
+                    "inner polygon"
                 )
 
-    chosen_outer_order = None
-    chosen_inner_order = None
-    chosen_boundary_polygon = None
-    chosen_triangles = None
-    chosen_score = -np.inf
-
-    if is_closed:
-        outer_order = outer_order_candidates[0]
-        inner_order = inner_order_candidates[0]
-        validate_closed_geometry(outer_order, inner_order)
-        protected_edges = [tuple(map(int, edge)) for edge in forced_connectors]
-        inner_position_by_node = {
-            int(node): position for position, node in enumerate(inner_order)
+    def _triangulate_closed(self):
+        outer_order = self.outer_order_candidates[0]
+        inner_order = self.inner_order_candidates[0]
+        self._validate_closed_boundaries(outer_order, inner_order)
+        protected = [tuple(edge) for edge in self.forced_connectors]
+        inner_positions = {
+            int(node): position
+            for position, node in enumerate(inner_order)
         }
+        connector_cache = {}
 
-        connector_cache: dict[tuple[int, int], bool] = {}
-
-        def closed_connector_is_valid(outer_node, inner_node):
-            key = (outer_node, inner_node)
-            cached = connector_cache.get(key)
-            if cached is not None:
-                return cached
-            edge = (outer_node, inner_node)
-            inner_position = inner_position_by_node[inner_node]
-            inner_point = xy[inner_node]
-            connector_vector = xy[outer_node] - inner_point
-            incoming = inner_point - xy[
-                inner_order[(inner_position - 1) % inner_order.size]
+        def connector_is_valid(outer_node, inner_node):
+            key = (int(outer_node), int(inner_node))
+            if key in connector_cache:
+                return connector_cache[key]
+            inner_position = inner_positions[int(inner_node)]
+            inner_point = self.xy[int(inner_node)]
+            vector = self.xy[int(outer_node)] - inner_point
+            incoming = inner_point - self.xy[
+                inner_order[
+                    (inner_position - 1) % inner_order.size
+                ]
             ]
             outgoing = (
-                xy[inner_order[(inner_position + 1) % inner_order.size]]
+                self.xy[
+                    inner_order[
+                        (inner_position + 1) % inner_order.size
+                    ]
+                ]
                 - inner_point
             )
             local_scale = max(
-                geometry_tolerance,
-                float(np.hypot(*connector_vector)),
+                self.geometry_tolerance,
+                float(np.hypot(*vector)),
                 float(np.hypot(*incoming)),
                 float(np.hypot(*outgoing)),
             )
-            cone_tolerance = geometry_tolerance * local_scale
-            # For a strictly convex CCW inner polygon, a ray from one of its
-            # vertices leaves the polygon exactly when it lies outside the
-            # vertex's interior tangent cone.  This O(1) test replaces an
-            # O(n) intersection scan for every DP grid state.
+            tolerance = self.geometry_tolerance * local_scale
             valid = (
-                cross_2d(incoming, connector_vector) < -cone_tolerance
-                or cross_2d(outgoing, connector_vector) < -cone_tolerance
+                self._cross(incoming, vector) < -tolerance
+                or self._cross(outgoing, vector) < -tolerance
             )
             if valid:
-                valid = protected_connector_check(edge, protected_edges)
+                valid = self._protected_connector_is_valid(
+                    key, protected
+                )
             connector_cache[key] = valid
             return valid
 
         outer_positions = {
-            int(node): position for position, node in enumerate(outer_order)
+            int(node): position
+            for position, node in enumerate(outer_order)
         }
-        inner_positions = {
-            int(node): position for position, node in enumerate(inner_order)
+        inner_position_by_node = {
+            int(node): position
+            for position, node in enumerate(inner_order)
         }
         anchors = [
             (
                 outer_positions[int(outer_node)],
-                inner_positions[int(inner_node)],
+                inner_position_by_node[int(inner_node)],
                 int(outer_node),
                 int(inner_node),
             )
-            for outer_node, inner_node in forced_connectors
+            for outer_node, inner_node in self.forced_connectors
         ]
-
         if not anchors:
-            best_seam = None
+            seam_candidates = []
             for outer_node in outer_order:
                 for inner_node in inner_order:
                     outer_node = int(outer_node)
                     inner_node = int(inner_node)
-                    if closed_connector_is_valid(outer_node, inner_node):
-                        distance = float(
-                            np.hypot(*(xy[outer_node] - xy[inner_node]))
+                    if not connector_is_valid(
+                        outer_node, inner_node
+                    ):
+                        continue
+                    seam_candidates.append(
+                        (
+                            self._connector_mismatch(
+                                outer_node, inner_node
+                            ),
+                            float(
+                                np.hypot(
+                                    *(
+                                        self.xy[outer_node]
+                                        - self.xy[inner_node]
+                                    )
+                                )
+                            ),
+                            outer_node,
+                            inner_node,
                         )
-                        candidate = (distance, outer_node, inner_node)
-                        if best_seam is None or candidate < best_seam:
-                            best_seam = candidate
-            if best_seam is None:
-                raise ValueError("no valid seam exists between the two circles")
-            _, outer_node, inner_node = best_seam
+                    )
+            if not seam_candidates:
+                raise ValueError(
+                    "no valid seam exists between the two circles"
+                )
+            _, _, outer_node, inner_node = min(seam_candidates)
             anchors = [
                 (
                     outer_positions[outer_node],
-                    inner_positions[inner_node],
+                    inner_position_by_node[inner_node],
                     outer_node,
                     inner_node,
                 )
             ]
 
-        anchor_order_candidates = []
         outer_count = outer_order.size
         inner_count = inner_order.size
+        anchor_orders = []
         for seed in anchors:
             seed_outer, seed_inner = seed[:2]
-            ordered_anchors = sorted(
+            ordered = sorted(
                 anchors,
                 key=lambda anchor: (
                     (anchor[0] - seed_outer) % outer_count,
@@ -2331,172 +2614,214 @@ def _mesh_inner_outer_circle(
                     anchor[3],
                 ),
             )
-            if ordered_anchors[0] != seed:
+            if ordered[0] != seed:
                 continue
             outer_offsets = np.asarray(
                 [
                     (anchor[0] - seed_outer) % outer_count
-                    for anchor in ordered_anchors
+                    for anchor in ordered
                 ],
                 dtype=np.int64,
             )
             inner_offsets = np.asarray(
                 [
                     (anchor[1] - seed_inner) % inner_count
-                    for anchor in ordered_anchors
+                    for anchor in ordered
                 ],
                 dtype=np.int64,
             )
-            if np.any(np.diff(outer_offsets) < 0) or np.any(
-                np.diff(inner_offsets) < 0
-            ):
+            if np.any(np.diff(inner_offsets) < 0):
                 continue
             if any(
-                outer_offsets[position] == outer_offsets[position - 1]
-                and inner_offsets[position] == inner_offsets[position - 1]
-                for position in range(1, len(ordered_anchors))
+                outer_offsets[position]
+                == outer_offsets[position - 1]
+                and inner_offsets[position]
+                == inner_offsets[position - 1]
+                for position in range(1, len(ordered))
             ):
                 continue
             signature = tuple(
-                (anchor[2], anchor[3]) for anchor in ordered_anchors
+                (anchor[2], anchor[3]) for anchor in ordered
             )
-            anchor_order_candidates.append(
+            anchor_orders.append(
                 (
                     signature,
                     seed_outer,
                     seed_inner,
-                    ordered_anchors,
+                    ordered,
                     outer_offsets,
                     inner_offsets,
                 )
             )
-        if not anchor_order_candidates:
-            raise ValueError("pattern connectors do not preserve cyclic order")
+        if not anchor_orders:
+            raise ValueError(
+                "pattern connectors do not preserve cyclic order"
+            )
 
-        chosen_anchor_signature = None
+        best_rows = None
+        best_score = None
+        best_signature = None
         for (
             signature,
             seed_outer,
             seed_inner,
-            ordered_anchors,
+            ordered,
             outer_offsets,
             inner_offsets,
-        ) in anchor_order_candidates:
-            extended_outer = np.append(outer_offsets, outer_count)
-            extended_inner = np.append(inner_offsets, inner_count)
+        ) in anchor_orders:
+            outer_limits = np.append(outer_offsets, outer_count)
+            inner_limits = np.append(inner_offsets, inner_count)
             sector_rows = []
             sector_scores = []
             try:
-                for position in range(len(ordered_anchors)):
-                    outer_start = int(extended_outer[position])
-                    outer_end = int(extended_outer[position + 1])
-                    inner_start = int(extended_inner[position])
-                    inner_end = int(extended_inner[position + 1])
+                for position in range(len(ordered)):
+                    outer_start = int(outer_limits[position])
+                    outer_end = int(outer_limits[position + 1])
+                    inner_start = int(inner_limits[position])
+                    inner_end = int(inner_limits[position + 1])
                     outer_arc = outer_order[
-                        (seed_outer + np.arange(outer_start, outer_end + 1))
+                        (
+                            seed_outer
+                            + np.arange(
+                                outer_start, outer_end + 1
+                            )
+                        )
                         % outer_count
                     ]
                     inner_arc = inner_order[
-                        (seed_inner + np.arange(inner_start, inner_end + 1))
+                        (
+                            seed_inner
+                            + np.arange(
+                                inner_start, inner_end + 1
+                            )
+                        )
                         % inner_count
                     ]
-                    rows, score = triangulate_sector(
-                        outer_arc, inner_arc, closed_connector_is_valid
+                    rows, score = self._triangulate_sector(
+                        outer_arc, inner_arc, connector_is_valid
                     )
                     sector_rows.append(rows)
                     sector_scores.append(score)
             except ValueError:
                 continue
 
-            candidate_score = min(sector_scores)
-            if candidate_score > chosen_score + 1.0e-15 or (
-                abs(candidate_score - chosen_score) <= 1.0e-15
+            score = self._combine_scores(sector_scores)
+            if self._score_better(score, best_score) or (
+                best_score is not None
+                and not self._score_better(best_score, score)
+                and not self._score_better(score, best_score)
                 and (
-                    chosen_anchor_signature is None
-                    or signature < chosen_anchor_signature
+                    best_signature is None
+                    or signature < best_signature
                 )
             ):
-                chosen_triangles = np.concatenate(sector_rows, axis=0)
-                chosen_score = candidate_score
-                chosen_anchor_signature = signature
-        if chosen_triangles is None:
+                best_rows = np.concatenate(sector_rows, axis=0)
+                best_score = score
+                best_signature = signature
+
+        if best_rows is None:
             raise ValueError(
                 "pattern connectors do not bound triangulatable sectors"
             )
-        chosen_outer_order = outer_order
-        chosen_inner_order = inner_order
-    else:
-        configuration_errors = []
-        for (
-            outer_order,
-            inner_order,
-            boundary_polygon,
-        ) in open_geometry_candidates:
+        self.chosen_outer_order = outer_order
+        self.chosen_inner_order = inner_order
+        self.chosen_boundary_polygon = None
+        return best_rows
 
-            polygon_edges = boundary_edges(boundary_polygon, True)
+    def _triangulate_open(self):
+        best_rows = None
+        best_score = None
+        best_signature = None
+        best_orders = None
+        errors = []
+
+        for outer_order, inner_order, boundary in (
+            self.open_geometry_candidates
+        ):
+            polygon_edges = self._boundary_edges(boundary, True)
             side_edges = [
                 (int(outer_order[0]), int(inner_order[0])),
                 (int(outer_order[-1]), int(inner_order[-1])),
             ]
-            side_edge_keys = {tuple(sorted(edge)) for edge in side_edges}
-            protected_edges = [
-                *[tuple(map(int, edge)) for edge in forced_connectors],
+            side_keys = {
+                self._edge_key(edge) for edge in side_edges
+            }
+            protected = [
+                *[tuple(edge) for edge in self.forced_connectors],
                 *side_edges,
             ]
             if any(
-                not edges_are_compatible(first, second)
-                for first_position, first in enumerate(protected_edges)
-                for second in protected_edges[first_position + 1 :]
+                not self._edges_are_compatible(first, second)
+                for position, first in enumerate(protected)
+                for second in protected[position + 1 :]
             ):
                 continue
 
+            edge_array = np.asarray(polygon_edges, dtype=np.int64)
+            edge_points = self.xy[edge_array]
+            edge_minimums = np.min(edge_points, axis=1)
+            edge_maximums = np.max(edge_points, axis=1)
             connector_cache = {}
 
-            polygon_edge_array = np.asarray(polygon_edges, dtype=np.int64)
-            polygon_edge_points = xy[polygon_edge_array]
-            polygon_edge_mins = np.min(polygon_edge_points, axis=1)
-            polygon_edge_maxs = np.max(polygon_edge_points, axis=1)
-
-            def open_connector_is_valid(outer_node, inner_node):
-                key = (outer_node, inner_node)
-                cached = connector_cache.get(key)
-                if cached is not None:
-                    return cached
-                edge = (outer_node, inner_node)
-                if tuple(sorted(edge)) in side_edge_keys:
+            def connector_is_valid(outer_node, inner_node):
+                key = (int(outer_node), int(inner_node))
+                if key in connector_cache:
+                    return connector_cache[key]
+                if self._edge_key(key) in side_keys:
                     connector_cache[key] = True
                     return True
-                edge_points = xy[list(edge)]
-                edge_min = np.min(edge_points, axis=0)
-                edge_max = np.max(edge_points, axis=0)
+                points = self.xy[list(key)]
+                minimum = np.min(points, axis=0)
+                maximum = np.max(points, axis=0)
                 candidates = np.flatnonzero(
                     np.all(
-                        (edge_min <= polygon_edge_maxs + geometry_tolerance)
-                        & (edge_max >= polygon_edge_mins - geometry_tolerance),
+                        (
+                            minimum
+                            <= edge_maximums
+                            + self.geometry_tolerance
+                        )
+                        & (
+                            maximum
+                            >= edge_minimums
+                            - self.geometry_tolerance
+                        ),
                         axis=1,
                     )
                 )
                 valid = True
                 for position in candidates:
                     polygon_edge = polygon_edges[int(position)]
-                    if tuple(sorted(edge)) == tuple(sorted(polygon_edge)):
+                    if (
+                        self._edge_key(key)
+                        == self._edge_key(polygon_edge)
+                    ):
                         continue
-                    if not edges_are_compatible(edge, polygon_edge):
+                    if not self._edges_are_compatible(
+                        key, polygon_edge
+                    ):
                         valid = False
                         break
                 if valid:
-                    midpoint = 0.5 * (xy[outer_node] + xy[inner_node])
-                    valid = point_in_polygon(midpoint, boundary_polygon)
+                    midpoint = 0.5 * (
+                        self.xy[key[0]] + self.xy[key[1]]
+                    )
+                    valid = self._point_in_polygon(
+                        midpoint, boundary
+                    )
                 if valid:
-                    valid = protected_connector_check(edge, protected_edges)
+                    valid = self._protected_connector_is_valid(
+                        key, protected
+                    )
                 connector_cache[key] = valid
                 return valid
 
             outer_positions = {
-                int(node): position for position, node in enumerate(outer_order)
+                int(node): position
+                for position, node in enumerate(outer_order)
             }
             inner_positions = {
-                int(node): position for position, node in enumerate(inner_order)
+                int(node): position
+                for position, node in enumerate(inner_order)
             }
             anchors = [(0, 0)]
             anchors.extend(
@@ -2504,333 +2829,427 @@ def _mesh_inner_outer_circle(
                     outer_positions[int(outer_node)],
                     inner_positions[int(inner_node)],
                 )
-                for outer_node, inner_node in forced_connectors
+                for outer_node, inner_node
+                in self.forced_connectors
             )
-            anchors.append((outer_order.size - 1, inner_order.size - 1))
+            anchors.append(
+                (outer_order.size - 1, inner_order.size - 1)
+            )
             anchors = sorted(set(anchors))
-            if anchors[0] != (0, 0) or anchors[-1] != (
-                outer_order.size - 1,
-                inner_order.size - 1,
-            ):
-                continue
-            if any(
-                anchors[position][1] < anchors[position - 1][1]
-                for position in range(1, len(anchors))
+            if (
+                anchors[0] != (0, 0)
+                or anchors[-1]
+                != (
+                    outer_order.size - 1,
+                    inner_order.size - 1,
+                )
+                or any(
+                    anchors[position][1]
+                    < anchors[position - 1][1]
+                    for position in range(1, len(anchors))
+                )
             ):
                 continue
 
+            sector_rows = []
+            sector_scores = []
             try:
-                sector_rows = []
-                sector_scores = []
                 for start, end in zip(anchors, anchors[1:]):
-                    outer_arc = outer_order[start[0] : end[0] + 1]
-                    inner_arc = inner_order[start[1] : end[1] + 1]
-                    rows, score = triangulate_sector(
-                        outer_arc, inner_arc, open_connector_is_valid
+                    rows, score = self._triangulate_sector(
+                        outer_order[start[0] : end[0] + 1],
+                        inner_order[start[1] : end[1] + 1],
+                        connector_is_valid,
                     )
                     sector_rows.append(rows)
                     sector_scores.append(score)
-                candidate_triangles = np.concatenate(sector_rows, axis=0)
             except ValueError as error:
-                configuration_errors.append(error)
+                errors.append(error)
                 continue
 
-            score = min(sector_scores)
+            score = self._combine_scores(sector_scores)
             signature = (
-                tuple(int(value) for value in outer_order),
-                tuple(int(value) for value in inner_order),
+                tuple(map(int, outer_order)),
+                tuple(map(int, inner_order)),
             )
-            chosen_signature = (
-                tuple(int(value) for value in chosen_outer_order)
-                if chosen_outer_order is not None
-                else (),
-                tuple(int(value) for value in chosen_inner_order)
-                if chosen_inner_order is not None
-                else (),
-            )
-            if score > chosen_score + 1.0e-15 or (
-                abs(score - chosen_score) <= 1.0e-15
-                and (chosen_outer_order is None or signature < chosen_signature)
+            if self._score_better(score, best_score) or (
+                best_score is not None
+                and not self._score_better(best_score, score)
+                and not self._score_better(score, best_score)
+                and (
+                    best_signature is None
+                    or signature < best_signature
+                )
             ):
-                chosen_score = score
-                chosen_triangles = candidate_triangles
-                chosen_outer_order = outer_order
-                chosen_inner_order = inner_order
-                chosen_boundary_polygon = boundary_polygon
+                best_rows = np.concatenate(sector_rows, axis=0)
+                best_score = score
+                best_signature = signature
+                best_orders = (
+                    outer_order,
+                    inner_order,
+                    boundary,
+                )
 
-        if chosen_triangles is None:
-            if configuration_errors:
+        if best_rows is None:
+            if errors:
                 raise ValueError(
-                    "the open circular arcs have no valid constrained triangulation"
-                ) from configuration_errors[-1]
-            raise ValueError("the open circular arcs do not bound a simple strip")
-
-    expected_triangle_count = (
-        chosen_outer_order.size + chosen_inner_order.size
-        if is_closed
-        else chosen_outer_order.size + chosen_inner_order.size - 2
-    )
-    if chosen_triangles.shape != (expected_triangle_count, 4):
-        raise RuntimeError("the triangulation produced an unexpected element count")
-    if np.any(chosen_triangles[:, 2] != chosen_triangles[:, 3]):
-        raise RuntimeError("the triangulation did not produce padded Tri3 elements")
-    if len(
-        {
-            tuple(sorted(int(value) for value in row[:3]))
-            for row in chosen_triangles
-        }
-    ) != chosen_triangles.shape[0]:
-        raise ValueError("the triangulation contains duplicate triangles")
-
-    # Build the new half-edge incidence and validate its boundary exactly.
-    new_edge_uses: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    triangle_area = 0.0
-    for row in chosen_triangles:
-        first, second, third = (int(value) for value in row[:3])
-        quality = triangle_quality(first, second, third)
-        if not np.isfinite(quality) or quality <= 0.0:
-            raise ValueError("the triangulation contains an invalid triangle")
-        triangle_area += 0.5 * cross_2d(
-            xy[second] - xy[first], xy[third] - xy[first]
-        )
-        for start, end in (
-            (first, second),
-            (second, third),
-            (third, first),
-        ):
-            key = (min(start, end), max(start, end))
-            new_edge_uses.setdefault(key, []).append((start, end))
-
-    outer_ring_edges = boundary_edges(chosen_outer_order, is_closed)
-    inner_ring_edges = boundary_edges(chosen_inner_order, is_closed)
-    expected_boundary_keys = {
-        tuple(sorted(edge)) for edge in (*outer_ring_edges, *inner_ring_edges)
-    }
-    open_side_keys = set()
-    if not is_closed:
-        open_side_keys = {
-            tuple(
-                sorted(
-                    (
-                        int(chosen_outer_order[0]),
-                        int(chosen_inner_order[0]),
-                    )
-                )
-            ),
-            tuple(
-                sorted(
-                    (
-                        int(chosen_outer_order[-1]),
-                        int(chosen_inner_order[-1]),
-                    )
-                )
-            ),
-        }
-        expected_boundary_keys.update(open_side_keys)
-
-    for key, uses in new_edge_uses.items():
-        expected_count = 1 if key in expected_boundary_keys else 2
-        if len(uses) != expected_count:
-            raise ValueError("the triangulation has an unexpected boundary edge")
-        if len(uses) == 2 and uses[0] != uses[1][::-1]:
+                    "the open circular arcs have no valid constrained "
+                    "triangulation"
+                ) from errors[-1]
             raise ValueError(
-                "new triangles sharing an edge must traverse it oppositely"
+                "the open circular arcs do not bound a simple strip"
             )
-    for key in expected_boundary_keys:
-        if len(new_edge_uses.get(key, ())) != 1:
-            raise ValueError("a circular boundary edge is missing from the mesh")
-    for connector in forced_connectors:
-        key = tuple(sorted(connector))
-        expected_count = 1 if key in open_side_keys else 2
-        if len(new_edge_uses.get(key, ())) != expected_count:
-            raise ValueError("a pattern connector is missing from the triangulation")
+        (
+            self.chosen_outer_order,
+            self.chosen_inner_order,
+            self.chosen_boundary_polygon,
+        ) = best_orders
+        return best_rows
 
-    def geometry_bounds(connectivity):
-        connectivity = [tuple(int(value) for value in item) for item in connectivity]
+    def _triangulate(self):
+        if self.closed:
+            return self._triangulate_closed()
+        return self._triangulate_open()
+
+    def _geometry_bounds(self, connectivity):
+        connectivity = [
+            tuple(map(int, item)) for item in connectivity
+        ]
         if not connectivity:
             empty = np.empty((0, 2), dtype=np.float64)
             return empty, empty
-        minimums = np.empty((len(connectivity), 2), dtype=np.float64)
-        maximums = np.empty((len(connectivity), 2), dtype=np.float64)
+        minimums = np.empty((len(connectivity), 2))
+        maximums = np.empty((len(connectivity), 2))
         for position, item in enumerate(connectivity):
-            points = xy[np.asarray(item, dtype=np.intp)]
+            points = self.xy[np.asarray(item, dtype=np.intp)]
             minimums[position] = np.min(points, axis=0)
             maximums[position] = np.max(points, axis=0)
         return minimums, maximums
 
-    def bounding_box_candidates(
+    def _bbox_pairs(
+        self,
         first_minimums,
         first_maximums,
         second_minimums,
         second_maximums,
-        *,
         same_collection=False,
     ):
         chunk_size = 256
-        for offset in range(0, first_minimums.shape[0], chunk_size):
-            stop = min(offset + chunk_size, first_minimums.shape[0])
+        for offset in range(
+            0, first_minimums.shape[0], chunk_size
+        ):
+            stop = min(
+                offset + chunk_size, first_minimums.shape[0]
+            )
             overlaps = np.all(
                 (
                     first_minimums[offset:stop, None, :]
-                    <= second_maximums[None, :, :] + geometry_tolerance
+                    <= second_maximums[None, :, :]
+                    + self.geometry_tolerance
                 )
                 & (
                     first_maximums[offset:stop, None, :]
-                    >= second_minimums[None, :, :] - geometry_tolerance
+                    >= second_minimums[None, :, :]
+                    - self.geometry_tolerance
                 ),
                 axis=2,
             )
-            first_positions, second_positions = np.nonzero(overlaps)
-            first_positions = first_positions + offset
+            first_positions, second_positions = np.nonzero(
+                overlaps
+            )
+            first_positions += offset
             if same_collection:
                 keep = second_positions > first_positions
                 first_positions = first_positions[keep]
                 second_positions = second_positions[keep]
             yield first_positions, second_positions
 
-    unique_new_edges = [uses[0] for uses in new_edge_uses.values()]
-    new_edge_minimums, new_edge_maximums = geometry_bounds(unique_new_edges)
-    for first_positions, second_positions in bounding_box_candidates(
-        new_edge_minimums,
-        new_edge_maximums,
-        new_edge_minimums,
-        new_edge_maximums,
-        same_collection=True,
-    ):
-        for first_position, second_position in zip(
-            first_positions, second_positions
-        ):
-            if not edges_are_compatible(
-                unique_new_edges[int(first_position)],
-                unique_new_edges[int(second_position)],
+    def _validate_completed_strip(self, triangles):
+        expected_count = (
+            self.chosen_outer_order.size
+            + self.chosen_inner_order.size
+            if self.closed
+            else self.chosen_outer_order.size
+            + self.chosen_inner_order.size
+            - 2
+        )
+        if triangles.shape != (expected_count, 4):
+            raise RuntimeError(
+                "the triangulation produced an unexpected element count"
+            )
+        if np.any(triangles[:, 2] != triangles[:, 3]):
+            raise RuntimeError(
+                "the triangulation did not produce padded Tri3 elements"
+            )
+        triangle_signatures = {
+            tuple(sorted(map(int, row[:3]))) for row in triangles
+        }
+        if len(triangle_signatures) != triangles.shape[0]:
+            raise ValueError(
+                "the triangulation contains duplicate triangles"
+            )
+
+        new_edge_uses = {}
+        triangle_area = 0.0
+        for row in triangles:
+            first, second, third = map(int, row[:3])
+            quality = self._triangle_quality(
+                first, second, third
+            )
+            if not np.isfinite(quality) or quality <= 0.0:
+                raise ValueError(
+                    "the triangulation contains an invalid triangle"
+                )
+            triangle_area += 0.5 * self._cross(
+                self.xy[second] - self.xy[first],
+                self.xy[third] - self.xy[first],
+            )
+            for edge in (
+                (first, second),
+                (second, third),
+                (third, first),
             ):
-                raise ValueError(
-                    "non-neighbouring generated edges cross or overlap"
-                )
+                new_edge_uses.setdefault(
+                    self._edge_key(edge), []
+                ).append(edge)
 
-    # Node-ID half-edge incidence cannot detect a geometric T-junction,
-    # crossing, or overlap that uses different global node IDs.  Compare the
-    # generated edges with the existing mesh using a bbox broad phase before
-    # the authoritative combined half-edge check below.
-    unique_existing_edges = [
-        uses[0] for uses in existing_edge_uses.values()
-    ]
-    existing_edge_minimums, existing_edge_maximums = geometry_bounds(
-        unique_existing_edges
-    )
-    for new_positions, existing_positions in bounding_box_candidates(
-        new_edge_minimums,
-        new_edge_maximums,
-        existing_edge_minimums,
-        existing_edge_maximums,
-    ):
-        for new_position, existing_position in zip(
-            new_positions, existing_positions
-        ):
-            new_edge = unique_new_edges[int(new_position)]
-            existing_edge = unique_existing_edges[int(existing_position)]
-            if tuple(sorted(new_edge)) == tuple(sorted(existing_edge)):
-                continue
-            if not edges_are_compatible(new_edge, existing_edge):
-                raise ValueError(
-                    "generated edges intersect existing mesh geometry"
-                )
-
-    def point_strictly_inside_polygon(point, polygon_ids):
-        if point_on_polygon_boundary(point, polygon_ids):
-            return False
-        return point_in_polygon(point, polygon_ids)
-
-    # Edge tests do not see the case where one positive-area element lies
-    # wholly inside another.  A boundary-intersection test plus strict vertex
-    # containment is complete for the simple Tri3/Quad4 perimeters supported
-    # by this repository.
-    new_perimeters = [
-        tuple(int(value) for value in row[:3]) for row in chosen_triangles
-    ]
-    existing_element_minimums, existing_element_maximums = geometry_bounds(
-        existing_perimeters
-    )
-    new_element_minimums, new_element_maximums = geometry_bounds(new_perimeters)
-    for new_positions, existing_positions in bounding_box_candidates(
-        new_element_minimums,
-        new_element_maximums,
-        existing_element_minimums,
-        existing_element_maximums,
-    ):
-        for new_position, existing_position in zip(
-            new_positions, existing_positions
-        ):
-            new_perimeter = new_perimeters[int(new_position)]
-            existing_perimeter = existing_perimeters[int(existing_position)]
-            existing_inside_new = any(
-                point_strictly_inside_polygon(xy[node], new_perimeter)
-                for node in existing_perimeter
-            )
-            new_inside_existing = any(
-                point_strictly_inside_polygon(xy[node], existing_perimeter)
-                for node in new_perimeter
-            )
-            if existing_inside_new or new_inside_existing:
-                raise ValueError(
-                    "generated elements overlap existing mesh elements"
-                )
-
-    if is_closed:
-        expected_area = polygon_area(chosen_outer_order) - polygon_area(
-            chosen_inner_order
+        outer_edges = self._boundary_edges(
+            self.chosen_outer_order, self.closed
         )
-        area_boundary_orders = (chosen_outer_order, chosen_inner_order)
-    else:
-        expected_area = polygon_area(chosen_boundary_polygon)
-        area_boundary_orders = (chosen_boundary_polygon,)
-    boundary_length = 0.0
-    for boundary_order in area_boundary_orders:
-        boundary_points = xy[np.asarray(boundary_order, dtype=np.intp)]
-        boundary_edges_xy = np.roll(boundary_points, -1, axis=0) - boundary_points
-        boundary_length += float(
-            np.sum(np.hypot(boundary_edges_xy[:, 0], boundary_edges_xy[:, 1]))
+        inner_edges = self._boundary_edges(
+            self.chosen_inner_order, self.closed
         )
-    area_tolerance = max(
-        geometry_tolerance * max(geometry_tolerance, boundary_length),
-        1.0e-10 * max(geometry_tolerance**2, abs(expected_area)),
-    )
-    if expected_area <= area_tolerance or (
-        abs(triangle_area - expected_area) > area_tolerance
-    ):
-        raise ValueError("triangles do not cover the complete circular strip")
+        expected_boundary = {
+            self._edge_key(edge)
+            for edge in (*outer_edges, *inner_edges)
+        }
+        open_side_keys = set()
+        if not self.closed:
+            open_side_keys = {
+                self._edge_key(
+                    (
+                        int(self.chosen_outer_order[0]),
+                        int(self.chosen_inner_order[0]),
+                    )
+                ),
+                self._edge_key(
+                    (
+                        int(self.chosen_outer_order[-1]),
+                        int(self.chosen_inner_order[-1]),
+                    )
+                ),
+            }
+            expected_boundary.update(open_side_keys)
 
-    combined_edge_uses = {
-        key: list(uses) for key, uses in existing_edge_uses.items()
-    }
-    for key, uses in new_edge_uses.items():
-        combined = combined_edge_uses.setdefault(key, [])
-        combined.extend(uses)
-        if len(combined) > 2:
-            raise ValueError(
-                "the completed mesh would contain a non-manifold edge"
-            )
-        if len(combined) == 2 and combined[0] != combined[1][::-1]:
-            raise ValueError(
-                "new elements would traverse an existing shared edge incorrectly"
-            )
+        for key, uses in new_edge_uses.items():
+            expected_uses = 1 if key in expected_boundary else 2
+            if len(uses) != expected_uses:
+                raise ValueError(
+                    "the triangulation has an unexpected boundary edge"
+                )
+            if len(uses) == 2 and uses[0] != uses[1][::-1]:
+                raise ValueError(
+                    "new triangles sharing an edge must traverse it "
+                    "oppositely"
+                )
+        for key in expected_boundary:
+            if len(new_edge_uses.get(key, ())) != 1:
+                raise ValueError(
+                    "a circular boundary edge is missing from the mesh"
+                )
+        for connector in self.forced_connectors:
+            key = self._edge_key(connector)
+            expected_uses = 1 if key in open_side_keys else 2
+            if len(new_edge_uses.get(key, ())) != expected_uses:
+                raise ValueError(
+                    "a pattern connector is missing from the triangulation"
+                )
 
-    element_dtype = elements.dtype
-    maximum_index = int(np.max(chosen_triangles))
-    minimum_index = int(np.min(chosen_triangles))
-    dtype_info = np.iinfo(element_dtype)
-    if minimum_index < dtype_info.min or maximum_index > dtype_info.max:
-        element_dtype = np.dtype(np.int64)
-    combined_elements = np.concatenate(
+        new_edges = [uses[0] for uses in new_edge_uses.values()]
+        new_minimums, new_maximums = self._geometry_bounds(
+            new_edges
+        )
+        for first_positions, second_positions in self._bbox_pairs(
+            new_minimums,
+            new_maximums,
+            new_minimums,
+            new_maximums,
+            same_collection=True,
+        ):
+            for first_position, second_position in zip(
+                first_positions, second_positions
+            ):
+                if not self._edges_are_compatible(
+                    new_edges[int(first_position)],
+                    new_edges[int(second_position)],
+                ):
+                    raise ValueError(
+                        "non-neighbouring generated edges cross or overlap"
+                    )
+
+        existing_edges = [
+            uses[0] for uses in self.existing_edge_uses.values()
+        ]
+        existing_minimums, existing_maximums = (
+            self._geometry_bounds(existing_edges)
+        )
+        for new_positions, existing_positions in self._bbox_pairs(
+            new_minimums,
+            new_maximums,
+            existing_minimums,
+            existing_maximums,
+        ):
+            for new_position, existing_position in zip(
+                new_positions, existing_positions
+            ):
+                new_edge = new_edges[int(new_position)]
+                existing_edge = existing_edges[
+                    int(existing_position)
+                ]
+                if (
+                    self._edge_key(new_edge)
+                    == self._edge_key(existing_edge)
+                ):
+                    continue
+                if not self._edges_are_compatible(
+                    new_edge, existing_edge
+                ):
+                    raise ValueError(
+                        "generated edges intersect existing mesh geometry"
+                    )
+
+        new_perimeters = [
+            tuple(map(int, row[:3])) for row in triangles
+        ]
+        new_element_minimums, new_element_maximums = (
+            self._geometry_bounds(new_perimeters)
+        )
         (
-            elements.astype(element_dtype, copy=False),
-            chosen_triangles.astype(element_dtype, copy=False),
-        ),
-        axis=0,
-    )
+            existing_element_minimums,
+            existing_element_maximums,
+        ) = self._geometry_bounds(self.existing_perimeters)
+        for new_positions, existing_positions in self._bbox_pairs(
+            new_element_minimums,
+            new_element_maximums,
+            existing_element_minimums,
+            existing_element_maximums,
+        ):
+            for new_position, existing_position in zip(
+                new_positions, existing_positions
+            ):
+                new_perimeter = new_perimeters[int(new_position)]
+                existing_perimeter = self.existing_perimeters[
+                    int(existing_position)
+                ]
+                existing_inside_new = any(
+                    not self._point_on_polygon(
+                        self.xy[node], new_perimeter
+                    )
+                    and self._point_in_polygon(
+                        self.xy[node], new_perimeter
+                    )
+                    for node in existing_perimeter
+                )
+                new_inside_existing = any(
+                    not self._point_on_polygon(
+                        self.xy[node], existing_perimeter
+                    )
+                    and self._point_in_polygon(
+                        self.xy[node], existing_perimeter
+                    )
+                    for node in new_perimeter
+                )
+                if existing_inside_new or new_inside_existing:
+                    raise ValueError(
+                        "generated elements overlap existing mesh elements"
+                    )
 
-    mesh.elements = combined_elements
-    return mesh
+        if self.closed:
+            expected_area = self._polygon_area(
+                self.chosen_outer_order
+            ) - self._polygon_area(self.chosen_inner_order)
+            area_boundaries = (
+                self.chosen_outer_order,
+                self.chosen_inner_order,
+            )
+        else:
+            expected_area = self._polygon_area(
+                self.chosen_boundary_polygon
+            )
+            area_boundaries = (self.chosen_boundary_polygon,)
+        boundary_length = 0.0
+        for boundary in area_boundaries:
+            points = self.xy[np.asarray(boundary, dtype=np.intp)]
+            edges = np.roll(points, -1, axis=0) - points
+            boundary_length += float(
+                np.sum(np.hypot(edges[:, 0], edges[:, 1]))
+            )
+        area_tolerance = max(
+            self.geometry_tolerance
+            * max(self.geometry_tolerance, boundary_length),
+            1.0e-10
+            * max(
+                self.geometry_tolerance**2,
+                abs(expected_area),
+            ),
+        )
+        if (
+            expected_area <= area_tolerance
+            or abs(triangle_area - expected_area) > area_tolerance
+        ):
+            raise ValueError(
+                "triangles do not cover the complete circular strip"
+            )
+
+        combined_uses = {
+            key: list(uses)
+            for key, uses in self.existing_edge_uses.items()
+        }
+        for key, uses in new_edge_uses.items():
+            combined = combined_uses.setdefault(key, [])
+            combined.extend(uses)
+            if len(combined) > 2:
+                raise ValueError(
+                    "the completed mesh would contain a non-manifold edge"
+                )
+            if len(combined) == 2 and combined[0] != combined[1][::-1]:
+                raise ValueError(
+                    "new elements would traverse an existing shared edge "
+                    "incorrectly"
+                )
+
+    def _commit(self, triangles):
+        element_dtype = self.elements.dtype
+        dtype_info = np.iinfo(element_dtype)
+        minimum = int(np.min(triangles))
+        maximum = int(np.max(triangles))
+        if minimum < dtype_info.min or maximum > dtype_info.max:
+            element_dtype = np.dtype(np.int64)
+        self.mesh.elements = np.concatenate(
+            (
+                self.elements.astype(element_dtype, copy=False),
+                triangles.astype(element_dtype, copy=False),
+            ),
+            axis=0,
+        )
+
+
+def _mesh_inner_outer_circle(
+    mesh: Mesh,
+    inner_nodes,
+    outer_nodes,
+    lines=None,
+    closed: bool = True,
+) -> Mesh:
+    """Triangulate the strip between two concentric circular boundaries.
+
+    Existing nodes remain fixed.  Cross-ring connectors are selected by a
+    global monotone matching that first minimizes the worst angular mismatch,
+    then the total squared mismatch, and finally maximizes the worst triangle
+    quality.  Pattern lines become mandatory connector edges.
+    """
+    return _CircularStripMesher(
+        mesh, inner_nodes, outer_nodes, lines, closed
+    ).build()
 
 
 def _generate_pattern_circle_nodes(

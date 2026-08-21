@@ -289,6 +289,124 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         )
         self.assertAlmostEqual(triangle_area, expected_area, places=12)
 
+    def test_closed_annulus_connects_angularly_nearby_nodes(self):
+        # Two almost coincident boundary samples make the worst triangle
+        # quality unavoidable.  A quality-only path score then has a large
+        # tie plateau and can build a fan to angularly distant nodes.  The
+        # connector objective must remain local even in that situation.
+        inner_angles = np.deg2rad(
+            [
+                0.0,
+                11.9600653,
+                31.2597791,
+                45.3320865,
+                55.7621526,
+                55.7632917,
+                75.0217345,
+                93.2229512,
+                107.2561401,
+                125.0991854,
+                144.2167524,
+                157.1339421,
+                170.48104,
+                189.4988172,
+                207.0188829,
+                220.6673213,
+                235.8209563,
+                251.0153793,
+                263.7646428,
+                277.302341,
+                294.0263145,
+                312.6962567,
+                330.0856314,
+                342.3749601,
+            ]
+        )
+        outer_angles = np.deg2rad(
+            [
+                2.995327,
+                18.816417,
+                33.2808791,
+                47.059638,
+                63.6634727,
+                76.9420354,
+                87.9303608,
+                100.6476494,
+                112.7389054,
+                126.6636618,
+                140.2893247,
+                152.1314883,
+                165.5542033,
+                175.7929724,
+                192.0336435,
+                204.3543776,
+                220.0408482,
+                234.9855166,
+                249.6209874,
+                265.7492046,
+                277.9637563,
+                292.7136709,
+                303.1619617,
+                303.1634555,
+                312.8213537,
+                323.0116091,
+                339.5025626,
+                348.7238431,
+            ]
+        )
+        inner_points = _points_on_circle(9.0, inner_angles)
+        outer_points = _points_on_circle(10.0, outer_angles)
+        inner_nodes = np.arange(inner_angles.size, dtype=np.int64)
+        outer_nodes = np.arange(
+            inner_angles.size,
+            inner_angles.size + outer_angles.size,
+            dtype=np.int64,
+        )
+        mesh = Mesh(
+            nodes=np.vstack((inner_points, outer_points)),
+            elements=np.empty((0, 4), dtype=np.int32),
+        )
+
+        _mesh_inner_outer_circle(mesh, inner_nodes, outer_nodes, closed=True)
+
+        inner_set = set(map(int, inner_nodes))
+        outer_set = set(map(int, outer_nodes))
+        connector_edges = set()
+        connector_neighbours = {}
+        for element in mesh.elements:
+            triangle = [int(value) for value in element[:3]]
+            for first, second in zip(triangle, triangle[1:] + triangle[:1]):
+                if not (
+                    (first in inner_set and second in outer_set)
+                    or (first in outer_set and second in inner_set)
+                ):
+                    continue
+                edge = tuple(sorted((first, second)))
+                connector_edges.add(edge)
+                connector_neighbours.setdefault(first, set()).add(second)
+                connector_neighbours.setdefault(second, set()).add(first)
+
+        node_angles = np.arctan2(mesh.nodes[:, 1], mesh.nodes[:, 0])
+        connector_angle_differences = np.asarray(
+            [
+                abs(
+                    np.arctan2(
+                        np.sin(node_angles[first] - node_angles[second]),
+                        np.cos(node_angles[first] - node_angles[second]),
+                    )
+                )
+                for first, second in connector_edges
+            ]
+        )
+        self.assertLessEqual(
+            float(np.max(connector_angle_differences)),
+            np.deg2rad(16.0),
+        )
+        self.assertLessEqual(
+            max(len(neighbours) for neighbours in connector_neighbours.values()),
+            3,
+        )
+
     def test_open_chains_form_a_strip_without_closing_either_ring(self):
         mesh, inner_nodes, outer_nodes = self._open_fixture()
         ordered_inner_nodes = inner_nodes.copy()
