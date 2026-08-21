@@ -174,7 +174,12 @@ class ToCircleTests(unittest.TestCase):
         np.testing.assert_array_equal(mesh.elements[:2], original_elements)
         expected_targets = original_nodes[[3, 4, 5]].astype(np.float64)
         expected_targets *= 2.0 / np.linalg.norm(expected_targets, axis=1)[:, None]
-        np.testing.assert_allclose(mesh.nodes[6:], expected_targets)
+        # Open endpoints are fixed while the free middle node is smoothed to
+        # the angular midpoint of its two neighbours.
+        expected_targets[1] = [0.0, 2.0]
+        np.testing.assert_allclose(
+            mesh.nodes[6:], expected_targets, atol=1.0e-15
+        )
         np.testing.assert_array_equal(
             mesh.elements[2:],
             np.array([[3, 4, 7, 6], [4, 5, 8, 7]], dtype=np.int32),
@@ -187,6 +192,98 @@ class ToCircleTests(unittest.TestCase):
         }
         self.assertNotIn((6, 8), all_edges)
         report = MeshQualityChecker(mesh).check_jacobian(indices=[2, 3])
+        self.assertEqual(report.invalid_indices.size, 0)
+        self.assertTrue(np.all(report.values > 0.0))
+
+    def test_closed_smoothing_increases_short_gap_without_lowering_quality(self):
+        mesh, boundary_indices, _, _ = self._closed_pattern_mesh()
+        original_node_count = mesh.nodes.shape[0]
+        original_element_count = mesh.elements.shape[0]
+        radial_targets = (
+            mesh.nodes[boundary_indices]
+            * 5.0
+            / np.linalg.norm(mesh.nodes[boundary_indices], axis=1)[:, None]
+        )
+
+        _to_circle(
+            mesh,
+            0.0,
+            0.0,
+            5.0,
+            boundary_indices,
+            closed=True,
+        )
+
+        target_indices = np.arange(original_node_count, mesh.nodes.shape[0])
+        new_element_indices = np.arange(
+            original_element_count,
+            mesh.elements.shape[0],
+        )
+
+        def minimum_gap(points):
+            angles = np.sort(
+                np.mod(np.arctan2(points[:, 1], points[:, 0]), 2.0 * np.pi)
+            )
+            return float(
+                np.min(
+                    np.diff(np.concatenate((angles, angles[:1] + 2.0 * np.pi)))
+                )
+            )
+
+        baseline_mesh = Mesh(
+            nodes=np.asarray(mesh.nodes).copy(),
+            elements=np.asarray(mesh.elements).copy(),
+        )
+        baseline_mesh.nodes[target_indices, :2] = radial_targets
+        baseline_quality = MeshQualityChecker(
+            baseline_mesh
+        ).calculate_scaled_jacobian(indices=new_element_indices)
+        smoothed_quality = MeshQualityChecker(mesh).calculate_scaled_jacobian(
+            indices=new_element_indices
+        )
+
+        self.assertGreater(
+            minimum_gap(mesh.nodes[target_indices, :2]),
+            minimum_gap(radial_targets),
+        )
+        self.assertGreaterEqual(
+            float(np.min(smoothed_quality.values)) + 1.0e-13,
+            float(np.min(baseline_quality.values)),
+        )
+        np.testing.assert_allclose(
+            np.linalg.norm(mesh.nodes[target_indices, :2], axis=1),
+            np.full(target_indices.size, 5.0),
+        )
+        self.assertEqual(smoothed_quality.invalid_indices.size, 0)
+
+    def test_pattern_can_fix_every_circle_node_during_smoothing(self):
+        source_nodes = np.array(
+            [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]],
+            dtype=np.float64,
+        )
+        mesh = Mesh(
+            nodes=source_nodes.copy(),
+            elements=np.array([[0, 1, 2, 3]], dtype=np.int32),
+        )
+        lines = [
+            [[1.0, 0.0], [2.0, 0.0]],
+            [[0.0, 1.0], [0.0, 2.0]],
+            [[-1.0, 0.0], [-2.0, 0.0]],
+            [[0.0, -1.0], [0.0, -2.0]],
+        ]
+
+        _to_circle(
+            mesh,
+            0.0,
+            0.0,
+            2.0,
+            [0, 1, 2, 3],
+            lines=lines,
+            closed=True,
+        )
+
+        np.testing.assert_array_equal(mesh.nodes[4:, :2], 2.0 * source_nodes)
+        report = MeshQualityChecker(mesh).check_jacobian(indices=[1, 2, 3, 4])
         self.assertEqual(report.invalid_indices.size, 0)
         self.assertTrue(np.all(report.values > 0.0))
 
@@ -492,6 +589,42 @@ class ToCircleTests(unittest.TestCase):
         )
         self.assertTrue(np.all(cyclic_steps > 0.0))
         np.testing.assert_allclose(np.sum(cyclic_steps), 2.0 * np.pi)
+
+    def test_closed_smoothing_is_independent_of_seam_and_traversal(self):
+        _, boundary_indices, _, _ = self._closed_pattern_mesh()
+        orders = (
+            boundary_indices,
+            np.roll(boundary_indices, -3),
+            boundary_indices[::-1],
+        )
+        targets_by_source = []
+
+        for order in orders:
+            mesh, _, current_line, _ = self._closed_pattern_mesh()
+            node_start = mesh.nodes.shape[0]
+            _to_circle(
+                mesh,
+                0.0,
+                0.0,
+                5.0,
+                order,
+                lines=[current_line],
+                closed=True,
+            )
+            mapped = {
+                int(source): mesh.nodes[node_start + position, :2]
+                for position, source in enumerate(order)
+            }
+            targets_by_source.append(
+                np.asarray([mapped[int(source)] for source in boundary_indices])
+            )
+
+        np.testing.assert_allclose(
+            targets_by_source[1], targets_by_source[0], atol=1.0e-13
+        )
+        np.testing.assert_allclose(
+            targets_by_source[2], targets_by_source[0], atol=1.0e-13
+        )
 
     def test_irrelevant_finite_pattern_segment_is_ignored(self):
         plain = self._outward_mesh()
@@ -810,9 +943,9 @@ class CircleIntegrationTests(unittest.TestCase):
         radii = np.hypot(offsets[:, 0], offsets[:, 1])
         target_radii = np.array(
             [
-                self.radius - self.buffer,
+                self.radius - self.buffer / 2.0,
                 self.radius,
-                self.radius + self.buffer,
+                self.radius + self.buffer / 2.0,
             ]
         )
         on_annular_ring = np.any(
@@ -888,9 +1021,9 @@ class CircleIntegrationTests(unittest.TestCase):
         for sign in (-1.0, 1.0):
             nodes = []
             for circle_radius in (
-                self.radius - self.buffer,
+                self.radius - self.buffer / 2.0,
                 self.radius,
-                self.radius + self.buffer,
+                self.radius + self.buffer / 2.0,
             ):
                 intersection_y = sign * np.sqrt(circle_radius**2 - pattern_x**2)
                 nodes.append(self._node_at(mesh, [pattern_x, intersection_y]))
@@ -1134,8 +1267,9 @@ class CircleIntegrationTests(unittest.TestCase):
         )
 
         pattern_tangent = self._node_at(mesh, [5.0, 0.0])
-        outer_lower = self._node_at(mesh, [5.0, -np.sqrt(11.0)])
-        outer_upper = self._node_at(mesh, [5.0, np.sqrt(11.0)])
+        outer_offset = np.sqrt((5.0 + 1.0 / 2.0) ** 2 - 5.0**2)
+        outer_lower = self._node_at(mesh, [5.0, -outer_offset])
+        outer_upper = self._node_at(mesh, [5.0, outer_offset])
         edge_counts = self._edge_counts(mesh)
         self.assertEqual(
             edge_counts[tuple(sorted((pattern_tangent, outer_lower)))],
