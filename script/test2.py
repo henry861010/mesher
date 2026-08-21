@@ -4,7 +4,7 @@ Run from the project root:
 
     venv/bin/python script/test2.py
 
-The constrained connector triangles are highlighted in red and their circle
+The constrained connector elements are highlighted in red and their circle
 intersection nodes in yellow.  Use ``--no-view`` to print the mesh statistics
 without opening the PyVista window.
 """
@@ -41,6 +41,14 @@ def _circle_nodes(radius: float, count: int) -> np.ndarray:
             np.zeros_like(angles),
         )
     )
+
+
+def _element_edge_keys(element) -> set[tuple[int, int]]:
+    perimeter = element[:3] if element[2] == element[3] else element
+    return {
+        tuple(sorted((int(start), int(end))))
+        for start, end in zip(perimeter, np.roll(perimeter, -1))
+    }
 
 
 def build_example():
@@ -102,7 +110,7 @@ def build_example():
             element_index
             for element_index, element in enumerate(mesh.elements)
             if any(
-                {start, end}.issubset(set(map(int, element[:3])))
+                tuple(sorted((start, end))) in _element_edge_keys(element)
                 for start, end in connector_edges
             )
         ],
@@ -136,17 +144,22 @@ def main():
     ) = build_example()
 
     quality = MeshQualityChecker(mesh).calculate_scaled_jacobian()
+    element_edge_keys = [
+        _element_edge_keys(element) for element in mesh.elements
+    ]
     connector_use_counts = {}
     for connector in connector_edges:
-        connector_key = set(connector)
+        connector_key = tuple(sorted(connector))
         connector_use_counts[connector] = sum(
-            connector_key.issubset(set(map(int, element[:3])))
-            for element in mesh.elements
+            connector_key in edges for edges in element_edge_keys
         )
 
+    is_triangle = mesh.elements[:, 2] == mesh.elements[:, 3]
+
     print(f"Nodes: {mesh.nodes.shape[0]}")
-    print(f"Padded Tri3 elements: {mesh.elements.shape[0]}")
-    print(f"Expected triangle count: {mesh.nodes.shape[0]}")
+    print(f"Padded Tri3 elements: {np.count_nonzero(is_triangle)}")
+    print(f"Quad4 elements: {np.count_nonzero(~is_triangle)}")
+    print(f"Total elements after merging: {mesh.elements.shape[0]}")
     print(f"Constrained connector edge uses: {connector_use_counts}")
     print(f"Invalid elements: {quality.invalid_indices.tolist()}")
     print(f"Minimum scaled Jacobian: {np.min(quality.values):.6f}")

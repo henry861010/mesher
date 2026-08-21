@@ -3,7 +3,7 @@ from collections import Counter
 
 import numpy as np
 
-from circle.circle import _mesh_inner_outer_circle
+from circle.circle import _CircularStripMesher, _mesh_inner_outer_circle
 from mesh import Mesh
 from mesh_quality import MeshQualityChecker
 
@@ -22,20 +22,25 @@ def _polygon_signed_area(points):
     )
 
 
-def _triangle_signed_areas(nodes, elements):
-    points = np.asarray(nodes)[np.asarray(elements)[:, :3], :2]
-    first_edges = points[:, 1] - points[:, 0]
-    second_edges = points[:, 2] - points[:, 0]
-    return 0.5 * (
-        first_edges[:, 0] * second_edges[:, 1]
-        - first_edges[:, 1] * second_edges[:, 0]
+def _element_perimeter(element):
+    element = np.asarray(element)
+    return element[:3] if element[2] == element[3] else element
+
+
+def _element_signed_areas(nodes, elements):
+    nodes = np.asarray(nodes)
+    return np.asarray(
+        [
+            _polygon_signed_area(nodes[_element_perimeter(element), :2])
+            for element in np.asarray(elements)
+        ]
     )
 
 
 def _edge_counts(elements):
     counts = Counter()
     for element in np.asarray(elements):
-        perimeter = element[:3]
+        perimeter = _element_perimeter(element)
         for start, end in zip(perimeter, np.roll(perimeter, -1)):
             counts[tuple(sorted((int(start), int(end))))] += 1
     return counts
@@ -180,26 +185,32 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         )
         return mesh, inner_nodes, outer_nodes
 
-    def assert_valid_triangles(self, mesh, new_elements):
+    def assert_valid_elements(self, mesh, new_elements):
         self.assertGreater(new_elements.shape[0], 0)
-        self.assertTrue(np.all(new_elements[:, 2] == new_elements[:, 3]))
-        self.assertTrue(
-            np.all(
-                np.apply_along_axis(
-                    lambda triangle: np.unique(triangle).size == 3,
-                    1,
-                    new_elements[:, :3],
-                )
+        for element in new_elements:
+            perimeter = _element_perimeter(element)
+            self.assertEqual(
+                np.unique(perimeter).size,
+                perimeter.size,
             )
-        )
-        signed_areas = _triangle_signed_areas(mesh.nodes, new_elements)
+        signed_areas = _element_signed_areas(mesh.nodes, new_elements)
         self.assertTrue(np.all(signed_areas > 0.0))
 
         report = MeshQualityChecker(
-            Mesh(nodes=mesh.nodes, elements=new_elements)
+            Mesh(nodes=np.asarray(mesh.nodes)[:, :2], elements=new_elements)
         ).check_jacobian()
         self.assertEqual(report.invalid_indices.size, 0)
         self.assertTrue(np.all(report.values > 0.0))
+
+    def assert_quad_scaled_jacobian_at_least(
+        self, mesh, elements, minimum
+    ):
+        quad_indices = np.flatnonzero(elements[:, 2] != elements[:, 3])
+        self.assertGreater(quad_indices.size, 0)
+        report = MeshQualityChecker(
+            Mesh(nodes=np.asarray(mesh.nodes)[:, :2], elements=elements)
+        ).calculate_scaled_jacobian(indices=quad_indices)
+        self.assertTrue(np.all(report.values >= minimum))
 
     def assert_atomic_value_error(
         self,
@@ -255,11 +266,15 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         self.assertEqual(mesh.elements.dtype, np.dtype(np.int16))
 
         new_elements = mesh.elements[original_element_count:]
-        self.assertEqual(
-            new_elements.shape[0],
-            inner_nodes.size + outer_nodes.size,
+        original_triangle_count = inner_nodes.size + outer_nodes.size
+        self.assertLess(
+            new_elements.shape[0], original_triangle_count
         )
-        self.assert_valid_triangles(mesh, new_elements)
+        self.assertTrue(np.any(new_elements[:, 2] != new_elements[:, 3]))
+        self.assert_valid_elements(mesh, new_elements)
+        self.assert_quad_scaled_jacobian_at_least(
+            mesh, new_elements, 0.3
+        )
         self.assertTrue(
             set(np.unique(new_elements)).issubset(
                 set(inner_nodes.tolist()) | set(outer_nodes.tolist())
@@ -281,13 +296,13 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             )
         )
 
-        triangle_area = np.sum(_triangle_signed_areas(mesh.nodes, new_elements))
+        element_area = np.sum(_element_signed_areas(mesh.nodes, new_elements))
         expected_area = abs(
             _polygon_signed_area(mesh.nodes[ordered_outer_nodes, :2])
         ) - abs(
             _polygon_signed_area(mesh.nodes[ordered_inner_nodes, :2])
         )
-        self.assertAlmostEqual(triangle_area, expected_area, places=12)
+        self.assertAlmostEqual(element_area, expected_area, places=12)
 
     def test_closed_annulus_connects_angularly_nearby_nodes(self):
         # Two almost coincident boundary samples make the worst triangle
@@ -374,8 +389,12 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         connector_edges = set()
         connector_neighbours = {}
         for element in mesh.elements:
-            triangle = [int(value) for value in element[:3]]
-            for first, second in zip(triangle, triangle[1:] + triangle[:1]):
+            perimeter = [
+                int(value) for value in _element_perimeter(element)
+            ]
+            for first, second in zip(
+                perimeter, perimeter[1:] + perimeter[:1]
+            ):
                 if not (
                     (first in inner_set and second in outer_set)
                     or (first in outer_set and second in inner_set)
@@ -425,11 +444,15 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
 
         np.testing.assert_array_equal(mesh.nodes, original_nodes)
         new_elements = mesh.elements
-        self.assertEqual(
-            new_elements.shape[0],
-            inner_nodes.size + outer_nodes.size - 2,
+        original_triangle_count = inner_nodes.size + outer_nodes.size - 2
+        self.assertLess(
+            new_elements.shape[0], original_triangle_count
         )
-        self.assert_valid_triangles(mesh, new_elements)
+        self.assertTrue(np.any(new_elements[:, 2] != new_elements[:, 3]))
+        self.assert_valid_elements(mesh, new_elements)
+        self.assert_quad_scaled_jacobian_at_least(
+            mesh, new_elements, 0.3
+        )
 
         expected_boundary = _chain_edges(
             ordered_inner_nodes, False
@@ -460,12 +483,95 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
                 mesh.nodes[ordered_inner_nodes, :2],
             )
         )
-        triangle_area = np.sum(_triangle_signed_areas(mesh.nodes, new_elements))
+        element_area = np.sum(_element_signed_areas(mesh.nodes, new_elements))
         self.assertAlmostEqual(
-            triangle_area,
+            element_area,
             abs(_polygon_signed_area(strip_polygon)),
             places=12,
         )
+
+    def test_nonconvex_quad_candidates_remain_two_triangles(self):
+        triangles = np.array(
+            [[0, 1, 2, 2], [1, 0, 3, 3]],
+            dtype=np.int64,
+        )
+        cases = {
+            "concave": [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.5, 1.0],
+                [2.0, -1.0],
+            ],
+            "collinear corner": [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [2.0, -1.0],
+            ],
+        }
+
+        for name, coordinates in cases.items():
+            with self.subTest(name=name):
+                nodes = np.asarray(coordinates, dtype=np.float64)
+                mesher = _CircularStripMesher(
+                    Mesh(
+                        nodes=nodes,
+                        elements=np.empty((0, 4), dtype=np.int32),
+                    ),
+                    [],
+                    [],
+                    None,
+                    True,
+                )
+                mesher.xy = nodes
+                mesher.geometry_tolerance = 1.0e-12
+                mesher.angular_tolerance = 1.0e-12
+                mesher.minimum_quad_scaled_jacobian = 0.3
+                mesher.forced_connectors = []
+
+                merged = mesher._merge_triangle_pairs(triangles)
+
+                np.testing.assert_array_equal(merged, triangles)
+
+    def test_jacobian_threshold_rejects_a_low_quality_quad(self):
+        nodes = np.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [1.2, -0.3],
+            ],
+            dtype=np.float64,
+        )
+        triangles = np.array(
+            [[0, 1, 2, 2], [1, 0, 3, 3]],
+            dtype=np.int64,
+        )
+        mesher = _CircularStripMesher(
+            Mesh(nodes=nodes, elements=np.empty((0, 4), dtype=np.int32)),
+            [],
+            [],
+            None,
+            True,
+        )
+        mesher.xy = nodes
+        mesher.geometry_tolerance = 1.0e-12
+        mesher.angular_tolerance = 1.0e-12
+        mesher.forced_connectors = []
+
+        mesher.minimum_quad_scaled_jacobian = 0.3
+        rejected = mesher._merge_triangle_pairs(triangles)
+        mesher.minimum_quad_scaled_jacobian = 0.1
+        accepted = mesher._merge_triangle_pairs(triangles)
+
+        np.testing.assert_array_equal(rejected, triangles)
+        self.assertEqual(accepted.shape, (1, 4))
+        self.assertNotEqual(accepted[0, 2], accepted[0, 3])
+        quality = MeshQualityChecker(
+            Mesh(nodes=nodes, elements=accepted)
+        ).calculate_scaled_jacobian()
+        self.assertGreaterEqual(float(quality.values[0]), 0.1)
+        self.assertLess(float(quality.values[0]), 0.3)
 
     def test_open_strip_ignores_pattern_wholly_outside_selected_arcs(self):
         baseline_mesh, baseline_inner, baseline_outer = self._open_fixture()
@@ -486,7 +592,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         )
 
         self.assertIs(result, patterned_mesh)
-        self.assert_valid_triangles(patterned_mesh, patterned_mesh.elements)
+        self.assert_valid_elements(patterned_mesh, patterned_mesh.elements)
         np.testing.assert_array_equal(
             patterned_mesh.elements,
             baseline_mesh.elements,
@@ -509,7 +615,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             closed=False,
         )
 
-        self.assert_valid_triangles(mesh, mesh.elements)
+        self.assert_valid_elements(mesh, mesh.elements)
         # The negative-x branch lies outside this right-hand strip.  The
         # positive-x branch is represented by the two zero-degree nodes.
         self.assertEqual(_edge_counts(mesh.elements)[(1, 4)], 2)
@@ -556,7 +662,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
                     closed=True,
                 )
 
-                self.assert_valid_triangles(mesh, mesh.elements)
+                self.assert_valid_elements(mesh, mesh.elements)
                 edge_counts = _edge_counts(mesh.elements)
                 for connector in connectors:
                     self.assertEqual(
@@ -603,7 +709,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             closed=True,
         )
 
-        self.assert_valid_triangles(mesh, mesh.elements)
+        self.assert_valid_elements(mesh, mesh.elements)
         edge_counts = _edge_counts(mesh.elements)
         # The vertical line is tangent to the inner circle at node 0 and meets
         # the outer circle at the +60 and -60 degree nodes.
@@ -747,6 +853,19 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
                 np.testing.assert_array_equal(mesh.nodes, node_values)
                 np.testing.assert_array_equal(mesh.elements, element_values)
 
+    def test_invalid_jacobian_is_an_atomic_error(self):
+        for jacobian in (None, "low", np.nan, np.inf, -0.01, 1.01):
+            with self.subTest(jacobian=jacobian):
+                mesh, inner_nodes, outer_nodes = self._pattern_fixture()
+                self.assert_atomic_value_error(
+                    mesh,
+                    inner_nodes,
+                    outer_nodes,
+                    error_regex="jacobian",
+                    jacobian=jacobian,
+                    closed=True,
+                )
+
     def test_non_concentric_rings_are_an_atomic_fit_error(self):
         mesh, inner_nodes, outer_nodes = self._closed_fixture()
         mesh.nodes[outer_nodes, 0] += 0.25
@@ -788,8 +907,9 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         self.assertIs(result, mesh)
         self.assertIs(mesh.nodes, original_nodes)
         np.testing.assert_array_equal(mesh.nodes, original_values)
-        self.assertEqual(mesh.elements.shape[0], 12)
-        self.assert_valid_triangles(mesh, mesh.elements)
+        self.assertLess(mesh.elements.shape[0], 12)
+        self.assertTrue(np.any(mesh.elements[:, 2] != mesh.elements[:, 3]))
+        self.assert_valid_elements(mesh, mesh.elements)
 
     def test_existing_triangle_inside_annulus_is_an_atomic_error(self):
         inner_points = _points_on_circle(
@@ -885,7 +1005,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
 
         directed_uses = []
         for element in mesh.elements:
-            perimeter = element[:3]
+            perimeter = _element_perimeter(element)
             for start, end in zip(perimeter, np.roll(perimeter, -1)):
                 if {int(start), int(end)} == {4, 5}:
                     directed_uses.append((int(start), int(end)))
@@ -902,10 +1022,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
 
         self.assertIs(mesh.nodes, original_nodes)
         np.testing.assert_array_equal(mesh.nodes, original_values)
-        self.assertTrue(np.all(mesh.elements[:, 2] == mesh.elements[:, 3]))
-        self.assertTrue(
-            np.all(_triangle_signed_areas(mesh.nodes, mesh.elements) > 0.0)
-        )
+        self.assert_valid_elements(mesh, mesh.elements)
 
     def test_incompatible_existing_ring_edge_is_an_atomic_error(self):
         inner_points = _points_on_circle(
@@ -990,7 +1107,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         )
 
         self.assertEqual(mesh.elements.dtype, np.dtype(np.int64))
-        self.assert_valid_triangles(mesh, mesh.elements)
+        self.assert_valid_elements(mesh, mesh.elements)
         self.assertGreater(int(np.max(mesh.elements)), np.iinfo(np.int8).max)
 
 

@@ -1330,14 +1330,23 @@ class _StripScore(NamedTuple):
 
 
 class _CircularStripMesher:
-    """Build a conforming triangular strip between two concentric boundaries."""
+    """Build a conforming mixed-element strip between concentric boundaries."""
 
-    def __init__(self, mesh, inner_nodes, outer_nodes, lines, closed):
+    def __init__(
+        self,
+        mesh,
+        inner_nodes,
+        outer_nodes,
+        lines,
+        closed,
+        jacobian=0.3,
+    ):
         self.mesh = mesh
         self.inner_input = inner_nodes
         self.outer_input = outer_nodes
         self.lines_input = lines
         self.closed_input = closed
+        self.jacobian_input = jacobian
 
     def build(self):
         self._read_inputs()
@@ -1348,7 +1357,8 @@ class _CircularStripMesher:
         self._collect_pattern_connectors()
         triangles = self._triangulate()
         self._validate_completed_strip(triangles)
-        self._commit(triangles)
+        new_elements = self._merge_triangle_pairs(triangles)
+        self._commit(new_elements)
         return self.mesh
 
     def _read_inputs(self):
@@ -1357,6 +1367,16 @@ class _CircularStripMesher:
         if not isinstance(self.closed_input, (bool, np.bool_)):
             raise TypeError("closed must be True or False")
         self.closed = bool(self.closed_input)
+        try:
+            self.minimum_quad_scaled_jacobian = float(
+                self.jacobian_input
+            )
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("jacobian must be a real number") from error
+        if not np.isfinite(self.minimum_quad_scaled_jacobian):
+            raise ValueError("jacobian must be finite")
+        if not 0.0 <= self.minimum_quad_scaled_jacobian <= 1.0:
+            raise ValueError("jacobian must be between 0 and 1")
 
         self.nodes = np.asarray(self.mesh.nodes)
         self.elements = np.asarray(self.mesh.elements)
@@ -3217,17 +3237,113 @@ class _CircularStripMesher:
                     "incorrectly"
                 )
 
-    def _commit(self, triangles):
+    def _quad_is_valid(self, quad):
+        """Return whether four perimeter nodes form a valid convex Quad4."""
+        if len(set(map(int, quad))) != 4:
+            return False
+        if not self._polygon_is_simple(quad):
+            return False
+
+        points = self.xy[np.asarray(quad, dtype=np.intp)]
+        forward = np.roll(points, -1, axis=0) - points
+        backward = np.roll(points, 1, axis=0) - points
+        forward_lengths = np.hypot(forward[:, 0], forward[:, 1])
+        backward_lengths = np.hypot(backward[:, 0], backward[:, 1])
+        if np.any(forward_lengths <= self.geometry_tolerance):
+            return False
+
+        corner_cross = (
+            forward[:, 0] * backward[:, 1]
+            - forward[:, 1] * backward[:, 0]
+        )
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            normalized_turn = corner_cross / (
+                forward_lengths * backward_lengths
+            )
+        return bool(
+            np.all(np.isfinite(normalized_turn))
+            and np.all(normalized_turn > self.angular_tolerance)
+            and float(np.min(normalized_turn))
+            >= self.minimum_quad_scaled_jacobian
+        )
+
+    def _merge_triangle_pairs(self, triangles):
+        """Greedily replace adjacent Tri3 pairs with valid Quad4 elements."""
+        edge_uses = {}
+        for position, row in enumerate(triangles):
+            first, second, third = map(int, row[:3])
+            for start, end, opposite in (
+                (first, second, third),
+                (second, third, first),
+                (third, first, second),
+            ):
+                edge_uses.setdefault(
+                    self._edge_key((start, end)), []
+                ).append((position, start, end, opposite))
+
+        protected_edges = {
+            self._edge_key(connector)
+            for connector in self.forced_connectors
+        }
+        partners = np.full(triangles.shape[0], -1, dtype=np.int64)
+        merged_at = {}
+
+        for edge_key in sorted(edge_uses):
+            uses = edge_uses[edge_key]
+            if len(uses) != 2 or edge_key in protected_edges:
+                continue
+            first_use, second_use = uses
+            first_position = int(first_use[0])
+            second_position = int(second_use[0])
+            if (
+                partners[first_position] >= 0
+                or partners[second_position] >= 0
+            ):
+                continue
+            if (first_use[1], first_use[2]) != (
+                second_use[2], second_use[1]
+            ):
+                raise RuntimeError(
+                    "adjacent triangles must traverse their shared edge "
+                    "oppositely"
+                )
+
+            quad = np.asarray(
+                [
+                    first_use[3],
+                    first_use[1],
+                    second_use[3],
+                    first_use[2],
+                ],
+                dtype=np.int64,
+            )
+            if not self._quad_is_valid(quad):
+                continue
+
+            partners[first_position] = second_position
+            partners[second_position] = first_position
+            merged_at[min(first_position, second_position)] = quad
+
+        merged = []
+        for position, triangle in enumerate(triangles):
+            quad = merged_at.get(position)
+            if quad is not None:
+                merged.append(quad)
+            elif partners[position] < 0:
+                merged.append(triangle)
+        return np.asarray(merged, dtype=np.int64)
+
+    def _commit(self, new_elements):
         element_dtype = self.elements.dtype
         dtype_info = np.iinfo(element_dtype)
-        minimum = int(np.min(triangles))
-        maximum = int(np.max(triangles))
+        minimum = int(np.min(new_elements))
+        maximum = int(np.max(new_elements))
         if minimum < dtype_info.min or maximum > dtype_info.max:
             element_dtype = np.dtype(np.int64)
         self.mesh.elements = np.concatenate(
             (
                 self.elements.astype(element_dtype, copy=False),
-                triangles.astype(element_dtype, copy=False),
+                new_elements.astype(element_dtype, copy=False),
             ),
             axis=0,
         )
@@ -3239,16 +3355,20 @@ def _mesh_inner_outer_circle(
     outer_nodes,
     lines=None,
     closed: bool = True,
+    jacobian: float = 0.3,
 ) -> Mesh:
-    """Triangulate the strip between two concentric circular boundaries.
+    """Mesh the strip between two concentric circular boundaries.
 
     Existing nodes remain fixed.  Cross-ring connectors are selected by a
     global monotone matching that first minimizes the worst angular mismatch,
     then the total squared mismatch, and finally maximizes the worst triangle
-    quality.  Pattern lines become mandatory connector edges.
+    quality.  Valid adjacent triangle pairs are then greedily merged into
+    Quad4 elements when their minimum scaled Jacobian is at least
+    ``jacobian``.  Pattern lines become mandatory connector edges and are never
+    removed by merging.
     """
     return _CircularStripMesher(
-        mesh, inner_nodes, outer_nodes, lines, closed
+        mesh, inner_nodes, outer_nodes, lines, closed, jacobian
     ).build()
 
 
@@ -3558,12 +3678,14 @@ def circle(
     lines=None,
     *,
     element_size=None,
+    jacobian: float = 0.3,
 ) -> Mesh:
     """Insert a conforming circular pattern into a planar mesh.
 
-    The material around ``radius`` is rebuilt as two triangular strips sharing
-    one internal pattern-circle edge loop.  ``element_size`` bounds the arc
-    spacing of that loop and defaults to ``buffer``.  The original mesh is
+    The material around ``radius`` is rebuilt as two mixed Tri3/Quad4 strips
+    sharing one internal pattern-circle edge loop.  ``element_size`` bounds
+    the arc spacing of that loop and defaults to ``buffer``.  Quad4 merges
+    require a minimum scaled Jacobian of ``jacobian``.  The original mesh is
     updated only after the complete operation succeeds.
     """
     if not isinstance(mesh, Mesh):
@@ -3576,9 +3698,11 @@ def circle(
         pattern_element_size = (
             circle_buffer if element_size is None else float(element_size)
         )
+        minimum_quad_scaled_jacobian = float(jacobian)
     except (TypeError, ValueError, OverflowError) as error:
         raise ValueError(
-            "x, y, radius, buffer, and element_size must be real numbers"
+            "x, y, radius, buffer, element_size, and jacobian must be real "
+            "numbers"
         ) from error
     scalar_values = np.asarray(
         [
@@ -3587,17 +3711,22 @@ def circle(
             circle_radius,
             circle_buffer,
             pattern_element_size,
+            minimum_quad_scaled_jacobian,
         ],
         dtype=np.float64,
     )
     if not np.all(np.isfinite(scalar_values)):
-        raise ValueError("x, y, radius, buffer, and element_size must be finite")
+        raise ValueError(
+            "x, y, radius, buffer, element_size, and jacobian must be finite"
+        )
     if circle_buffer <= 0.0:
         raise ValueError("buffer must be positive")
     if circle_radius <= circle_buffer:
         raise ValueError("radius must be greater than buffer")
     if pattern_element_size <= 0.0:
         raise ValueError("element_size must be positive")
+    if not 0.0 <= minimum_quad_scaled_jacobian <= 1.0:
+        raise ValueError("jacobian must be between 0 and 1")
 
     # Work on independent arrays so every downstream geometric or topological
     # error leaves both the identity and values of the caller's arrays intact.
@@ -3606,8 +3735,8 @@ def circle(
         elements=np.array(mesh.elements, copy=True),
     )
 
-    inner_target_radius = circle_radius - circle_buffer
-    outer_target_radius = circle_radius + circle_buffer
+    inner_target_radius = circle_radius - circle_buffer/2
+    outer_target_radius = circle_radius + circle_buffer/2
     inner_search_margin = min(circle_buffer / 10.0, inner_target_radius / 10.0)
     indices_inner = _search_circle(
         working_mesh,
@@ -3739,6 +3868,7 @@ def circle(
         pattern_circle_nodes,
         lines=lines,
         closed=True,
+        jacobian=minimum_quad_scaled_jacobian,
     )
     _mesh_inner_outer_circle(
         working_mesh,
@@ -3746,6 +3876,7 @@ def circle(
         outer_circle_nodes,
         lines=lines,
         closed=True,
+        jacobian=minimum_quad_scaled_jacobian,
     )
 
     completed_nodes = working_mesh.nodes

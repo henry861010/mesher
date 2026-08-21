@@ -803,6 +803,35 @@ class CircleIntegrationTests(unittest.TestCase):
             )
         return pattern_nodes, gaps
 
+    def annular_quad_scaled_jacobians(self, mesh):
+        offsets = np.asarray(mesh.nodes)[:, :2] - np.array(
+            [self.center_x, self.center_y]
+        )
+        radii = np.hypot(offsets[:, 0], offsets[:, 1])
+        target_radii = np.array(
+            [
+                self.radius - self.buffer,
+                self.radius,
+                self.radius + self.buffer,
+            ]
+        )
+        on_annular_ring = np.any(
+            np.isclose(
+                radii[:, None], target_radii[None, :], atol=1.0e-9
+            ),
+            axis=1,
+        )
+        annular_elements = np.all(on_annular_ring[mesh.elements], axis=1)
+        quad_indices = np.flatnonzero(
+            annular_elements
+            & (mesh.elements[:, 2] != mesh.elements[:, 3])
+        )
+        if quad_indices.size == 0:
+            return np.empty(0, dtype=np.float64)
+        return MeshQualityChecker(mesh).calculate_scaled_jacobian(
+            indices=quad_indices
+        ).values
+
     def _node_at(self, mesh, point):
         point = np.asarray(point, dtype=np.float64)
         distances = np.hypot(
@@ -903,6 +932,40 @@ class CircleIntegrationTests(unittest.TestCase):
                     expected_size + 1.0e-10,
                 )
 
+    def test_jacobian_controls_quad_merge_quality(self):
+        default_mesh = self._build_mesh()
+        strict_mesh = self._build_mesh()
+
+        circle(
+            default_mesh,
+            x=self.center_x,
+            y=self.center_y,
+            radius=self.radius,
+            buffer=self.buffer,
+        )
+        circle(
+            strict_mesh,
+            x=self.center_x,
+            y=self.center_y,
+            radius=self.radius,
+            buffer=self.buffer,
+            jacobian=0.8,
+        )
+
+        default_quality = self.annular_quad_scaled_jacobians(default_mesh)
+        strict_quality = self.annular_quad_scaled_jacobians(strict_mesh)
+        self.assertGreater(default_quality.size, 0)
+        self.assertGreater(strict_quality.size, 0)
+        self.assertTrue(np.all(default_quality >= 0.3))
+        self.assertTrue(np.any(default_quality < 0.8))
+        self.assertTrue(np.all(strict_quality >= 0.8))
+        self.assertFalse(
+            np.array_equal(default_mesh.elements, strict_mesh.elements)
+        )
+        self.assertGreaterEqual(
+            strict_mesh.elements.shape[0], default_mesh.elements.shape[0]
+        )
+
     def test_invalid_inputs_leave_the_original_mesh_unchanged(self):
         cases = (
             {"x": np.nan},
@@ -915,6 +978,12 @@ class CircleIntegrationTests(unittest.TestCase):
             {"element_size": -1.0},
             {"element_size": np.nan},
             {"element_size": np.inf},
+            {"jacobian": None},
+            {"jacobian": "low"},
+            {"jacobian": -0.01},
+            {"jacobian": 1.01},
+            {"jacobian": np.nan},
+            {"jacobian": np.inf},
             {"lines": [[[0.0, 0.0], [1.0, 1.0]]]},
         )
 
