@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mesher"
+version = "0.1.0"
+description = "Planar mixed-element mesh generation, feature imprinting, and quality checks"
+readme = "README.md"
+requires-python = ">=3.11"
+license-files = ["LICENSE"]
+dependencies = [
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+visualization = [
+    "pyvista>=0.48",
+]
+dev = [
+    "build>=1.2",
+    "pyvista>=0.48",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

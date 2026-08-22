@@ -1,1 +1,1 @@
-"""Unit tests for the mesher project."""
+"""Mesher test suite."""
