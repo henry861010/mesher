@@ -7,11 +7,12 @@ retained only for focused unit tests inside this package.
 """
 
 from dataclasses import dataclass
+from time import perf_counter
 
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ...mesh import Mesh
+from ..mesh import Mesh2D
 
 # Private helper re-exports keep the implementation-focused test surface small.
 from .geometry import (
@@ -180,7 +181,7 @@ def _copy_mesh(mesh):
     Returns:
         A mesh containing independent copies of both source arrays.
     """
-    return Mesh(
+    return Mesh2D(
         nodes=np.array(mesh.nodes, copy=True),
         elements=np.array(mesh.elements, copy=True),
     )
@@ -343,6 +344,7 @@ def _project_band_boundaries(
     Returns:
         Newly created inner- and outer-circle node indices.
     """
+    print("_project_band_boundaries: outer_nodes")
     outer_nodes = _append_projected_boundary(
         mesh,
         request,
@@ -351,6 +353,7 @@ def _project_band_boundaries(
         "outer",
         guide_segments,
     )
+    print("_project_band_boundaries: inner_nodes")
     inner_nodes = _append_projected_boundary(
         mesh,
         request,
@@ -448,7 +451,7 @@ def _mesh_pattern_strips(
 
 
 def imprint_circle(
-    mesh: Mesh,
+    mesh: Mesh2D,
     *,
     center: ArrayLike,
     radius: float,
@@ -456,7 +459,7 @@ def imprint_circle(
     guide_segments: ArrayLike | None = None,
     target_edge_size: float | None = None,
     min_quad_scaled_jacobian: float = 0.3,
-) -> Mesh:
+) -> Mesh2D:
     """Imprint a conforming circular feature into a planar mesh.
 
     The material around radius is rebuilt as two mixed Tri3/Quad4 strips that
@@ -466,7 +469,7 @@ def imprint_circle(
     or vertical connectors through both strips.
 
     Args:
-        mesh: Mesh to update. Nodes may have shape (N, 2) or (N, 3); elements
+        mesh: Mesh2D to update. Nodes may have shape (N, 2) or (N, 3); elements
             must contain four connectivity columns, with Tri3 rows padded as
             [n0, n1, n2, n2].
         center: Two finite coordinates for the pattern-circle center.
@@ -485,7 +488,7 @@ def imprint_circle(
         The same mesh instance after a successful circular insertion.
 
     Raises:
-        TypeError: If mesh is not a Mesh instance.
+        TypeError: If mesh is not a Mesh2D instance.
         ValueError: If inputs, selected topology, pattern constraints, or
             generated geometry are invalid.
 
@@ -494,8 +497,8 @@ def imprint_circle(
         arrays, so any exception leaves both the values and identities of the
         caller's mesh.nodes and mesh.elements unchanged.
     """
-    if not isinstance(mesh, Mesh):
-        raise TypeError("mesh must be a Mesh instance")
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
 
     request = _CircularImprintRequest.from_values(
         center,
@@ -506,11 +509,18 @@ def imprint_circle(
     )
     working_mesh = _copy_mesh(mesh)
 
+    started_at = perf_counter()
     selected_band = _select_circular_band(working_mesh, request)
+    print(f"_select_circular_band {perf_counter() - started_at:.4f}")
+
+    started_at = perf_counter()
     inner_boundary, outer_boundary = _remove_selected_band(
         working_mesh,
         selected_band,
     )
+    print(f"_remove_selected_band {perf_counter() - started_at:.4f}")
+
+    started_at = perf_counter()
     projected = _project_band_boundaries(
         working_mesh,
         request,
@@ -518,7 +528,13 @@ def imprint_circle(
         outer_boundary,
         guide_segments,
     )
+    print(f"_project_band_boundaries {perf_counter() - started_at:.4f}")
+
+    started_at = perf_counter()
     pattern_nodes = _append_pattern_ring(working_mesh, request, guide_segments)
+    print(f"_append_pattern_ring {perf_counter() - started_at:.4f}")
+
+    started_at = perf_counter()
     _mesh_pattern_strips(
         working_mesh,
         projected,
@@ -526,6 +542,7 @@ def imprint_circle(
         guide_segments,
         request.minimum_quad_scaled_jacobian,
     )
+    print(f"_mesh_pattern_strips {perf_counter() - started_at:.4f}")
 
     mesh.nodes = working_mesh.nodes
     mesh.elements = working_mesh.elements

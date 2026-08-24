@@ -431,4 +431,3 @@ class _ValidationMixin:
         )
         self._validate_strip_area(triangle_area)
         self._validate_completed_manifold(new_edge_uses)
-

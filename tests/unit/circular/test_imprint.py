@@ -4,7 +4,7 @@ from collections import Counter
 import numpy as np
 
 from mesher.generators import generate_rectilinear_mesh
-from mesher.imprinting.circular.api import (
+from mesher.circular.imprint import (
     _clear_node,
     _delete,
     _delete_element,
@@ -14,13 +14,13 @@ from mesher.imprinting.circular.api import (
     _search_circle,
     _to_circle,
 )
-from mesher import Mesh
+from mesher import Mesh2D
 from mesher.quality import MeshQualityChecker
 
 
 class SearchCircleTests(unittest.TestCase):
     def setUp(self):
-        self.mesh = Mesh(
+        self.mesh = Mesh2D(
             nodes=np.array(
                 [
                     [0.0, 0.0, 4.0],
@@ -103,11 +103,11 @@ class ToCircleTests(unittest.TestCase):
             [[0, 1, 4, 3], [1, 2, 5, 4]],
             dtype=element_dtype,
         )
-        return Mesh(nodes=nodes, elements=elements)
+        return Mesh2D(nodes=nodes, elements=elements)
 
     @staticmethod
     def _off_center_pattern_mesh():
-        return Mesh(
+        return Mesh2D(
             nodes=np.array(
                 [[3.0, -4.0], [4.0, -2.0], [3.0, 1.0], [-1.0, -2.0]],
                 dtype=np.float64,
@@ -138,7 +138,7 @@ class ToCircleTests(unittest.TestCase):
         target_y = np.sqrt(5.0**2 - 2.5**2)
         line = [[-2.5, source_y], [-2.5, target_y]]
         return (
-            Mesh(nodes=nodes, elements=np.asarray(elements, dtype=np.int32)),
+            Mesh2D(nodes=nodes, elements=np.asarray(elements, dtype=np.int32)),
             boundary_indices,
             line,
             np.array([-2.5, target_y]),
@@ -230,7 +230,7 @@ class ToCircleTests(unittest.TestCase):
                 )
             )
 
-        baseline_mesh = Mesh(
+        baseline_mesh = Mesh2D(
             nodes=np.asarray(mesh.nodes).copy(),
             elements=np.asarray(mesh.elements).copy(),
         )
@@ -261,7 +261,7 @@ class ToCircleTests(unittest.TestCase):
             [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]],
             dtype=np.float64,
         )
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=source_nodes.copy(),
             elements=np.array([[0, 1, 2, 3]], dtype=np.int32),
         )
@@ -288,7 +288,7 @@ class ToCircleTests(unittest.TestCase):
         self.assertTrue(np.all(report.values > 0.0))
 
     def test_extends_a_closed_loop_with_one_quad_per_boundary_edge(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
                 dtype=np.float64,
@@ -320,7 +320,7 @@ class ToCircleTests(unittest.TestCase):
         self.assertTrue(np.all(report.values > 0.0))
 
     def test_extends_an_outer_boundary_inward_with_ccw_connectivity(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [[2.0, -1.0], [4.0, -1.0], [4.0, 1.0], [2.0, 1.0]],
                 dtype=np.float64,
@@ -345,7 +345,7 @@ class ToCircleTests(unittest.TestCase):
         self.assertGreater(report.values[0], 0.0)
 
     def test_promotes_nodes_preserves_element_dtype_and_copies_z(self):
-        base = Mesh(
+        base = Mesh2D(
             nodes=np.array(
                 [
                     [-2, 0],
@@ -364,7 +364,7 @@ class ToCircleTests(unittest.TestCase):
         )
         z = np.array([10, 20, 30, 40, 50, 60], dtype=np.int32)
         original_nodes = np.column_stack((base.nodes, z))
-        mesh = Mesh(nodes=original_nodes, elements=base.elements)
+        mesh = Mesh2D(nodes=original_nodes, elements=base.elements)
 
         _to_circle(mesh, 0.0, 0.0, 4.0, [3, 4, 5])
 
@@ -410,7 +410,7 @@ class ToCircleTests(unittest.TestCase):
         self.assertEqual(connector_uses, 2)
 
     def test_horizontal_pattern_and_reversed_endpoints_are_supported(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [
                     [0.0, -1.0],
@@ -464,7 +464,7 @@ class ToCircleTests(unittest.TestCase):
 
     def test_multi_edge_overlap_uses_the_vertex_nearest_the_circle(self):
         x_coordinates = np.array([-1.0, 0.0, 0.5, 1.0])
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.vstack(
                 (
                     np.column_stack((x_coordinates, np.zeros(4))),
@@ -660,7 +660,7 @@ class ToCircleTests(unittest.TestCase):
         self.assert_mesh_unchanged(mesh, snapshot)
 
     def test_pattern_intersection_inside_closed_seam_is_atomic_error(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
                 dtype=np.float64,
@@ -806,7 +806,7 @@ class ToCircleTests(unittest.TestCase):
                 self.assert_mesh_unchanged(mesh, snapshot)
 
     def test_rejects_duplicate_radial_targets(self):
-        duplicate_target_mesh = Mesh(
+        duplicate_target_mesh = Mesh2D(
             nodes=np.array(
                 [[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]],
                 dtype=np.float64,
@@ -817,7 +817,7 @@ class ToCircleTests(unittest.TestCase):
             _to_circle(duplicate_target_mesh, 0.0, 0.0, 2.0, [0, 1])
 
     def test_rejects_pattern_anchors_with_reversed_order_atomically(self):
-        reversal_mesh = Mesh(
+        reversal_mesh = Mesh2D(
             nodes=np.array(
                 [
                     [-0.6, -0.6],
@@ -850,7 +850,7 @@ class ToCircleTests(unittest.TestCase):
         self.assert_mesh_unchanged(reversal_mesh, snapshot)
 
     def test_rejects_folded_quad_even_when_circle_order_is_valid(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [[0.1, -0.5], [0.5, 0.5], [-0.5, 0.25], [-0.4, -0.6]],
                 dtype=np.float64,
@@ -1165,7 +1165,7 @@ class CircleIntegrationTests(unittest.TestCase):
         center_y = -11.0
         radius = 5.0
         target_edge_size = 1.3
-        empty_mesh = Mesh(
+        empty_mesh = Mesh2D(
             nodes=np.empty((0, 2), dtype=np.float64),
             elements=np.empty((0, 4), dtype=np.int32),
         )
@@ -1330,7 +1330,7 @@ class CircleIntegrationTests(unittest.TestCase):
 class DeleteElementTests(unittest.TestCase):
     def setUp(self):
         self.nodes = np.arange(18, dtype=np.float64).reshape(6, 3)
-        self.mesh = Mesh(
+        self.mesh = Mesh2D(
             nodes=self.nodes,
             elements=np.array(
                 [
@@ -1378,7 +1378,7 @@ class DeleteElementTests(unittest.TestCase):
 class ClearNodeTests(unittest.TestCase):
     def test_removes_unreferenced_nodes_and_remaps_elements(self):
         nodes = np.arange(21, dtype=np.float64).reshape(7, 3)
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.array(
                 [[0, 2, 5, 6], [2, 3, 5, 6]],
@@ -1401,7 +1401,7 @@ class ClearNodeTests(unittest.TestCase):
         self.assertEqual(mesh.elements.dtype, np.int32)
 
     def test_empty_elements_remove_all_nodes(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.arange(12, dtype=np.float64).reshape(4, 3),
             elements=np.empty((0, 4), dtype=np.int64),
         )
@@ -1415,7 +1415,7 @@ class ClearNodeTests(unittest.TestCase):
     def test_returns_identity_map_when_all_nodes_are_referenced(self):
         nodes = np.arange(12, dtype=np.float64).reshape(4, 3)
         elements = np.array([[0, 1, 2, 3]], dtype=np.int32)
-        mesh = Mesh(nodes=nodes, elements=elements)
+        mesh = Mesh2D(nodes=nodes, elements=elements)
 
         index_map = _clear_node(mesh)
 

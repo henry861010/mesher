@@ -1,10 +1,10 @@
 import numpy as np
 import pyvista as pv
 
-from ..mesh import Mesh
+from ..mesh import Mesh2D
 
 
-def build_faces(mesh: Mesh):
+def build_faces(mesh: Mesh2D):
     """Build PyVista's flat face array from a padded Tri3/Quad4 mesh.
 
     Triangles use the fixed-width representation ``[n0, n1, n2, n2]``.
@@ -145,7 +145,7 @@ def _build_reference_segments(
 
 
 def view_mesh(
-    mesh: Mesh,
+    mesh: Mesh2D,
     element_indices=None,
     node_indices=None,
     reference_circles=None,
@@ -157,7 +157,7 @@ def view_mesh(
     Parameters
     ----------
     mesh:
-        Mesh to display.
+        Mesh2D to display.
     element_indices:
         Zero-based element indices to highlight in red. All other elements
         are shown in light blue.
@@ -173,8 +173,8 @@ def view_mesh(
         One line ``[[x1, y1], [x2, y2]]`` or a sequence of lines to draw as
         black reference lines.
     """
-    if not isinstance(mesh, Mesh):
-        raise TypeError("mesh must be a Mesh instance")
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
 
     # PyVista requires the faces array to be 1D and formatted as:
     # [n_points, id0, id1, id2, id3, n_points, id0, ...]

@@ -2,11 +2,11 @@
 
 import numpy as np
 
-from ...mesh import Mesh
+from ..mesh import Mesh2D
 
 
 def _search_circle(
-    mesh: Mesh,
+    mesh: Mesh2D,
     x: float,
     y: float,
     radius: float,
@@ -19,7 +19,7 @@ def _search_circle(
     Nodes on the circle, including tolerance, count as inside.
 
     Args:
-        mesh: Mesh providing node coordinates and element connectivity.
+        mesh: Mesh2D providing node coordinates and element connectivity.
         x: X coordinate of the selection center.
         y: Y coordinate of the selection center.
         radius: Non-negative circle radius.
@@ -84,14 +84,14 @@ def _search_circle(
     return np.flatnonzero(selected).astype(np.int64, copy=False)
 
 
-def _delete_element(mesh: Mesh, indices) -> Mesh:
+def _delete_element(mesh: Mesh2D, indices) -> Mesh2D:
     """Remove selected element rows from a mesh in place.
 
     Node coordinates are left untouched; removing unused nodes would require
     remapping every node index in the remaining elements.
 
     Args:
-        mesh: Mesh whose element rows are removed.
+        mesh: Mesh2D whose element rows are removed.
         indices: One-dimensional integer sequence of element indices.
 
     Returns:
@@ -102,8 +102,8 @@ def _delete_element(mesh: Mesh, indices) -> Mesh:
         ValueError: If connectivity or the index sequence shape is invalid.
         IndexError: If an element index is out of range.
     """
-    if not isinstance(mesh, Mesh):
-        raise TypeError("mesh must be a Mesh instance")
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
 
     elements = np.asarray(mesh.elements)
     if elements.ndim != 2 or elements.shape[1] != 4:
@@ -136,11 +136,11 @@ def _delete_element(mesh: Mesh, indices) -> Mesh:
     return mesh
 
 
-def _delete(mesh: Mesh, indices) -> Mesh:
+def _delete(mesh: Mesh2D, indices) -> Mesh2D:
     """Provide the backward-compatible alias for :func:`_delete_element`.
 
     Args:
-        mesh: Mesh whose element rows are removed.
+        mesh: Mesh2D whose element rows are removed.
         indices: One-dimensional integer sequence of element indices.
 
     Returns:
@@ -154,7 +154,7 @@ def _delete(mesh: Mesh, indices) -> Mesh:
     return _delete_element(mesh, indices)
 
 
-def _clear_node(mesh: Mesh) -> np.ndarray:
+def _clear_node(mesh: Mesh2D) -> np.ndarray:
     """Remove unreferenced nodes and return their old-to-new index mapping.
 
     The mesh is updated in place.  The returned one-dimensional array has one
@@ -162,17 +162,17 @@ def _clear_node(mesh: Mesh) -> np.ndarray:
     remapped through the result. Entries for removed nodes are -1.
 
     Args:
-        mesh: Mesh to compact in place.
+        mesh: Mesh2D to compact in place.
 
     Returns:
         An intp mapping from every old node index to its new index or -1.
 
     Raises:
-        TypeError: If mesh is not a Mesh instance.
+        TypeError: If mesh is not a Mesh2D instance.
         ValueError: If mesh arrays or connectivity are invalid.
     """
-    if not isinstance(mesh, Mesh):
-        raise TypeError("mesh must be a Mesh instance")
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -211,7 +211,7 @@ def _select_boundary_elements(mesh, indices):
     """Validate a mesh and select the elements used for boundary tracing.
 
     Args:
-        mesh: Mesh providing nodes and mixed Tri3/Quad4 connectivity.
+        mesh: Mesh2D providing nodes and mixed Tri3/Quad4 connectivity.
         indices: Optional unique one-dimensional element-index sequence.
 
     Returns:
@@ -222,8 +222,8 @@ def _select_boundary_elements(mesh, indices):
         ValueError: If mesh arrays, connectivity, or selection are invalid.
         IndexError: If a selected element index is out of range.
     """
-    if not isinstance(mesh, Mesh):
-        raise TypeError("mesh must be a Mesh instance")
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -463,7 +463,7 @@ def _trace_boundary_loops(half_edges, boundary_half_edges, successor):
     return boundaries
 
 
-def _get_boundary(mesh: Mesh, indices=None) -> list[np.ndarray]:
+def _get_boundary(mesh: Mesh2D, indices=None) -> list[np.ndarray]:
     """Return every ordered boundary loop as node indices.
 
     An element edge belongs to the boundary when no other selected element
@@ -473,7 +473,7 @@ def _get_boundary(mesh: Mesh, indices=None) -> list[np.ndarray]:
     and Quad4 rows are both supported.
 
     Args:
-        mesh: Mesh whose selected submesh is traced.
+        mesh: Mesh2D whose selected submesh is traced.
         indices: Optional unique one-dimensional element-index sequence.
 
     Returns:

@@ -120,4 +120,3 @@ class _QuadMergeMixin:
             elif partners[position] < 0:
                 merged.append(triangle)
         return np.asarray(merged, dtype=np.int64)
-

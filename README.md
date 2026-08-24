@@ -4,6 +4,19 @@
 rectilinear mesh generation, circular feature imprinting, mesh quality checks,
 and optional PyVista visualization.
 
+## Mesh data model
+
+The former `Mesh` container has been renamed to `Mesh2D` to make the library's
+planar, two-dimensional scope explicit and to avoid confusion with surface or
+volume mesh types. Import it from the package root when constructing a mesh
+directly:
+
+```python
+from mesher import Mesh2D
+
+mesh = Mesh2D(nodes=nodes, elements=elements)
+```
+
 ## Installation
 
 Install the core package:
@@ -22,7 +35,7 @@ python -m pip install '.[visualization]'
 
 ```python
 from mesher.generators import generate_rectilinear_mesh
-from mesher.imprinting import imprint_circle
+from mesher.circular import imprint_circle
 
 mesh = generate_rectilinear_mesh(
     target_edge_size=1.0,
@@ -39,8 +52,31 @@ imprint_circle(
 )
 ```
 
-The operation is transactional and in place: it returns the same `Mesh`
+The operation is transactional and in place: it returns the same `Mesh2D`
 instance after success, while a failure leaves the input mesh unchanged.
+
+## Circular mesh extension
+
+Use an existing exposed circular boundary to build concentric mesh layers out
+to a larger radius:
+
+```python
+from mesher.circular import extend_circular_mesh
+
+extend_circular_mesh(
+    mesh,
+    element_size=1.0,
+    center_x=0.0,
+    center_y=0.0,
+    inner_radius=5.0,
+    outer_radius=10.0,
+)
+```
+
+The existing mesh outside `inner_radius` is discarded. The operation preserves
+the inner ring's node count on every generated circle and returns the same
+`Mesh2D` instance transactionally. `element_size` limits radial spacing only;
+it does not limit circumferential edge length.
 
 ## Tests
 

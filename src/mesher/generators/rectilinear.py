@@ -1,7 +1,7 @@
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ..mesh import Mesh
+from ..mesh import Mesh2D
 
 
 def _sort(float_list, tolerance=1e-3):
@@ -43,7 +43,7 @@ def generate_rectilinear_mesh(
     target_edge_size: float,
     x_coordinates: ArrayLike,
     y_coordinates: ArrayLike,
-) -> Mesh:
+) -> Mesh2D:
     """Generate a planar rectilinear Quad4 mesh.
 
     The supplied coordinates define mandatory grid lines. Intervals are
@@ -87,7 +87,7 @@ def generate_rectilinear_mesh(
     # COUNTER-CLOCKWISE: BL, BR, TR, TL
     elements = np.stack([n00, n10, n11, n01], axis=-1).reshape(-1, 4).astype(np.int32)
 
-    return Mesh(nodes=nodes, elements=elements)
+    return Mesh2D(nodes=nodes, elements=elements)
 
 
 __all__ = ["generate_rectilinear_mesh"]

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher.generators import generate_rectilinear_mesh
-from mesher import Mesh
+from mesher import Mesh2D
 from mesher.quality import (
     ElementType,
     GeometryTolerance,
@@ -19,7 +19,7 @@ from mesher.quality import (
 def _checker(nodes, elements, *, tolerance=None):
     kwargs = {} if tolerance is None else {"tolerance": tolerance}
     return MeshQualityChecker(
-        Mesh(np.asarray(nodes), np.asarray(elements)),
+        Mesh2D(np.asarray(nodes), np.asarray(elements)),
         **kwargs,
     )
 
@@ -501,16 +501,16 @@ class InvalidMeshTests(unittest.TestCase):
         for nodes, elements in cases:
             with self.subTest(nodes_shape=nodes.shape, elements_shape=elements.shape):
                 with self.assertRaises(ValueError):
-                    MeshQualityChecker(Mesh(nodes, elements))
+                    MeshQualityChecker(Mesh2D(nodes, elements))
 
     def test_wrong_mesh_dtypes_raise_value_error(self):
         nodes = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
         elements = np.array([[0, 1, 2, 2]], dtype=np.int64)
 
         with self.assertRaises(ValueError):
-            MeshQualityChecker(Mesh(nodes.astype(object), elements))
+            MeshQualityChecker(Mesh2D(nodes.astype(object), elements))
         with self.assertRaises(ValueError):
-            MeshQualityChecker(Mesh(nodes, elements.astype(np.float64)))
+            MeshQualityChecker(Mesh2D(nodes, elements.astype(np.float64)))
 
     def test_xyz_plane_and_explicit_planar_tolerance(self):
         elements = np.array([[0, 1, 2, 2]], dtype=np.int64)
@@ -522,11 +522,11 @@ class InvalidMeshTests(unittest.TestCase):
         tolerance = GeometryTolerance(absolute=0.0, relative=0.0, planar=1.0e-3)
 
         result = MeshQualityChecker(
-            Mesh(within, elements), tolerance=tolerance
+            Mesh2D(within, elements), tolerance=tolerance
         ).calculate_jacobian()
         self.assertAlmostEqual(result.values[0], 1.0)
         with self.assertRaises(ValueError):
-            MeshQualityChecker(Mesh(outside, elements), tolerance=tolerance)
+            MeshQualityChecker(Mesh2D(outside, elements), tolerance=tolerance)
 
     def test_legacy_two_array_checker_constructor_is_removed(self):
         nodes = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
@@ -544,7 +544,7 @@ class GeneratedMeshTests(unittest.TestCase):
             y_coordinates=[0.0, 1.5, 3.0],
         )
 
-        self.assertIsInstance(mesh, Mesh)
+        self.assertIsInstance(mesh, Mesh2D)
         self.assertEqual(mesh.nodes.dtype, np.dtype(np.float64))
         report = MeshQualityChecker(mesh).check_jacobian()
         self.assertEqual(report.failed_indices.size, 0)

@@ -4,7 +4,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from ...mesh import Mesh
+from ..mesh import Mesh2D
 
 
 def _add_pattern_anchor(
@@ -131,7 +131,7 @@ def _read_pattern_circle_inputs(
     """Normalize pattern-circle mesh, scalar, and line inputs.
 
     Args:
-        mesh: Mesh whose coordinate dimension controls the output shape.
+        mesh: Mesh2D whose coordinate dimension controls the output shape.
         center_x: X coordinate of the pattern-circle center.
         center_y: Y coordinate of the pattern-circle center.
         radius: Positive pattern-circle radius.
@@ -142,11 +142,11 @@ def _read_pattern_circle_inputs(
         Validated node array, center, scalar values, and pattern guide_segments.
 
     Raises:
-        TypeError: If mesh is not a Mesh instance.
+        TypeError: If mesh is not a Mesh2D instance.
         ValueError: If nodes, scalars, or pattern guide_segments are invalid.
     """
-    if not isinstance(mesh, Mesh):
-        raise TypeError("mesh must be a Mesh instance")
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
 
     nodes = np.asarray(mesh.nodes)
     if nodes.ndim != 2 or nodes.shape[1] not in (2, 3):
@@ -482,7 +482,7 @@ def _validate_pattern_circle(
 
 
 def _generate_pattern_circle_nodes(
-    mesh: Mesh,
+    mesh: Mesh2D,
     center_x,
     center_y,
     radius,
@@ -498,7 +498,7 @@ def _generate_pattern_circle_nodes(
     uniform ring.  The first node is not repeated at the end.
 
     Args:
-        mesh: Mesh whose coordinate dimension determines the result shape.
+        mesh: Mesh2D whose coordinate dimension determines the result shape.
         center_x: X coordinate of the pattern-circle center.
         center_y: Y coordinate of the pattern-circle center.
         radius: Positive pattern-circle radius.
@@ -511,7 +511,7 @@ def _generate_pattern_circle_nodes(
         coordinates are zero and the first node is not repeated.
 
     Raises:
-        TypeError: If mesh is not a Mesh instance.
+        TypeError: If mesh is not a Mesh2D instance.
         ValueError: If inputs, pattern constraints, requested spacing, or
             generated circle geometry are invalid.
     """

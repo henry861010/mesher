@@ -4,7 +4,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from ...mesh import Mesh
+from ..mesh import Mesh2D
 
 from .geometry import (
     _minimum_scaled_jacobian,
@@ -354,7 +354,7 @@ def _read_projection_inputs(
     """Normalize every input needed by boundary projection.
 
     Args:
-        mesh: Mesh whose exposed boundary will be projected.
+        mesh: Mesh2D whose exposed boundary will be projected.
         center_x: X coordinate of the target-circle center.
         center_y: Y coordinate of the target-circle center.
         radius: Positive target-circle radius.
@@ -372,8 +372,8 @@ def _read_projection_inputs(
             invalid.
         IndexError: If a source node index is out of range.
     """
-    if not isinstance(mesh, Mesh):
-        raise TypeError("mesh must be a Mesh instance")
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -1224,14 +1224,14 @@ def _build_projected_strip_elements(
 
 
 def _to_circle(
-    mesh: Mesh,
+    mesh: Mesh2D,
     center_x,
     center_y,
     radius,
     node_indices,
     guide_segments=None,
     closed=None,
-) -> Mesh:
+) -> Mesh2D:
     """Extend an ordered boundary chain with a mixed Tri3/Quad4 strip.
 
     One circle node is created for every node in ``node_indices`` and normally
@@ -1254,10 +1254,10 @@ def _to_circle(
     decrease.  Pattern intersections and open-chain endpoints remain fixed.
 
     The mesh is mutated only after every geometric and topological validation
-    succeeds, and the same :class:`Mesh` instance is returned.
+    succeeds, and the same :class:`Mesh2D` instance is returned.
 
     Args:
-        mesh: Mesh whose exposed boundary is extended.
+        mesh: Mesh2D whose exposed boundary is extended.
         center_x: X coordinate of the target-circle center.
         center_y: Y coordinate of the target-circle center.
         radius: Positive target-circle radius.

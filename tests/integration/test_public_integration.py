@@ -3,22 +3,29 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from mesher import Mesh2D
+from mesher.circular import extend_circular_mesh, imprint_circle
+from mesher.circular.extend import (
+    extend_circular_mesh as extend_circular_mesh_implementation,
+)
+from mesher.circular.imprint import (
+    imprint_circle as imprint_circle_implementation,
+)
 from mesher.generators import generate_rectilinear_mesh
-from mesher.imprinting import imprint_circle
-from mesher import Mesh
 from mesher.visualization import build_faces, view_mesh
 
 
 class PublicIntegrationTests(unittest.TestCase):
-    def test_public_api_imports_resolve_from_mesher_namespace(self):
-        self.assertEqual(Mesh.__module__, "mesher.mesh")
+    def test_public_api_imports_resolve_from_domain_namespaces(self):
+        self.assertEqual(Mesh2D.__module__, "mesher.mesh")
         self.assertEqual(
             generate_rectilinear_mesh.__module__,
             "mesher.generators.rectilinear",
         )
-        self.assertEqual(
-            imprint_circle.__module__,
-            "mesher.imprinting.circular.api",
+        self.assertIs(imprint_circle, imprint_circle_implementation)
+        self.assertIs(
+            extend_circular_mesh,
+            extend_circular_mesh_implementation,
         )
 
     def test_checkerboard_returns_mesh_with_counter_clockwise_elements(self):
@@ -28,7 +35,7 @@ class PublicIntegrationTests(unittest.TestCase):
             y_coordinates=[0.0, 1.0, 2.0],
         )
 
-        self.assertIsInstance(mesh, Mesh)
+        self.assertIsInstance(mesh, Mesh2D)
         self.assertEqual(mesh.nodes.dtype, np.dtype(np.float64))
         points = mesh.nodes[mesh.elements, :2]
         first_edges = points[:, 1] - points[:, 0]
@@ -41,7 +48,7 @@ class PublicIntegrationTests(unittest.TestCase):
         self.assertTrue(np.all(signed_corner_areas > 0.0))
 
     def test_build_faces_handles_mesh_with_triangles_and_quads(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.zeros((7, 3), dtype=np.float64),
             elements=np.array(
                 [[0, 1, 2, 2], [3, 4, 5, 6]],
@@ -57,7 +64,7 @@ class PublicIntegrationTests(unittest.TestCase):
         )
 
     def test_build_faces_supports_empty_mesh(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.empty((0, 3), dtype=np.float64),
             elements=np.empty((0, 4), dtype=np.int32),
         )
@@ -87,7 +94,7 @@ class PublicIntegrationTests(unittest.TestCase):
             view_mesh(nodes, elements)
 
     def test_view_mesh_highlights_requested_elements_in_red(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [
                     [0.0, 0.0, 0.0],
@@ -121,7 +128,7 @@ class PublicIntegrationTests(unittest.TestCase):
         plotter.add_points.assert_not_called()
 
     def test_view_mesh_highlights_requested_nodes_in_yellow(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [
                     [0.0, 0.0, 0.0],
@@ -149,7 +156,7 @@ class PublicIntegrationTests(unittest.TestCase):
         )
 
     def test_view_mesh_can_highlight_nodes_without_elements(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [
                     [0.0, 0.0, 0.0],
@@ -173,7 +180,7 @@ class PublicIntegrationTests(unittest.TestCase):
         )
 
     def test_view_mesh_supports_an_empty_mesh(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.empty((0, 3), dtype=np.float64),
             elements=np.empty((0, 4), dtype=np.int64),
         )
@@ -190,7 +197,7 @@ class PublicIntegrationTests(unittest.TestCase):
         plotter.show.assert_called_once_with()
 
     def test_view_mesh_draws_reference_circles_boxes_and_lines(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.empty((0, 3), dtype=np.float64),
             elements=np.empty((0, 4), dtype=np.int64),
         )
@@ -218,7 +225,7 @@ class PublicIntegrationTests(unittest.TestCase):
         self.assertFalse(plotter.add_lines.call_args.kwargs["connected"])
 
     def test_view_mesh_accepts_multiple_reference_shapes(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.empty((0, 3), dtype=np.float64),
             elements=np.empty((0, 4), dtype=np.int64),
         )
@@ -244,7 +251,7 @@ class PublicIntegrationTests(unittest.TestCase):
         self.assertEqual(plotter.add_lines.call_args.args[0].shape, (532, 3))
 
     def test_view_mesh_validates_reference_geometry(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.empty((0, 3), dtype=np.float64),
             elements=np.empty((0, 4), dtype=np.int64),
         )
@@ -262,7 +269,7 @@ class PublicIntegrationTests(unittest.TestCase):
                     view_mesh(mesh, **kwargs)
 
     def test_view_mesh_validates_node_indices(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.array(
                 [
                     [0.0, 0.0, 0.0],

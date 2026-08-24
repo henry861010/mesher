@@ -2,13 +2,13 @@ import unittest
 
 import numpy as np
 
-from mesher.imprinting.circular.topology import _get_boundary
-from mesher import Mesh
+from mesher.circular.topology import _get_boundary
+from mesher import Mesh2D
 
 
 class GetBoundaryTests(unittest.TestCase):
     def test_returns_ordered_outer_boundary_without_repeating_first_node(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.zeros((6, 3), dtype=np.float64),
             elements=np.array(
                 [[0, 1, 4, 3], [1, 2, 5, 4]],
@@ -23,7 +23,7 @@ class GetBoundaryTests(unittest.TestCase):
         self.assertEqual(boundaries[0].dtype, np.int64)
 
     def test_indices_limit_boundary_search_to_selected_elements(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.zeros((6, 3), dtype=np.float64),
             elements=np.array(
                 [[0, 1, 4, 3], [1, 2, 5, 4]],
@@ -37,7 +37,7 @@ class GetBoundaryTests(unittest.TestCase):
         np.testing.assert_array_equal(boundaries[0], [0, 1, 4, 3])
 
     def test_multiple_indices_use_the_selected_submesh_regardless_of_order(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.zeros((6, 3), dtype=np.float64),
             elements=np.array(
                 [[0, 1, 4, 3], [1, 2, 5, 4]],
@@ -51,7 +51,7 @@ class GetBoundaryTests(unittest.TestCase):
         np.testing.assert_array_equal(boundaries[0], [0, 1, 2, 5, 4, 3])
 
     def test_empty_indices_have_no_boundaries(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.zeros((4, 2), dtype=np.float64),
             elements=np.array([[0, 1, 2, 3]], dtype=np.int64),
         )
@@ -59,7 +59,7 @@ class GetBoundaryTests(unittest.TestCase):
         self.assertEqual(_get_boundary(mesh, indices=[]), [])
 
     def test_rejects_invalid_element_indices(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.zeros((4, 2), dtype=np.float64),
             elements=np.array([[0, 1, 2, 3]], dtype=np.int64),
         )
@@ -93,7 +93,7 @@ class GetBoundaryTests(unittest.TestCase):
                         lower_left + 4,
                     ]
                 )
-        mesh = Mesh(nodes=nodes, elements=np.asarray(elements, dtype=np.int64))
+        mesh = Mesh2D(nodes=nodes, elements=np.asarray(elements, dtype=np.int64))
 
         boundaries = _get_boundary(mesh)
 
@@ -105,7 +105,7 @@ class GetBoundaryTests(unittest.TestCase):
         np.testing.assert_array_equal(boundaries[1], [5, 9, 10, 6])
 
     def test_supports_padded_triangles(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.zeros((3, 2), dtype=np.float64),
             elements=np.array([[0, 1, 2, 2]], dtype=np.int64),
         )
@@ -116,7 +116,7 @@ class GetBoundaryTests(unittest.TestCase):
         np.testing.assert_array_equal(boundaries[0], [0, 1, 2])
 
     def test_keeps_point_touching_components_as_separate_boundaries(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.zeros((7, 2), dtype=np.float64),
             elements=np.array(
                 [[0, 1, 2, 3], [0, 4, 5, 6]],
@@ -131,7 +131,7 @@ class GetBoundaryTests(unittest.TestCase):
         np.testing.assert_array_equal(boundaries[1], [0, 4, 5, 6])
 
     def test_empty_mesh_has_no_boundaries(self):
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.empty((0, 3), dtype=np.float64),
             elements=np.empty((0, 4), dtype=np.int64),
         )

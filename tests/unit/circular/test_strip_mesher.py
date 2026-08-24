@@ -3,8 +3,8 @@ from collections import Counter
 
 import numpy as np
 
-from mesher.imprinting.circular.strip_mesher import _CircularStripMesher, _mesh_inner_outer_circle
-from mesher import Mesh
+from mesher.circular.strip_mesher import _CircularStripMesher, _mesh_inner_outer_circle
+from mesher import Mesh2D
 from mesher.quality import MeshQualityChecker
 
 
@@ -84,7 +84,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         outer_nodes = np.arange(8, 15, dtype=np.int64)
         elements = np.array([[0, 1, 2, 2]], dtype=element_dtype)
         return (
-            Mesh(nodes=nodes, elements=elements),
+            Mesh2D(nodes=nodes, elements=elements),
             inner_nodes,
             outer_nodes,
         )
@@ -103,7 +103,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             inner_points.shape[0] + outer_points.shape[0],
             dtype=np.int64,
         )
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.empty((0, 4), dtype=np.int32),
         )
@@ -122,7 +122,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         nodes = np.vstack((inner_points, outer_points))
         inner_nodes = np.arange(0, 4, dtype=np.int64)
         outer_nodes = np.arange(4, 12, dtype=np.int64)
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.empty((0, 4), dtype=element_dtype),
         )
@@ -141,7 +141,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         nodes = np.vstack((inner_points, outer_points))
         inner_nodes = np.arange(0, 4, dtype=np.int64)
         outer_nodes = np.arange(4, 10, dtype=np.int64)
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.empty((0, 4), dtype=np.int32),
         )
@@ -179,7 +179,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         nodes = np.vstack((inner_points, outer_points))
         inner_nodes = np.arange(0, 6, dtype=np.int64)
         outer_nodes = np.arange(6, 12, dtype=np.int64)
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.empty((0, 4), dtype=np.int32),
         )
@@ -197,7 +197,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         self.assertTrue(np.all(signed_areas > 0.0))
 
         report = MeshQualityChecker(
-            Mesh(nodes=np.asarray(mesh.nodes)[:, :2], elements=new_elements)
+            Mesh2D(nodes=np.asarray(mesh.nodes)[:, :2], elements=new_elements)
         ).check_jacobian()
         self.assertEqual(report.invalid_indices.size, 0)
         self.assertTrue(np.all(report.values > 0.0))
@@ -208,7 +208,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         quad_indices = np.flatnonzero(elements[:, 2] != elements[:, 3])
         self.assertGreater(quad_indices.size, 0)
         report = MeshQualityChecker(
-            Mesh(nodes=np.asarray(mesh.nodes)[:, :2], elements=elements)
+            Mesh2D(nodes=np.asarray(mesh.nodes)[:, :2], elements=elements)
         ).calculate_scaled_jacobian(indices=quad_indices)
         self.assertTrue(np.all(report.values >= minimum))
 
@@ -377,7 +377,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             inner_angles.size + outer_angles.size,
             dtype=np.int64,
         )
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.vstack((inner_points, outer_points)),
             elements=np.empty((0, 4), dtype=np.int32),
         )
@@ -514,7 +514,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             with self.subTest(name=name):
                 nodes = np.asarray(coordinates, dtype=np.float64)
                 mesher = _CircularStripMesher(
-                    Mesh(
+                    Mesh2D(
                         nodes=nodes,
                         elements=np.empty((0, 4), dtype=np.int32),
                     ),
@@ -548,7 +548,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             dtype=np.int64,
         )
         mesher = _CircularStripMesher(
-            Mesh(nodes=nodes, elements=np.empty((0, 4), dtype=np.int32)),
+            Mesh2D(nodes=nodes, elements=np.empty((0, 4), dtype=np.int32)),
             [],
             [],
             None,
@@ -568,7 +568,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         self.assertEqual(accepted.shape, (1, 4))
         self.assertNotEqual(accepted[0, 2], accepted[0, 3])
         quality = MeshQualityChecker(
-            Mesh(nodes=nodes, elements=accepted)
+            Mesh2D(nodes=nodes, elements=accepted)
         ).calculate_scaled_jacobian()
         self.assertGreaterEqual(float(quality.values[0]), 0.1)
         self.assertLess(float(quality.values[0]), 0.3)
@@ -602,7 +602,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         angles = np.deg2rad([-60.0, 0.0, 60.0])
         inner_points = _points_on_circle(1.0, angles)
         outer_points = _points_on_circle(2.0, angles)
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.vstack((inner_points, outer_points)),
             elements=np.empty((0, 4), dtype=np.int32),
         )
@@ -622,7 +622,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
 
     def test_open_pattern_entering_through_a_side_is_an_atomic_error(self):
         angles = np.deg2rad([-60.0, 0.0, 60.0])
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.vstack(
                 (_points_on_circle(1.0, angles), _points_on_circle(2.0, angles))
             ),
@@ -890,7 +890,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         nodes = np.vstack((inner_points, outer_points))
         inner_nodes = np.arange(0, 5, dtype=np.int64)[[3, 0, 4, 1, 2]]
         outer_nodes = np.arange(5, 12, dtype=np.int64)[[4, 1, 6, 2, 0, 5, 3]]
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.empty((0, 4), dtype=np.int32),
         )
@@ -927,7 +927,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             dtype=np.float64,
         )
         nodes = np.vstack((inner_points, outer_points, embedded_triangle))
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.array([[12, 13, 14, 14]], dtype=np.int32),
         )
@@ -949,7 +949,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             [[1.5, -0.2], [1.7, 0.0], [1.5, 0.2]],
             dtype=np.float64,
         )
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.vstack((ring_nodes, crossing_triangle)),
             elements=np.array([[16, 17, 18, 18]], dtype=np.int32),
         )
@@ -971,7 +971,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             [[1.2, 0.0], [1.8, 0.0], [1.5, 0.1]],
             dtype=np.float64,
         )
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=np.vstack((ring_nodes, overlapping_triangle)),
             elements=np.array([[16, 17, 18, 18]], dtype=np.int32),
         )
@@ -996,7 +996,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         outer_nodes = np.arange(4, 8, dtype=np.int64)
         # New annulus triangles traverse 4 -> 5, so the existing outside
         # triangle exposes the same interface as 5 -> 4.
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.array([[5, 4, 8, 8]], dtype=np.int32),
         )
@@ -1032,7 +1032,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             2.0, np.deg2rad([0.0, 90.0, 180.0, 270.0])
         )
         nodes = np.vstack((inner_points, outer_points, [[3.0, -2.0]]))
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.array([[4, 5, 8, 8]], dtype=np.int32),
         )
@@ -1094,7 +1094,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             2.0,
             np.deg2rad([0.0, 90.0, 180.0, 270.0]),
         )
-        mesh = Mesh(
+        mesh = Mesh2D(
             nodes=nodes,
             elements=np.empty((0, 4), dtype=np.int8),
         )

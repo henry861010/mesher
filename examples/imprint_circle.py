@@ -1,7 +1,7 @@
 import random
 
 from mesher.generators import generate_rectilinear_mesh
-from mesher.imprinting import imprint_circle
+from mesher.circular import imprint_circle
 from mesher.quality import MeshQualityChecker
 from mesher.visualization import view_mesh
 

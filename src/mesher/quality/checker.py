@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from ..mesh import Mesh
+from ..mesh import Mesh2D
 
 
 FloatArray = NDArray[np.float64]
@@ -294,12 +294,12 @@ class MeshQualityChecker:
 
     def __init__(
         self,
-        mesh: Mesh,
+        mesh: Mesh2D,
         *,
         tolerance: GeometryTolerance | None = None,
     ) -> None:
-        if not isinstance(mesh, Mesh):
-            raise ValueError("mesh must be a Mesh instance")
+        if not isinstance(mesh, Mesh2D):
+            raise ValueError("mesh must be a Mesh2D instance")
         self.tolerance = tolerance if tolerance is not None else GeometryTolerance()
         if not isinstance(self.tolerance, GeometryTolerance):
             raise ValueError("tolerance must be a GeometryTolerance instance")

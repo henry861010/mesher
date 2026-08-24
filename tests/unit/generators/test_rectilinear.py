@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from mesher import Mesh
+from mesher import Mesh2D
 from mesher.generators import generate_rectilinear_mesh
 
 
@@ -14,7 +14,7 @@ class GenerateRectilinearMeshTests(unittest.TestCase):
             y_coordinates=[0.0, 1.0],
         )
 
-        self.assertIsInstance(mesh, Mesh)
+        self.assertIsInstance(mesh, Mesh2D)
         self.assertEqual(mesh.elements.shape, (9, 4))
         points = mesh.nodes[mesh.elements, :2]
         first_edges = points[:, 1] - points[:, 0]

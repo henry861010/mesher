@@ -135,6 +135,93 @@ def _segments_intersect_xy(xy, first_edge, second_edge, tolerance):
     return signs[0] * signs[1] <= 0 and signs[2] * signs[3] <= 0
 
 
+def _iter_candidate_edge_pairs(
+    xy,
+    edge_items,
+    tolerance,
+    *,
+    block_size=256,
+):
+    """Yield non-neighbouring edge pairs with overlapping planar bounds.
+
+    This is a conservative broad phase for exact segment-intersection tests.
+    Pairs are yielded in the same order as an exhaustive upper-triangular
+    search, while pairs that share a node or whose tolerance-expanded AABBs do
+    not overlap are omitted.
+
+    Args:
+        xy: Planar node coordinates.
+        edge_items: Ordered ``(key, directed_edge)`` pairs from ``_strip_edges``.
+        tolerance: Linear distance allowed between segment bounds.
+        block_size: Maximum first-edge positions processed per NumPy block.
+
+    Yields:
+        Pairs of positions in ``edge_items`` that require an exact test.
+
+    Raises:
+        ValueError: If ``block_size`` is not positive.
+    """
+    if block_size <= 0:
+        raise ValueError("block_size must be positive")
+
+    edge_count = len(edge_items)
+    if edge_count < 2:
+        return
+
+    # Keep each broadcast matrix near one million entries.  This is roughly
+    # eight MiB for a float64 temporary, even when a strip has many more edges
+    # than the default block size was tuned for.
+    block_size = min(block_size, max(1, 1_048_576 // edge_count))
+
+    edge_keys = np.asarray(
+        [key for key, _ in edge_items], dtype=np.intp
+    ).reshape(edge_count, 2)
+    edge_nodes = np.asarray(
+        [edge for _, edge in edge_items], dtype=np.intp
+    ).reshape(edge_count, 2)
+    edge_points = np.asarray(xy)[edge_nodes][..., :2]
+    minimum_xy = np.minimum(edge_points[:, 0], edge_points[:, 1])
+    maximum_xy = np.maximum(edge_points[:, 0], edge_points[:, 1])
+
+    for block_start in range(0, edge_count - 1, block_size):
+        block_stop = min(block_start + block_size, edge_count - 1)
+        first_positions = np.arange(block_start, block_stop, dtype=np.intp)
+        second_positions = np.arange(block_start + 1, edge_count, dtype=np.intp)
+        first_keys = edge_keys[first_positions]
+        second_keys = edge_keys[second_positions]
+
+        candidates = np.ones(
+            (first_positions.size, second_positions.size),
+            dtype=bool,
+        )
+        with np.errstate(over="ignore", invalid="ignore"):
+            for axis in range(2):
+                separated = np.maximum(
+                    minimum_xy[first_positions, axis, None],
+                    minimum_xy[second_positions, axis][None, :],
+                ) > (
+                    np.minimum(
+                        maximum_xy[first_positions, axis, None],
+                        maximum_xy[second_positions, axis][None, :],
+                    )
+                    + tolerance
+                )
+                candidates &= ~separated
+
+        candidates &= second_positions[None, :] > first_positions[:, None]
+        candidates &= first_keys[:, None, 0] != second_keys[None, :, 0]
+        candidates &= first_keys[:, None, 0] != second_keys[None, :, 1]
+        candidates &= first_keys[:, None, 1] != second_keys[None, :, 0]
+        candidates &= first_keys[:, None, 1] != second_keys[None, :, 1]
+
+        for local_first, first_position in enumerate(first_positions):
+            for local_second in np.flatnonzero(candidates[local_first]):
+                yield (
+                    int(first_position),
+                    int(second_positions[local_second]),
+                )
+
+
 def _validate_generated_strip(
     proposed_xy,
     new_elements,
@@ -208,19 +295,22 @@ def _validate_generated_strip(
             )
 
     edge_items = list(_strip_edges(new_elements).items())
-    for first_position, (first_key, first_edge) in enumerate(edge_items):
-        for second_key, second_edge in edge_items[first_position + 1 :]:
-            if set(first_key).intersection(second_key):
-                continue
-            if _segments_intersect_xy(
-                proposed_xy,
-                first_edge,
-                second_edge,
-                tolerance,
-            ):
-                raise ValueError(
-                    "non-neighbouring edges in the generated strip cross"
-                )
+    for first_position, second_position in _iter_candidate_edge_pairs(
+        proposed_xy,
+        edge_items,
+        tolerance,
+    ):
+        first_edge = edge_items[first_position][1]
+        second_edge = edge_items[second_position][1]
+        if _segments_intersect_xy(
+            proposed_xy,
+            first_edge,
+            second_edge,
+            tolerance,
+        ):
+            raise ValueError(
+                "non-neighbouring edges in the generated strip cross"
+            )
 
 
 def _smooth_circle_nodes(

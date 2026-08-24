@@ -855,4 +855,3 @@ class _TriangulationMixin:
         if self.closed:
             return self._triangulate_closed()
         return self._triangulate_open()
-

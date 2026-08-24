@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ...mesh import Mesh
+from ..mesh import Mesh2D
 from .quad_merge import _QuadMergeMixin
 from .triangulation import _StripScore, _TriangulationMixin
 from .validation import _ValidationMixin
@@ -22,7 +22,7 @@ class _CircularStripMesher(
     new strip, merge quads, and commit.
 
     Attributes:
-        mesh: Mesh receiving elements only after every stage succeeds.
+        mesh: Mesh2D receiving elements only after every stage succeeds.
         inner_input: Raw inner-boundary node indices.
         outer_input: Raw outer-boundary node indices.
         guide_segments_input: Raw axis-aligned pattern segments.
@@ -42,7 +42,7 @@ class _CircularStripMesher(
         """Store raw inputs for deferred, transactional validation.
 
         Args:
-            mesh: Mesh that receives generated elements after validation.
+            mesh: Mesh2D that receives generated elements after validation.
             inner_nodes: Node indices on the smaller circular boundary.
             outer_nodes: Node indices on the larger circular boundary.
             guide_segments: Optional axis-aligned pattern segments.
@@ -60,7 +60,7 @@ class _CircularStripMesher(
         """Run every meshing stage and commit the validated strip.
 
         Returns:
-            The same Mesh instance with generated elements appended.
+            The same Mesh2D instance with generated elements appended.
 
         Raises:
             TypeError: If an input has an unsupported type.
@@ -68,7 +68,7 @@ class _CircularStripMesher(
             IndexError: If a boundary contains an out-of-range node index.
 
         Note:
-            Mesh mutation is deferred until the final commit stage.
+            Mesh2D mutation is deferred until the final commit stage.
         """
         self._read_inputs()
         self._fit_concentric_geometry()
@@ -90,8 +90,8 @@ class _CircularStripMesher(
             ValueError: If array shapes, scalar ranges, or coordinates are invalid.
             IndexError: If a ring contains an out-of-range node index.
         """
-        if not isinstance(self.mesh, Mesh):
-            raise TypeError("mesh must be a Mesh instance")
+        if not isinstance(self.mesh, Mesh2D):
+            raise TypeError("mesh must be a Mesh2D instance")
         if not isinstance(self.closed_input, (bool, np.bool_)):
             raise TypeError("closed must be True or False")
         self.closed = bool(self.closed_input)
@@ -1195,13 +1195,13 @@ class _CircularStripMesher(
 
 
 def _mesh_inner_outer_circle(
-    mesh: Mesh,
+    mesh: Mesh2D,
     inner_nodes,
     outer_nodes,
     guide_segments=None,
     closed: bool = True,
     min_quad_scaled_jacobian: float = 0.3,
-) -> Mesh:
+) -> Mesh2D:
     """Mesh the strip between two concentric circular boundaries.
 
     Existing nodes remain fixed.  Cross-ring connectors are selected by a
@@ -1213,7 +1213,7 @@ def _mesh_inner_outer_circle(
     connector edges and are never removed by merging.
 
     Args:
-        mesh: Mesh whose existing nodes remain fixed and whose element array is
+        mesh: Mesh2D whose existing nodes remain fixed and whose element array is
             extended only after successful validation.
         inner_nodes: Node indices on the smaller circular ring or arc.
         outer_nodes: Node indices on the larger circular ring or arc.
