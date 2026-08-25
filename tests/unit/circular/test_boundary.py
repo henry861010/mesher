@@ -2,11 +2,34 @@ import unittest
 
 import numpy as np
 
-from mesher.circular.topology import _get_boundary
+from mesher.circular.topology import (
+    _get_boundary,
+    _get_boundary_edge_groups,
+)
 from mesher import Mesh2D
 
 
 class GetBoundaryTests(unittest.TestCase):
+    def test_splits_selected_interface_edges_from_domain_edges(self):
+        mesh = Mesh2D(
+            nodes=np.zeros((6, 2), dtype=np.float64),
+            elements=np.array(
+                [[0, 1, 4, 3], [1, 2, 5, 4]],
+                dtype=np.int32,
+            ),
+        )
+
+        interface_edges, domain_edges = _get_boundary_edge_groups(mesh, [0])
+
+        self.assertEqual(
+            {tuple(map(int, edge)) for edge in interface_edges},
+            {(1, 4)},
+        )
+        self.assertEqual(
+            {tuple(map(int, edge)) for edge in domain_edges},
+            {(0, 1), (4, 3), (3, 0)},
+        )
+
     def test_returns_ordered_outer_boundary_without_repeating_first_node(self):
         mesh = Mesh2D(
             nodes=np.zeros((6, 3), dtype=np.float64),

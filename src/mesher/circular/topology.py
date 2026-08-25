@@ -509,3 +509,67 @@ def _get_boundary(mesh: Mesh2D, indices=None) -> list[np.ndarray]:
         boundary_half_edges,
         successor,
     )
+
+
+def _get_boundary_edge_groups(
+    mesh: Mesh2D,
+    indices,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split selected-submesh boundary edges by their full-mesh ownership.
+
+    A selected boundary edge is an ``interface`` edge when the full mesh has
+    an element on its other side that is not selected.  It is a ``domain``
+    edge when it was already exposed on the full mesh boundary.  Edge
+    directions follow the selected elements' winding.
+
+    Args:
+        mesh: Mesh2D containing the selected submesh.
+        indices: Unique one-dimensional element indices selecting the submesh.
+
+    Returns:
+        A pair ``(interface_edges, domain_edges)``.  Each array has shape
+        ``(E, 2)`` and contains directed node-index pairs.
+
+    Raises:
+        TypeError: If mesh or an element index has an invalid type.
+        ValueError: If arrays, elements, selection, winding, or topology are
+            invalid.
+        IndexError: If a selected element index is out of range.
+    """
+    full_elements = _select_boundary_elements(mesh, indices=None)
+    selected_elements = _select_boundary_elements(mesh, indices=indices)
+    if selected_elements.shape[0] == 0:
+        empty = np.empty((0, 2), dtype=np.int64)
+        return empty, empty.copy()
+
+    (
+        full_half_edges,
+        _,
+        _,
+        full_boundary_half_edges,
+    ) = _build_boundary_half_edges(full_elements)
+    full_domain_edges = {
+        tuple(sorted(map(int, edge)))
+        for edge in full_half_edges[full_boundary_half_edges]
+    }
+
+    (
+        selected_half_edges,
+        _,
+        _,
+        selected_boundary_half_edges,
+    ) = _build_boundary_half_edges(selected_elements)
+    selected_boundary_edges = selected_half_edges[
+        selected_boundary_half_edges
+    ].astype(np.int64, copy=False)
+    is_domain = np.asarray(
+        [
+            tuple(sorted(map(int, edge))) in full_domain_edges
+            for edge in selected_boundary_edges
+        ],
+        dtype=bool,
+    )
+    return (
+        selected_boundary_edges[~is_domain],
+        selected_boundary_edges[is_domain],
+    )

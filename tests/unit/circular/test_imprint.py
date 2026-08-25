@@ -1114,6 +1114,8 @@ class CircleIntegrationTests(unittest.TestCase):
             {"min_quad_scaled_jacobian": 1.01},
             {"min_quad_scaled_jacobian": np.nan},
             {"min_quad_scaled_jacobian": np.inf},
+            {"topology": None},
+            {"topology": "partial"},
             {"guide_segments": [[[0.0, 0.0], [1.0, 1.0]]]},
         )
 
@@ -1244,6 +1246,37 @@ class CircleIntegrationTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(far_irrelevant_nodes, plain_nodes)
 
+    def test_pattern_arc_preserves_endpoints_filters_anchors_and_bounds_spacing(self):
+        mesh = Mesh2D(
+            nodes=np.empty((0, 2), dtype=np.float64),
+            elements=np.empty((0, 4), dtype=np.int32),
+        )
+        endpoints = np.asarray([[5.0, 0.0], [-5.0, 0.0]])
+
+        arc_nodes = _generate_pattern_circle_nodes(
+            mesh,
+            0.0,
+            0.0,
+            5.0,
+            1.3,
+            guide_segments=[[[0.0, -8.0], [0.0, 8.0]]],
+            arc_endpoints=endpoints,
+        )
+
+        np.testing.assert_array_equal(arc_nodes[[0, -1]], endpoints)
+        self.assertTrue(np.all(arc_nodes[:, 1] >= -1.0e-12))
+        top_distances = np.hypot(
+            arc_nodes[:, 0],
+            arc_nodes[:, 1] - 5.0,
+        )
+        self.assertLessEqual(float(np.min(top_distances)), 1.0e-12)
+        angles = np.unwrap(np.arctan2(arc_nodes[:, 1], arc_nodes[:, 0]))
+        self.assertTrue(np.all(np.diff(angles) > 0.0))
+        self.assertLessEqual(
+            float(np.max(5.0 * np.diff(angles))),
+            1.3 + 1.0e-10,
+        )
+
     def test_pattern_circle_tangent_is_preserved_end_to_end(self):
         mesh = generate_rectilinear_mesh(
             0.5,
@@ -1325,6 +1358,212 @@ class CircleIntegrationTests(unittest.TestCase):
                 report = MeshQualityChecker(mesh).check_jacobian()
                 self.assertEqual(report.invalid_indices.size, 0)
                 self.assertTrue(np.all(report.values > 0.0))
+
+
+class OpenCircleIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _build_half_mesh(upper=True, dimensions=3):
+        y_coordinates = (
+            np.arange(0.0, 8.01, 0.5)
+            if upper
+            else np.arange(-8.0, 0.01, 0.5)
+        )
+        mesh = generate_rectilinear_mesh(
+            0.5,
+            np.arange(-8.0, 8.01, 0.5),
+            y_coordinates,
+        )
+        if dimensions == 2:
+            mesh.nodes = mesh.nodes[:, :2].copy()
+        return mesh
+
+    @staticmethod
+    def _edge_counts(mesh):
+        counts = Counter()
+        for element in np.asarray(mesh.elements):
+            perimeter = element[:3] if element[2] == element[3] else element
+            for start, end in zip(perimeter, np.roll(perimeter, -1)):
+                counts[tuple(sorted((int(start), int(end))))] += 1
+        return counts
+
+    @staticmethod
+    def _snapshot(mesh):
+        return (
+            mesh.nodes,
+            mesh.elements,
+            mesh.nodes.copy(),
+            mesh.elements.copy(),
+        )
+
+    def assert_mesh_unchanged(self, mesh, snapshot):
+        nodes, elements, node_values, element_values = snapshot
+        self.assertIs(mesh.nodes, nodes)
+        self.assertIs(mesh.elements, elements)
+        np.testing.assert_array_equal(mesh.nodes, node_values)
+        np.testing.assert_array_equal(mesh.elements, element_values)
+
+    def test_auto_imprints_upper_and_lower_radial_half_planes(self):
+        for upper in (True, False):
+            with self.subTest(upper=upper):
+                mesh = self._build_half_mesh(upper=upper)
+
+                imprint_circle(
+                    mesh,
+                    center=(0.0, 0.0),
+                    radius=5.0,
+                    band_width=1.0,
+                    target_edge_size=1.0,
+                )
+
+                xy = np.asarray(mesh.nodes)[:, :2]
+                radii = np.hypot(xy[:, 0], xy[:, 1])
+                pattern_nodes = np.flatnonzero(
+                    np.isclose(radii, 5.0, rtol=0.0, atol=1.0e-10)
+                )
+                self.assertGreater(pattern_nodes.size, 2)
+                if upper:
+                    self.assertTrue(np.all(xy[pattern_nodes, 1] >= -1.0e-12))
+                else:
+                    self.assertTrue(np.all(xy[pattern_nodes, 1] <= 1.0e-12))
+
+                counts = self._edge_counts(mesh)
+                pattern_set = set(map(int, pattern_nodes))
+                pattern_edges = {
+                    edge: count
+                    for edge, count in counts.items()
+                    if edge[0] in pattern_set and edge[1] in pattern_set
+                }
+                self.assertEqual(len(pattern_edges), pattern_nodes.size - 1)
+                self.assertTrue(all(count == 2 for count in pattern_edges.values()))
+                self.assertEqual(len(_get_boundary(mesh)), 1)
+                report = MeshQualityChecker(mesh).check_jacobian()
+                self.assertEqual(report.invalid_indices.size, 0)
+
+    def test_auto_imprints_a_radial_quarter_plane(self):
+        mesh = generate_rectilinear_mesh(
+            0.5,
+            np.arange(0.0, 8.01, 0.5),
+            np.arange(0.0, 8.01, 0.5),
+        )
+
+        imprint_circle(
+            mesh,
+            center=(0.0, 0.0),
+            radius=5.0,
+            band_width=1.0,
+            target_edge_size=1.0,
+        )
+
+        xy = np.asarray(mesh.nodes)[:, :2]
+        radii = np.hypot(xy[:, 0], xy[:, 1])
+        pattern_nodes = np.flatnonzero(
+            np.isclose(radii, 5.0, rtol=0.0, atol=1.0e-10)
+        )
+        self.assertTrue(np.all(xy[pattern_nodes] >= -1.0e-12))
+        self.assertEqual(len(_get_boundary(mesh)), 1)
+        report = MeshQualityChecker(mesh).check_jacobian()
+        self.assertEqual(report.invalid_indices.size, 0)
+
+    def test_open_sector_preserves_an_active_guide_connector(self):
+        mesh = self._build_half_mesh(upper=True, dimensions=2)
+
+        imprint_circle(
+            mesh,
+            center=(0.0, 0.0),
+            radius=5.0,
+            band_width=1.0,
+            target_edge_size=1.0,
+            guide_segments=[[[0.0, 0.0], [0.0, 8.0]]],
+            topology="open",
+        )
+
+        xy = np.asarray(mesh.nodes)[:, :2]
+        connector_nodes = []
+        for radius in (4.5, 5.0, 5.5):
+            distances = np.hypot(xy[:, 0], xy[:, 1] - radius)
+            node = int(np.argmin(distances))
+            self.assertLessEqual(float(distances[node]), 1.0e-12)
+            connector_nodes.append(node)
+        counts = self._edge_counts(mesh)
+        for start, end in zip(connector_nodes, connector_nodes[1:]):
+            self.assertEqual(counts[tuple(sorted((start, end)))], 2)
+
+    def test_topology_modes_reject_mismatched_meshes_atomically(self):
+        half_mesh = self._build_half_mesh()
+        half_snapshot = self._snapshot(half_mesh)
+        with self.assertRaisesRegex(ValueError, "topology='closed'"):
+            imprint_circle(
+                half_mesh,
+                center=(0.0, 0.0),
+                radius=5.0,
+                band_width=1.0,
+                topology="closed",
+            )
+        self.assert_mesh_unchanged(half_mesh, half_snapshot)
+
+        full_mesh = generate_rectilinear_mesh(
+            0.5,
+            np.arange(-8.0, 8.01, 0.5),
+            np.arange(-8.0, 8.01, 0.5),
+        )
+        full_snapshot = self._snapshot(full_mesh)
+        with self.assertRaisesRegex(ValueError, "topology='open'"):
+            imprint_circle(
+                full_mesh,
+                center=(0.0, 0.0),
+                radius=5.0,
+                band_width=1.0,
+                topology="open",
+            )
+        self.assert_mesh_unchanged(full_mesh, full_snapshot)
+
+    def test_auto_rejects_non_radial_domain_cut_atomically(self):
+        mesh = generate_rectilinear_mesh(
+            0.5,
+            np.arange(-8.0, 8.01, 0.5),
+            np.arange(1.0, 8.01, 0.5),
+        )
+        snapshot = self._snapshot(mesh)
+
+        with self.assertRaisesRegex(ValueError, "rays from the circle center"):
+            imprint_circle(
+                mesh,
+                center=(0.0, 0.0),
+                radius=5.0,
+                band_width=1.0,
+            )
+
+        self.assert_mesh_unchanged(mesh, snapshot)
+
+    def test_auto_and_closed_modes_match_for_a_complete_circle(self):
+        auto_mesh = generate_rectilinear_mesh(
+            0.5,
+            np.arange(-8.0, 8.01, 0.5),
+            np.arange(-8.0, 8.01, 0.5),
+        )
+        closed_mesh = Mesh2D(
+            nodes=auto_mesh.nodes.copy(),
+            elements=auto_mesh.elements.copy(),
+        )
+
+        imprint_circle(
+            auto_mesh,
+            center=(0.0, 0.0),
+            radius=5.0,
+            band_width=1.0,
+            target_edge_size=1.0,
+        )
+        imprint_circle(
+            closed_mesh,
+            center=(0.0, 0.0),
+            radius=5.0,
+            band_width=1.0,
+            target_edge_size=1.0,
+            topology="closed",
+        )
+
+        np.testing.assert_array_equal(auto_mesh.nodes, closed_mesh.nodes)
+        np.testing.assert_array_equal(auto_mesh.elements, closed_mesh.elements)
 
 
 class DeleteElementTests(unittest.TestCase):

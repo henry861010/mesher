@@ -1,4 +1,4 @@
-"""Generate circular pattern rings with exact line constraints."""
+"""Generate circular pattern rings and arcs with exact line constraints."""
 
 from typing import NamedTuple
 
@@ -480,6 +480,146 @@ def _validate_pattern_circle(
         raise ValueError("generated pattern-circle spacing exceeds target_edge_size")
 
 
+def _sample_pattern_arc(
+    anchor_records,
+    *,
+    arc_endpoints,
+    center,
+    radius,
+    target_edge_size,
+    angular_tolerance,
+    full_turn,
+):
+    """Sample one counter-clockwise endpoint-bounded circular arc."""
+    endpoint_offsets = arc_endpoints - center
+    endpoint_angles = np.arctan2(
+        endpoint_offsets[:, 1],
+        endpoint_offsets[:, 0],
+    )
+    start_angle = float(endpoint_angles[0])
+    span = float(np.mod(endpoint_angles[1] - start_angle, full_turn))
+    if span <= angular_tolerance or span >= full_turn - angular_tolerance:
+        raise ValueError(
+            "pattern arc endpoints must determine a non-empty open arc"
+        )
+
+    interior_anchors = []
+    for record in anchor_records:
+        point = np.asarray(record["point"], dtype=np.float64)
+        angle = float(
+            np.arctan2(point[1] - center[1], point[0] - center[0])
+        )
+        position = float(np.mod(angle - start_angle, full_turn))
+        if (
+            position <= angular_tolerance
+            or abs(position - span) <= angular_tolerance
+        ):
+            continue
+        if position >= span - angular_tolerance:
+            continue
+        interior_anchors.append((position, point.copy()))
+    interior_anchors.sort(
+        key=lambda item: (item[0], item[1][0], item[1][1])
+    )
+    if len(interior_anchors) > 1:
+        anchor_positions = np.asarray(
+            [item[0] for item in interior_anchors],
+            dtype=np.float64,
+        )
+        if np.any(np.diff(anchor_positions) <= angular_tolerance):
+            raise ValueError(
+                "pattern guide_segments produce duplicate angular anchors"
+            )
+
+    knot_positions = np.asarray(
+        [0.0, *[item[0] for item in interior_anchors], span],
+        dtype=np.float64,
+    )
+    knot_points = [
+        np.asarray(arc_endpoints[0], dtype=np.float64).copy(),
+        *[item[1] for item in interior_anchors],
+        np.asarray(arc_endpoints[1], dtype=np.float64).copy(),
+    ]
+    gaps = np.diff(knot_positions)
+    angular_step = target_edge_size / radius
+    if np.isnan(angular_step) or angular_step <= 0.0:
+        raise ValueError("target_edge_size is too small for the requested radius")
+    maximum_node_count = min(int(np.iinfo(np.intp).max), 10_000_000)
+    subdivisions = np.asarray(
+        [
+            _subdivisions_for_gap(
+                float(gap),
+                radius=radius,
+                target_edge_size=target_edge_size,
+                angular_step=angular_step,
+                maximum_node_count=maximum_node_count,
+            )
+            for gap in gaps
+        ],
+        dtype=np.int64,
+    )
+    node_count = 1 + sum(int(value) for value in subdivisions)
+    if node_count > maximum_node_count:
+        raise ValueError("target_edge_size would require too many circle nodes")
+
+    generated_points = [knot_points[0]]
+    for interval, division_count in enumerate(subdivisions):
+        lower = float(knot_positions[interval])
+        gap = float(gaps[interval])
+        for division in range(1, int(division_count)):
+            angle = start_angle + gap * division / int(division_count) + lower
+            with np.errstate(over="ignore", invalid="ignore"):
+                point = center + radius * np.asarray(
+                    [np.cos(angle), np.sin(angle)],
+                    dtype=np.float64,
+                )
+            generated_points.append(point)
+        generated_points.append(knot_points[interval + 1])
+    return np.asarray(generated_points, dtype=np.float64)
+
+
+def _validate_pattern_arc(
+    arc_xy,
+    *,
+    arc_endpoints,
+    center,
+    radius,
+    target_edge_size,
+    fit_tolerance,
+    angular_tolerance,
+    full_turn,
+):
+    """Validate radial fit, ordering, endpoints, and spacing of an open arc."""
+    if arc_xy.shape[0] < 2 or not np.all(np.isfinite(arc_xy)):
+        raise ValueError("pattern arc must contain at least two finite nodes")
+    if not np.allclose(
+        arc_xy[[0, -1]],
+        arc_endpoints,
+        rtol=0.0,
+        atol=fit_tolerance,
+    ):
+        raise ValueError("generated pattern-arc endpoints were not preserved")
+
+    offsets = arc_xy - center
+    distances = np.hypot(offsets[:, 0], offsets[:, 1])
+    if np.any(np.abs(distances - radius) > fit_tolerance):
+        raise ValueError("generated pattern nodes do not lie on the target circle")
+    start_offset = arc_endpoints[0] - center
+    end_offset = arc_endpoints[1] - center
+    start_angle = float(np.arctan2(start_offset[1], start_offset[0]))
+    end_angle = float(np.arctan2(end_offset[1], end_offset[0]))
+    span = float(np.mod(end_angle - start_angle, full_turn))
+    node_angles = np.arctan2(offsets[:, 1], offsets[:, 0])
+    positions = np.mod(node_angles - start_angle, full_turn)
+    positions[0] = 0.0
+    positions[-1] = span
+    gaps = np.diff(positions)
+    if np.any(gaps <= angular_tolerance):
+        raise ValueError("target_edge_size produces indistinguishable arc nodes")
+    spacing_tolerance = fit_tolerance / radius
+    if np.any(gaps > target_edge_size / radius + spacing_tolerance):
+        raise ValueError("generated pattern-arc spacing exceeds target_edge_size")
+
 
 def _generate_pattern_circle_nodes(
     mesh: Mesh2D,
@@ -488,8 +628,9 @@ def _generate_pattern_circle_nodes(
     radius,
     target_edge_size,
     guide_segments=None,
+    arc_endpoints=None,
 ) -> np.ndarray:
-    """Return a CCW ring whose maximum arc spacing is target_edge_size.
+    """Return a CCW ring or endpoint-bounded arc with bounded spacing.
 
     Finite horizontal and vertical pattern segments contribute exact circle
     intersection anchors.  The arcs between those anchors are subdivided
@@ -505,6 +646,9 @@ def _generate_pattern_circle_nodes(
         target_edge_size: Positive maximum arc length between adjacent nodes.
         guide_segments: Optional finite horizontal or vertical pattern segments with
             shape (L, 2, 2).
+        arc_endpoints: Optional two planar points on the pattern circle. When
+            provided, generate only the counter-clockwise open arc from the
+            first point to the second.
 
     Returns:
         Float64 circle coordinates with shape (N, 2) or (N, 3). Generated Z
@@ -549,24 +693,60 @@ def _generate_pattern_circle_nodes(
         fit_tolerance=fit_tolerance,
     )
 
-    circle_xy = _sample_pattern_circle(
-        anchor_records,
-        center=center,
-        radius=radius,
-        target_edge_size=target_edge_size,
-        angular_tolerance=angular_tolerance,
-        full_turn=full_turn,
-    )
+    if arc_endpoints is None:
+        circle_xy = _sample_pattern_circle(
+            anchor_records,
+            center=center,
+            radius=radius,
+            target_edge_size=target_edge_size,
+            angular_tolerance=angular_tolerance,
+            full_turn=full_turn,
+        )
 
-    _validate_pattern_circle(
-        circle_xy,
-        center=center,
-        radius=radius,
-        target_edge_size=target_edge_size,
-        fit_tolerance=fit_tolerance,
-        angular_tolerance=angular_tolerance,
-        full_turn=full_turn,
-    )
+        _validate_pattern_circle(
+            circle_xy,
+            center=center,
+            radius=radius,
+            target_edge_size=target_edge_size,
+            fit_tolerance=fit_tolerance,
+            angular_tolerance=angular_tolerance,
+            full_turn=full_turn,
+        )
+    else:
+        try:
+            arc_endpoints = np.asarray(arc_endpoints, dtype=np.float64)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("arc_endpoints must have shape (2, 2)") from error
+        if arc_endpoints.shape != (2, 2) or not np.all(
+            np.isfinite(arc_endpoints)
+        ):
+            raise ValueError("arc_endpoints must have shape (2, 2)")
+        endpoint_offsets = arc_endpoints - center
+        endpoint_radii = np.hypot(
+            endpoint_offsets[:, 0],
+            endpoint_offsets[:, 1],
+        )
+        if np.any(np.abs(endpoint_radii - radius) > fit_tolerance):
+            raise ValueError("arc_endpoints must lie on the pattern circle")
+        circle_xy = _sample_pattern_arc(
+            anchor_records,
+            arc_endpoints=arc_endpoints,
+            center=center,
+            radius=radius,
+            target_edge_size=target_edge_size,
+            angular_tolerance=angular_tolerance,
+            full_turn=full_turn,
+        )
+        _validate_pattern_arc(
+            circle_xy,
+            arc_endpoints=arc_endpoints,
+            center=center,
+            radius=radius,
+            target_edge_size=target_edge_size,
+            fit_tolerance=fit_tolerance,
+            angular_tolerance=angular_tolerance,
+            full_turn=full_turn,
+        )
 
     if nodes.shape[1] == 2:
         return circle_xy.astype(np.float64, copy=False)

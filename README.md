@@ -55,6 +55,30 @@ imprint_circle(
 The operation is transactional and in place: it returns the same `Mesh2D`
 instance after success, while a failure leaves the input mesh unchanged.
 
+`topology="auto"` is the default. It accepts either a complete circular band
+or one connected open sector whose two domain-boundary sides lie on rays from
+`center`. For example, a mesh covering only the upper half-plane can receive a
+0-to-180-degree circular imprint:
+
+```python
+mesh = generate_rectilinear_mesh(
+    target_edge_size=0.5,
+    x_coordinates=[-8.0, 0.0, 8.0],
+    y_coordinates=[0.0, 8.0],
+)
+
+imprint_circle(
+    mesh,
+    center=(0.0, 0.0),
+    radius=5.0,
+    band_width=1.0,
+)
+```
+
+Pass `topology="closed"` or `topology="open"` to require one form explicitly.
+Open cuts that do not follow rays from `center`, disconnected angular regions,
+and ambiguous boundary topologies are rejected transactionally.
+
 ## Circular mesh extension
 
 Use an existing exposed circular boundary to build concentric mesh layers out
