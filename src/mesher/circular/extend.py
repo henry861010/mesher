@@ -17,6 +17,7 @@ class _CircularExtensionRequest:
     center: np.ndarray
     inner_radius: float
     outer_radius: float
+    topology: str
 
     @classmethod
     def from_values(
@@ -26,6 +27,7 @@ class _CircularExtensionRequest:
         center_y,
         inner_radius,
         outer_radius,
+        topology,
     ):
         """Convert and validate the public scalar inputs."""
         try:
@@ -58,13 +60,28 @@ class _CircularExtensionRequest:
             raise ValueError("inner_radius must be positive")
         if outer <= inner:
             raise ValueError("outer_radius must be greater than inner_radius")
+        if not isinstance(topology, str) or topology not in {
+            "auto",
+            "closed",
+            "open",
+        }:
+            raise ValueError("topology must be 'auto', 'closed', or 'open'")
 
         return cls(
             element_size=radial_size,
             center=np.asarray([x, y], dtype=np.float64),
             inner_radius=inner,
             outer_radius=outer,
+            topology=topology,
         )
+
+
+@dataclass(frozen=True)
+class _CircularBoundary:
+    """One ordered inner-radius loop or endpoint-bounded arc."""
+
+    node_indices: np.ndarray
+    closed: bool
 
 
 def _copy_and_validate_mesh(mesh):
@@ -134,25 +151,119 @@ def _retain_inner_mesh(mesh, request):
     return tolerance
 
 
+def _circular_edge_runs(loop, node_is_on_circle):
+    """Return ordered open chains for cyclic runs of circular edges."""
+    edge_is_on_circle = node_is_on_circle & np.roll(node_is_on_circle, -1)
+    run_starts = np.flatnonzero(
+        edge_is_on_circle & ~np.roll(edge_is_on_circle, 1)
+    )
+    runs = []
+    for raw_start in run_starts:
+        position = int(raw_start)
+        run = [int(loop[position])]
+        while edge_is_on_circle[position]:
+            position = (position + 1) % loop.size
+            run.append(int(loop[position]))
+        runs.append(np.asarray(run, dtype=np.int64))
+    return runs
+
+
+def _validate_boundary_angles(mesh, boundary, request, tolerance):
+    """Require strict angular order and the winding implied by topology."""
+    nodes = np.asarray(mesh.nodes).astype(np.float64, copy=False)
+    coordinates = nodes[boundary.node_indices, :2]
+    offsets = coordinates - request.center
+    raw_angles = np.arctan2(offsets[:, 1], offsets[:, 0])
+    angular_tolerance = max(
+        256.0 * np.finfo(np.float64).eps,
+        tolerance / request.inner_radius,
+    )
+
+    if boundary.closed:
+        steps = np.arctan2(
+            np.sin(np.roll(raw_angles, -1) - raw_angles),
+            np.cos(np.roll(raw_angles, -1) - raw_angles),
+        )
+        if not (
+            np.all(steps > angular_tolerance)
+            or np.all(steps < -angular_tolerance)
+        ):
+            raise ValueError(
+                "a closed circular boundary must preserve strict angular order"
+            )
+        winding_tolerance = max(
+            boundary.node_indices.size * angular_tolerance,
+            512.0 * np.finfo(np.float64).eps,
+        )
+        if abs(abs(float(np.sum(steps))) - 2.0 * np.pi) > winding_tolerance:
+            raise ValueError(
+                "a closed circular boundary must wind exactly once around "
+                "the circle center"
+            )
+        return
+
+    unwrapped_angles = np.unwrap(raw_angles)
+    steps = np.diff(unwrapped_angles)
+    if not (
+        np.all(steps > angular_tolerance)
+        or np.all(steps < -angular_tolerance)
+    ):
+        raise ValueError(
+            "an open circular boundary must preserve strict angular order"
+        )
+    angular_span = abs(float(unwrapped_angles[-1] - unwrapped_angles[0]))
+    if (
+        angular_span <= angular_tolerance
+        or angular_span >= 2.0 * np.pi - angular_tolerance
+    ):
+        raise ValueError(
+            "an open circular boundary must span less than one complete circle"
+        )
+
+
 def _find_inner_boundary(mesh, request, tolerance):
-    """Find the unique exposed loop represented by the inner circle."""
+    """Find the unique exposed inner-radius loop or continuous open arc."""
     loops = _get_boundary(mesh)
     nodes = np.asarray(mesh.nodes).astype(np.float64, copy=False)
     candidates = []
     for loop in loops:
-        if loop.size < 3:
-            continue
         offsets = nodes[loop, :2] - request.center
         distances = np.hypot(offsets[:, 0], offsets[:, 1])
-        if np.all(np.abs(distances - request.inner_radius) <= tolerance):
-            candidates.append(loop)
+        node_is_on_circle = (
+            np.abs(distances - request.inner_radius) <= tolerance
+        )
+        if np.all(node_is_on_circle):
+            if loop.size >= 3:
+                candidates.append(
+                    _CircularBoundary(
+                        node_indices=loop,
+                        closed=True,
+                    )
+                )
+            continue
+
+        candidates.extend(
+            _CircularBoundary(node_indices=run, closed=False)
+            for run in _circular_edge_runs(loop, node_is_on_circle)
+        )
 
     if len(candidates) != 1:
         raise ValueError(
-            "the retained mesh must have exactly one exposed closed boundary "
-            "on inner_radius"
+            "the retained mesh must have exactly one exposed circular "
+            "boundary or continuous arc on inner_radius"
         )
-    return candidates[0]
+
+    boundary = candidates[0]
+    if request.topology == "closed" and not boundary.closed:
+        raise ValueError(
+            "topology='closed' requires a complete circular boundary"
+        )
+    if request.topology == "open" and boundary.closed:
+        raise ValueError(
+            "topology='open' requires an incomplete circular boundary"
+        )
+    _validate_boundary_angles(mesh, boundary, request, tolerance)
+    return boundary
 
 
 def _layer_count(mesh, ring_size, request):
@@ -187,9 +298,13 @@ def _layer_count(mesh, ring_size, request):
 
 def _append_circular_layers(mesh, inner_boundary, request):
     """Append equally spaced concentric Quad4 strips through outer_radius."""
-    layer_count = _layer_count(mesh, inner_boundary.size, request)
+    layer_count = _layer_count(
+        mesh,
+        inner_boundary.node_indices.size,
+        request,
+    )
     thickness = request.outer_radius - request.inner_radius
-    boundary = inner_boundary
+    boundary = inner_boundary.node_indices
     previous_radius = request.inner_radius
 
     for layer in range(1, layer_count + 1):
@@ -210,7 +325,7 @@ def _append_circular_layers(mesh, inner_boundary, request):
             request.center[1],
             target_radius,
             boundary,
-            closed=True,
+            closed=inner_boundary.closed,
         )
         node_stop = np.asarray(mesh.nodes).shape[0]
         if node_stop - node_start != boundary.size:
@@ -229,14 +344,16 @@ def extend_circular_mesh(
     center_y: float,
     inner_radius: float,
     outer_radius: float,
+    topology: str = "auto",
 ) -> Mesh2D:
     """Extend an existing circular boundary outward through concentric layers.
 
     Existing elements outside ``inner_radius`` are discarded. The remaining
-    mesh must expose exactly one closed node loop on ``inner_radius``. That
-    loop is projected outward repeatedly with a constant node count until the
-    final layer reaches ``outer_radius``. ``element_size`` limits radial layer
-    spacing only; it does not limit circumferential edge length.
+    mesh must expose exactly one complete node loop or continuous open arc on
+    ``inner_radius``. That boundary is projected outward repeatedly with a
+    constant node count and angular coverage until the final layer reaches
+    ``outer_radius``. ``element_size`` limits radial layer spacing only; it
+    does not limit circumferential edge length.
 
     Args:
         mesh: Mesh2D to update transactionally in place.
@@ -245,6 +362,9 @@ def extend_circular_mesh(
         center_y: Y coordinate shared by all circular layers.
         inner_radius: Positive radius already represented by an exposed loop.
         outer_radius: Final radius, strictly greater than inner_radius.
+        topology: Circular-boundary topology mode. ``"auto"`` detects a
+            complete loop or continuous open arc. ``"closed"`` and ``"open"``
+            require the corresponding topology.
 
     Returns:
         The same Mesh2D instance after the successful extension.
@@ -267,6 +387,7 @@ def extend_circular_mesh(
         center_y,
         inner_radius,
         outer_radius,
+        topology,
     )
     working_mesh = _copy_and_validate_mesh(mesh)
     tolerance = _retain_inner_mesh(working_mesh, request)

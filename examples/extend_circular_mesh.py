@@ -5,7 +5,7 @@ Run from the repository root with:
     PYTHONPATH=src python examples/extend_circular_mesh.py
 
 Add ``--view`` to display the result when the visualization dependency is
-installed.
+installed. Add ``--half`` to exercise automatic open-arc detection.
 """
 
 import argparse
@@ -17,13 +17,21 @@ from mesher.circular import extend_circular_mesh
 from mesher.quality import MeshQualityChecker
 
 
-def build_inner_disk(center_x, center_y, radius, sector_count=32):
-    """Create a Tri3 fan whose exposed boundary lies on one circle."""
+def build_inner_disk(
+    center_x,
+    center_y,
+    radius,
+    sector_count=32,
+    *,
+    closed=True,
+):
+    """Create a full or upper-half Tri3 fan on one circular boundary."""
+    ring_node_count = sector_count if closed else sector_count + 1
     angles = np.linspace(
         0.0,
-        2.0 * np.pi,
-        sector_count,
-        endpoint=False,
+        2.0 * np.pi if closed else np.pi,
+        ring_node_count,
+        endpoint=not closed,
     )
     ring = np.column_stack(
         (
@@ -38,13 +46,14 @@ def build_inner_disk(center_x, center_y, radius, sector_count=32):
         (nodes_xy, np.zeros(nodes_xy.shape[0], dtype=np.float64))
     )
 
-    ring_indices = np.arange(1, sector_count + 1, dtype=np.int32)
-    following = np.roll(ring_indices, -1)
+    ring_indices = np.arange(1, ring_node_count + 1, dtype=np.int32)
+    starts = ring_indices if closed else ring_indices[:-1]
+    following = np.roll(ring_indices, -1) if closed else ring_indices[1:]
     # Tri3 elements use the padded [n0, n1, n2, n2] representation.
     elements = np.column_stack(
         (
             np.zeros(sector_count, dtype=np.int32),
-            ring_indices,
+            starts,
             following,
             following,
         )
@@ -59,6 +68,11 @@ def main():
         action="store_true",
         help="display the generated mesh with PyVista",
     )
+    parser.add_argument(
+        "--half",
+        action="store_true",
+        help="extend an upper-half circle instead of a complete circle",
+    )
     args = parser.parse_args()
 
     center_x = 2.0
@@ -67,7 +81,12 @@ def main():
     outer_radius = 10.0
     element_size = 1.25
 
-    mesh = build_inner_disk(center_x, center_y, inner_radius)
+    mesh = build_inner_disk(
+        center_x,
+        center_y,
+        inner_radius,
+        closed=not args.half,
+    )
     inner_node_count = mesh.nodes.shape[0]
     inner_element_count = mesh.elements.shape[0]
 
@@ -78,10 +97,12 @@ def main():
         center_y=center_y,
         inner_radius=inner_radius,
         outer_radius=outer_radius,
+        topology="auto",
     )
 
     layer_count = int(np.ceil((outer_radius - inner_radius) / element_size))
     quality = MeshQualityChecker(mesh).check_scaled_jacobian(minimum=0.0)
+    print(f"topology: {'open' if args.half else 'closed'}")
     print(f"radial layers: {layer_count}")
     print(f"nodes: {inner_node_count} -> {mesh.nodes.shape[0]}")
     print(f"elements: {inner_element_count} -> {mesh.elements.shape[0]}")

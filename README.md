@@ -94,13 +94,20 @@ extend_circular_mesh(
     center_y=0.0,
     inner_radius=5.0,
     outer_radius=10.0,
+    topology="auto",
 )
 ```
 
 The existing mesh outside `inner_radius` is discarded. The operation preserves
-the inner ring's node count on every generated circle and returns the same
-`Mesh2D` instance transactionally. `element_size` limits radial spacing only;
-it does not limit circumferential edge length.
+the inner boundary's node count on every generated circle or arc and returns
+the same `Mesh2D` instance transactionally. `element_size` limits radial
+spacing only; it does not limit circumferential edge length.
+
+The default `topology="auto"` accepts either one complete circular loop or one
+continuous open arc on `inner_radius` and preserves its angular coverage.
+Pass `topology="closed"` or `topology="open"` to require one form explicitly.
+Disconnected arcs, multiple matching boundaries, and non-monotone angular
+ordering are rejected transactionally.
 
 ## Tests
 
