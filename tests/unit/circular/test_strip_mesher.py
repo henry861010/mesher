@@ -3,6 +3,7 @@ from collections import Counter
 
 import numpy as np
 
+from mesher.circular.pattern_segments import _PatternGuideSet
 from mesher.circular.strip_mesher import _CircularStripMesher, _mesh_inner_outer_circle
 from mesher import Mesh2D
 from mesher.quality import MeshQualityChecker
@@ -669,6 +670,30 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
                         edge_counts[tuple(sorted(connector))],
                         2,
                     )
+
+    def test_raw_and_prepared_pattern_guides_produce_the_same_strip(self):
+        raw_mesh, raw_inner, raw_outer = self._pattern_fixture()
+        prepared_mesh, prepared_inner, prepared_outer = self._pattern_fixture()
+        values = [[[0.0, -3.0], [0.0, 3.0]]]
+        guides = _PatternGuideSet.from_values(values, coordinate_scale=2.0)
+
+        _mesh_inner_outer_circle(
+            raw_mesh,
+            raw_inner,
+            raw_outer,
+            guide_segments=values,
+            closed=True,
+        )
+        _mesh_inner_outer_circle(
+            prepared_mesh,
+            prepared_inner,
+            prepared_outer,
+            guide_segments=guides,
+            closed=True,
+        )
+
+        np.testing.assert_array_equal(prepared_mesh.nodes, raw_mesh.nodes)
+        np.testing.assert_array_equal(prepared_mesh.elements, raw_mesh.elements)
 
     def test_duplicate_reversed_and_irrelevant_patterns_are_deterministic(self):
         baseline_mesh, baseline_inner, baseline_outer = self._pattern_fixture()

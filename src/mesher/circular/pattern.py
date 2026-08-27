@@ -5,6 +5,11 @@ from typing import NamedTuple
 import numpy as np
 
 from ..mesh import Mesh2D
+from .pattern_segments import (
+    _PatternGuideSet,
+    _circle_segment_intersections,
+    _coerce_pattern_guides,
+)
 
 
 def _add_pattern_anchor(
@@ -110,14 +115,14 @@ class _PatternCircleInputs(NamedTuple):
         center: Pattern-circle center.
         radius: Pattern-circle radius.
         target_edge_size: Maximum requested arc length.
-        pattern_lines: Normalized finite axis-aligned pattern segments.
+        pattern_guides: Prepared finite axis-aligned pattern segments.
     """
 
     nodes: np.ndarray
     center: np.ndarray
     radius: float
     target_edge_size: float
-    pattern_lines: np.ndarray
+    pattern_guides: _PatternGuideSet
 
 
 def _read_pattern_circle_inputs(
@@ -183,46 +188,39 @@ def _read_pattern_circle_inputs(
     if target_edge_size <= 0.0:
         raise ValueError("target_edge_size must be positive")
 
-    if guide_segments is None:
-        pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
-    else:
-        try:
-            pattern_lines = np.asarray(guide_segments, dtype=np.float64)
-        except (TypeError, ValueError, OverflowError) as error:
-            raise ValueError("guide_segments must have shape (L, 2, 2)") from error
-        if pattern_lines.size == 0:
-            if pattern_lines.shape not in ((0,), (0, 2, 2)):
-                raise ValueError("guide_segments must have shape (L, 2, 2)")
-            pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
-        elif pattern_lines.ndim != 3 or pattern_lines.shape[1:] != (2, 2):
-            raise ValueError("guide_segments must have shape (L, 2, 2)")
-    if not np.all(np.isfinite(pattern_lines)):
-        raise ValueError("guide_segments must contain finite coordinates")
+    coordinate_scale = max(abs(radius), *np.abs(center).tolist())
+    linear_tolerance = max(
+        64.0 * np.finfo(np.float64).eps * coordinate_scale,
+        256.0 * np.finfo(np.float64).eps * radius,
+    )
+    pattern_guides = _coerce_pattern_guides(
+        guide_segments,
+        coordinate_scale=coordinate_scale,
+        minimum_tolerance=linear_tolerance,
+    )
     return _PatternCircleInputs(
         nodes,
         center,
         radius,
         target_edge_size,
-        pattern_lines,
+        pattern_guides,
     )
 
 
 def _collect_pattern_circle_anchors(
-    pattern_lines,
+    pattern_guides,
     *,
     center,
     radius,
-    coordinate_scale,
     linear_tolerance,
     fit_tolerance,
 ):
     """Collect and merge exact pattern-line intersections on a circle.
 
     Args:
-        pattern_lines: Normalized finite axis-aligned segments.
+        pattern_guides: Prepared finite axis-aligned segments.
         center: Pattern-circle center.
         radius: Pattern-circle radius.
-        coordinate_scale: Local circle coordinate magnitude.
         linear_tolerance: Tolerance for duplicate anchor coordinates.
         fit_tolerance: Maximum radial error for merged anchors.
 
@@ -239,73 +237,15 @@ def _collect_pattern_circle_anchors(
     # both constraints with a single node.
     anchor_records: list[dict[str, object]] = []
 
-    for segment in pattern_lines:
-        segment_scale = max(
-            coordinate_scale,
-            float(np.max(np.abs(segment))),
-        )
-        segment_tolerance = max(
-            linear_tolerance,
-            64.0 * np.finfo(np.float64).eps * segment_scale,
-        )
-        delta = segment[1] - segment[0]
-        vertical = (
-            abs(delta[0]) <= segment_tolerance
-            and abs(delta[1]) > segment_tolerance
-        )
-        horizontal = (
-            abs(delta[1]) <= segment_tolerance
-            and abs(delta[0]) > segment_tolerance
-        )
-        if vertical == horizontal:
-            raise ValueError(
-                "each pattern segment must be non-zero and horizontal or vertical"
-            )
-
-        fixed_axis = 0 if vertical else 1
-        varying_axis = 1 - fixed_axis
-        fixed_value = float(segment[0, fixed_axis])
-        varying_lower = float(np.min(segment[:, varying_axis]))
-        varying_upper = float(np.max(segment[:, varying_axis]))
-        with np.errstate(over="ignore", invalid="ignore"):
-            fixed_offset = fixed_value - center[fixed_axis]
-        if not np.isfinite(fixed_offset):
-            # Opposite extreme finite coordinates can overflow on subtraction;
-            # their separation necessarily places the line outside this finite
-            # local circle.
-            continue
-        fixed_distance = abs(float(fixed_offset))
-        if fixed_distance > radius + segment_tolerance:
-            continue
-
-        normalized_distance = min(fixed_distance / radius, 1.0)
-        root = radius * np.sqrt(
-            max(
-                0.0,
-                (1.0 - normalized_distance) * (1.0 + normalized_distance),
-            )
-        )
-        varying_values = [float(center[varying_axis] - root)]
-        if root > segment_tolerance:
-            varying_values.append(float(center[varying_axis] + root))
-
-        for varying_value in varying_values:
-            if not (
-                varying_lower - segment_tolerance
-                <= varying_value
-                <= varying_upper + segment_tolerance
-            ):
-                continue
-            point = np.empty(2, dtype=np.float64)
-            point[fixed_axis] = fixed_value
-            point[varying_axis] = varying_value
+    for segment in pattern_guides:
+        for point in _circle_segment_intersections(segment, center, radius):
             if not np.all(np.isfinite(point)):
                 raise ValueError("pattern circle coordinates exceed float64 range")
             _add_pattern_anchor(
                 anchor_records,
                 point,
-                fixed_axis,
-                fixed_value,
+                segment.fixed_axis,
+                segment.fixed_value,
                 center=center,
                 radius=radius,
                 linear_tolerance=linear_tolerance,
@@ -667,7 +607,7 @@ def _generate_pattern_circle_nodes(
         target_edge_size,
         guide_segments,
     )
-    nodes, center, radius, target_edge_size, pattern_lines = inputs
+    nodes, center, radius, target_edge_size, pattern_guides = inputs
 
     # Irrelevant far-away pattern segments must not coarsen the tolerances of
     # this local circle.  Each segment receives its own scale below.
@@ -685,10 +625,9 @@ def _generate_pattern_circle_nodes(
     full_turn = 2.0 * np.pi
 
     anchor_records = _collect_pattern_circle_anchors(
-        pattern_lines,
+        pattern_guides,
         center=center,
         radius=radius,
-        coordinate_scale=coordinate_scale,
         linear_tolerance=linear_tolerance,
         fit_tolerance=fit_tolerance,
     )

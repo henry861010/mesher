@@ -1,15 +1,20 @@
 import unittest
 from collections import Counter
+from unittest.mock import patch
 
 import numpy as np
 
 from mesher.generators import generate_rectilinear_mesh
+from mesher.circular.pattern_segments import _PatternGuideSet
 from mesher.circular.imprint import (
     _clear_node,
     _delete,
     _delete_element,
+    _append_pattern_ring,
     _generate_pattern_circle_nodes,
     _get_boundary,
+    _mesh_pattern_strips,
+    _project_band_boundaries,
     imprint_circle,
     _search_circle,
     _to_circle,
@@ -747,6 +752,36 @@ class ToCircleTests(unittest.TestCase):
             ),
         )
 
+    def test_raw_and_prepared_pattern_guides_project_identically(self):
+        raw_mesh = self._off_center_pattern_mesh()
+        prepared_mesh = self._off_center_pattern_mesh()
+        root = np.sqrt(21.0)
+        values = [
+            [[3.0, -2.0 - root], [3.0, -2.0 + root]],
+            [[-4.0, -2.0], [6.0, -2.0]],
+        ]
+        guides = _PatternGuideSet.from_values(values, coordinate_scale=5.0)
+
+        _to_circle(
+            raw_mesh,
+            1.0,
+            -2.0,
+            5.0,
+            [0, 1, 2, 3],
+            guide_segments=values,
+        )
+        _to_circle(
+            prepared_mesh,
+            1.0,
+            -2.0,
+            5.0,
+            [0, 1, 2, 3],
+            guide_segments=guides,
+        )
+
+        np.testing.assert_array_equal(prepared_mesh.nodes, raw_mesh.nodes)
+        np.testing.assert_array_equal(prepared_mesh.elements, raw_mesh.elements)
+
     def test_rejects_invalid_pattern_segments_without_mutation(self):
         invalid_lines = (
             [[[0.5, 0.5], [1.0, 1.0]]],
@@ -1034,6 +1069,55 @@ class CircleIntegrationTests(unittest.TestCase):
         self.assertEqual(report.invalid_indices.size, 0)
         self.assertTrue(np.all(report.values > 0.0))
 
+    def test_workflow_forwards_only_circle_intersecting_pattern_guides(self):
+        expected = self._build_mesh()
+        actual = self._build_mesh()
+        active = [[[-20.0, 70.0], [-20.0, -70.0]]]
+        irrelevant = [
+            [[100.0 + offset, -1.0], [100.0 + offset, 1.0]]
+            for offset in range(1000)
+        ]
+
+        imprint_circle(
+            expected,
+            center=(self.center_x, self.center_y),
+            radius=self.radius,
+            band_width=self.band_width,
+            guide_segments=active,
+        )
+        with (
+            patch(
+                "mesher.circular.imprint._project_band_boundaries",
+                wraps=_project_band_boundaries,
+            ) as project_spy,
+            patch(
+                "mesher.circular.imprint._append_pattern_ring",
+                wraps=_append_pattern_ring,
+            ) as pattern_spy,
+            patch(
+                "mesher.circular.imprint._mesh_pattern_strips",
+                wraps=_mesh_pattern_strips,
+            ) as strip_spy,
+        ):
+            imprint_circle(
+                actual,
+                center=(self.center_x, self.center_y),
+                radius=self.radius,
+                band_width=self.band_width,
+                guide_segments=[*irrelevant, *active],
+            )
+
+        forwarded = (
+            project_spy.call_args.args[4],
+            pattern_spy.call_args.args[2],
+            strip_spy.call_args.args[3],
+        )
+        self.assertTrue(all(guides is forwarded[0] for guides in forwarded))
+        self.assertEqual(len(forwarded[0]), 1)
+        np.testing.assert_array_equal(forwarded[0].segments, active)
+        np.testing.assert_array_equal(actual.nodes, expected.nodes)
+        np.testing.assert_array_equal(actual.elements, expected.elements)
+
     def test_default_and_explicit_element_sizes_bound_pattern_arc_spacing(self):
         cases = (
             ("default", {}, self.band_width),
@@ -1140,27 +1224,27 @@ class CircleIntegrationTests(unittest.TestCase):
 
                 self.assert_mesh_unchanged(mesh, snapshot)
 
-    def test_second_strip_failure_leaves_the_original_mesh_unchanged(self):
-        mesh = self._build_mesh()
-        snapshot = (
-            mesh.nodes,
-            mesh.elements,
-            mesh.nodes.copy(),
-            mesh.elements.copy(),
+    def test_outer_strip_only_pattern_is_filtered_before_meshing(self):
+        baseline = self._build_mesh()
+        filtered = self._build_mesh()
+
+        imprint_circle(
+            baseline,
+            center=(self.center_x, self.center_y),
+            radius=self.radius,
+            band_width=self.band_width,
+        )
+        imprint_circle(
+            filtered,
+            center=(self.center_x, self.center_y),
+            radius=self.radius,
+            band_width=self.band_width,
+            # This reaches the outer strip but never meets the pattern radius.
+            guide_segments=[[[52.0, -70.0], [52.0, 70.0]]],
         )
 
-        with self.assertRaisesRegex(ValueError, "unsupported outer-circle chord"):
-            imprint_circle(
-                mesh,
-                center=(self.center_x, self.center_y),
-                radius=self.radius,
-                band_width=self.band_width,
-                # This reaches r+band_width but lies outside the pattern circle,
-                # so only the second triangular strip sees an active chord.
-                guide_segments=[[[52.0, -70.0], [52.0, 70.0]]],
-            )
-
-        self.assert_mesh_unchanged(mesh, snapshot)
+        np.testing.assert_array_equal(filtered.nodes, baseline.nodes)
+        np.testing.assert_array_equal(filtered.elements, baseline.elements)
 
     def test_pattern_node_generation_handles_tangent_duplicate_and_irrelevant_lines(self):
         center_x = 7.0
@@ -1487,6 +1571,39 @@ class OpenCircleIntegrationTests(unittest.TestCase):
         counts = self._edge_counts(mesh)
         for start, end in zip(connector_nodes, connector_nodes[1:]):
             self.assertEqual(counts[tuple(sorted((start, end)))], 2)
+
+    def test_full_circle_filter_retains_guide_outside_the_open_arc(self):
+        baseline = self._build_half_mesh(upper=True, dimensions=2)
+        patterned = self._build_half_mesh(upper=True, dimensions=2)
+        lower_circle_guide = [[[2.0, -8.0], [2.0, -1.0]]]
+
+        imprint_circle(
+            baseline,
+            center=(0.0, 0.0),
+            radius=5.0,
+            band_width=1.0,
+            target_edge_size=1.0,
+            topology="open",
+        )
+        with patch(
+            "mesher.circular.imprint._project_band_boundaries",
+            wraps=_project_band_boundaries,
+        ) as project_spy:
+            imprint_circle(
+                patterned,
+                center=(0.0, 0.0),
+                radius=5.0,
+                band_width=1.0,
+                target_edge_size=1.0,
+                guide_segments=lower_circle_guide,
+                topology="open",
+            )
+
+        forwarded = project_spy.call_args.args[4]
+        self.assertEqual(len(forwarded), 1)
+        np.testing.assert_array_equal(forwarded.segments, lower_circle_guide)
+        np.testing.assert_array_equal(patterned.nodes, baseline.nodes)
+        np.testing.assert_array_equal(patterned.elements, baseline.elements)
 
     def test_topology_modes_reject_mismatched_meshes_atomically(self):
         half_mesh = self._build_half_mesh()

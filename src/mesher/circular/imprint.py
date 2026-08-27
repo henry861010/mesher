@@ -23,6 +23,7 @@ from .geometry import (
     _validate_generated_strip,
 )
 from .pattern import _generate_pattern_circle_nodes
+from .pattern_segments import _coerce_pattern_guides
 from .projection import _to_circle
 from .strip_mesher import (
     _CircularStripMesher,
@@ -774,7 +775,9 @@ def imprint_circle(
             band_width.
         band_width: Positive total width of the circular band to rebuild.
         guide_segments: Optional array-like axis-aligned segments with shape (L, 2, 2).
-            Active segment intersections become mandatory connector edges.
+            Segments intersecting the pattern circle become mandatory connector
+            edges. Valid segments that do not meet the pattern radius are discarded
+            before mesh processing begins.
         target_edge_size: Optional maximum arc spacing of the pattern ring.
             Defaults to band_width and may be refined to contain the inner target
             circle geometrically.
@@ -809,6 +812,19 @@ def imprint_circle(
         min_quad_scaled_jacobian,
         topology,
     )
+    coordinate_scale = max(
+        abs(request.radius),
+        *np.abs(request.center).tolist(),
+    )
+    guide_tolerance = max(
+        64.0 * np.finfo(np.float64).eps * coordinate_scale,
+        256.0 * np.finfo(np.float64).eps * request.radius,
+    )
+    pattern_guides = _coerce_pattern_guides(
+        guide_segments,
+        coordinate_scale=coordinate_scale,
+        minimum_tolerance=guide_tolerance,
+    ).intersecting_circle(request.center, request.radius)
     working_mesh = _copy_mesh(mesh)
 
     started_at = perf_counter()
@@ -828,7 +844,7 @@ def imprint_circle(
         request,
         inner_boundary,
         outer_boundary,
-        guide_segments,
+        pattern_guides,
         selected_band.closed,
     )
     print(f"_project_band_boundaries {perf_counter() - started_at:.4f}")
@@ -837,7 +853,7 @@ def imprint_circle(
     pattern_nodes = _append_pattern_ring(
         working_mesh,
         request,
-        guide_segments,
+        pattern_guides,
         selected_band.arc_endpoints,
     )
     print(f"_append_pattern_ring {perf_counter() - started_at:.4f}")
@@ -847,7 +863,7 @@ def imprint_circle(
         working_mesh,
         projected,
         pattern_nodes,
-        guide_segments,
+        pattern_guides,
         request.minimum_quad_scaled_jacobian,
         selected_band.closed,
     )

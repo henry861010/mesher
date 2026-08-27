@@ -11,6 +11,12 @@ from .geometry import (
     _smooth_circle_nodes,
     _validate_generated_strip,
 )
+from .pattern_segments import (
+    _PatternGuideSet,
+    _circle_line_intersections,
+    _circle_segment_intersections,
+    _coerce_pattern_guides,
+)
 
 
 def _find_segment_vertex_hits(
@@ -283,7 +289,7 @@ class _ProjectionInputs(NamedTuple):
         center: Target-circle center.
         radius: Target-circle radius.
         indices: Ordered source-boundary node indices.
-        pattern_lines: Normalized pattern segments.
+        pattern_guides: Prepared pattern segments.
         requested_closed: Explicit closure mode or None for inference.
         selected_nodes: Copied source-boundary coordinates.
         selected_xy: Planar view of selected_nodes.
@@ -298,7 +304,7 @@ class _ProjectionInputs(NamedTuple):
     center: np.ndarray
     radius: float
     indices: np.ndarray
-    pattern_lines: np.ndarray
+    pattern_guides: _PatternGuideSet
     requested_closed: bool | None
     selected_nodes: np.ndarray
     selected_xy: np.ndarray
@@ -433,20 +439,6 @@ def _read_projection_inputs(
     if not np.all(np.isfinite(float_nodes)):
         raise ValueError("nodes must contain finite float64 coordinates")
 
-    if guide_segments is None:
-        pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
-    else:
-        try:
-            pattern_lines = np.asarray(guide_segments, dtype=np.float64)
-        except (TypeError, ValueError, OverflowError) as error:
-            raise ValueError("guide_segments must have shape (L, 2, 2)") from error
-        if pattern_lines.size == 0:
-            pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
-        elif pattern_lines.ndim != 3 or pattern_lines.shape[1:] != (2, 2):
-            raise ValueError("guide_segments must have shape (L, 2, 2)")
-    if not np.all(np.isfinite(pattern_lines)):
-        raise ValueError("guide_segments must contain finite coordinates")
-
     selected_nodes = float_nodes[indices].copy()
     selected_xy = selected_nodes[:, :2]
     scale_values = [1.0, abs(radius), *np.abs(center).tolist()]
@@ -454,6 +446,11 @@ def _read_projection_inputs(
         scale_values.append(float(np.max(np.abs(selected_xy))))
     coordinate_scale = max(scale_values)
     tolerance = 64.0 * np.finfo(np.float64).eps * coordinate_scale
+    pattern_guides = _coerce_pattern_guides(
+        guide_segments,
+        coordinate_scale=coordinate_scale,
+        minimum_tolerance=tolerance,
+    )
     angular_tolerance = max(
         64.0 * np.finfo(np.float64).eps,
         tolerance / radius,
@@ -465,7 +462,7 @@ def _read_projection_inputs(
         center,
         radius,
         indices,
-        pattern_lines,
+        pattern_guides,
         requested_closed,
         selected_nodes,
         selected_xy,
@@ -715,9 +712,8 @@ def _preferred_projection_angles(
 
 
 def _collect_projection_constraints(
-    pattern_lines,
+    pattern_guides,
     *,
-    coordinate_scale,
     radius,
     selected_xy,
     pair_start_positions,
@@ -729,8 +725,7 @@ def _collect_projection_constraints(
     """Resolve active pattern segments into exact target coordinates.
 
     Args:
-        pattern_lines: Normalized finite axis-aligned pattern segments.
-        coordinate_scale: Local coordinate magnitude for segment tolerances.
+        pattern_guides: Prepared finite axis-aligned pattern segments.
         radius: Target-circle radius.
         selected_xy: Planar source-boundary coordinates.
         pair_start_positions: Start positions of source-boundary edges.
@@ -747,33 +742,12 @@ def _collect_projection_constraints(
             conflicting, or fails to reach the target circle.
     """
     constrained_targets: dict[int, np.ndarray] = {}
-    for segment in pattern_lines:
-        segment_scale = max(
-            coordinate_scale,
-            float(np.max(np.abs(segment))),
-        )
-        segment_tolerance = 64.0 * np.finfo(np.float64).eps * segment_scale
-        segment_angular_tolerance = max(
-            64.0 * np.finfo(np.float64).eps,
-            segment_tolerance / radius,
-        )
-        delta = segment[1] - segment[0]
-        vertical = (
-            abs(delta[0]) <= segment_tolerance
-            and abs(delta[1]) > segment_tolerance
-        )
-        horizontal = (
-            abs(delta[1]) <= segment_tolerance
-            and abs(delta[0]) > segment_tolerance
-        )
-        if vertical == horizontal:
-            raise ValueError(
-                "each pattern segment must be non-zero and horizontal or vertical"
-            )
+    for segment in pattern_guides:
+        segment_tolerance = segment.tolerance
 
-        vertex_hits, fixed, lower, upper = _find_segment_vertex_hits(
-            segment,
-            vertical=vertical,
+        vertex_hits, fixed, _, _ = _find_segment_vertex_hits(
+            segment.coordinates,
+            vertical=segment.vertical,
             selected_xy=selected_xy,
             pair_start_positions=pair_start_positions,
             pair_end_positions=pair_end_positions,
@@ -783,29 +757,25 @@ def _collect_projection_constraints(
         if not vertex_hits:
             continue
 
-        fixed_center = center[0 if vertical else 1]
-        varying_center = center[1 if vertical else 0]
-        normalized_fixed_offset = abs(fixed - fixed_center) / radius
-        if normalized_fixed_offset > 1.0 + segment_angular_tolerance:
+        line_intersections = _circle_line_intersections(
+            segment,
+            center,
+            radius,
+        )
+        if line_intersections.shape[0] == 0:
             raise ValueError(
                 "an active pattern segment does not intersect the target circle"
             )
-        normalized_fixed_offset = min(normalized_fixed_offset, 1.0)
-        root_offset = radius * np.sqrt(
-            max(0.0, 1.0 - normalized_fixed_offset**2)
+        segment_intersections = _circle_segment_intersections(
+            segment,
+            center,
+            radius,
         )
-        varying_roots = [varying_center - root_offset]
-        if root_offset > segment_tolerance:
-            varying_roots.append(varying_center + root_offset)
-        varying_roots = [
-            value
-            for value in varying_roots
-            if lower - segment_tolerance <= value <= upper + segment_tolerance
-        ]
-        if not varying_roots:
+        if segment_intersections.shape[0] == 0:
             raise ValueError(
                 "an active pattern segment does not reach the target circle"
             )
+        varying_roots = segment_intersections[:, segment.varying_axis]
 
         # One analytic circle intersection can support only one connector from
         # a given pattern segment.  This also collapses every collinear overlap
@@ -815,7 +785,7 @@ def _collect_projection_constraints(
             nearest, root_distance = _nearest_circle_root(
                 vertex_position,
                 selected_xy=selected_xy,
-                vertical=vertical,
+                vertical=segment.vertical,
                 varying_roots=varying_roots,
                 segment_tolerance=segment_tolerance,
             )
@@ -832,11 +802,11 @@ def _collect_projection_constraints(
             nearest, _ = _nearest_circle_root(
                 vertex_position,
                 selected_xy=selected_xy,
-                vertical=vertical,
+                vertical=segment.vertical,
                 varying_roots=varying_roots,
                 segment_tolerance=segment_tolerance,
             )
-            if vertical:
+            if segment.vertical:
                 candidate = np.array(
                     [fixed, varying_roots[nearest]], dtype=np.float64
                 )
@@ -1297,7 +1267,7 @@ def _to_circle(
         center,
         radius,
         indices,
-        pattern_lines,
+        pattern_guides,
         requested_closed,
         selected_nodes,
         selected_xy,
@@ -1338,8 +1308,7 @@ def _to_circle(
     ) = preferred
 
     constrained_targets = _collect_projection_constraints(
-        pattern_lines,
-        coordinate_scale=coordinate_scale,
+        pattern_guides,
         radius=radius,
         selected_xy=selected_xy,
         pair_start_positions=pair_start_positions,

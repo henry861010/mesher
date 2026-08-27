@@ -3,6 +3,12 @@
 import numpy as np
 
 from ..mesh import Mesh2D
+from .pattern_segments import (
+    _PatternGuideSet,
+    _circle_line_intersections,
+    _coerce_pattern_guides,
+    _interval_overlap,
+)
 from .quad_merge import _QuadMergeMixin
 from .triangulation import _StripScore, _TriangulationMixin
 from .validation import _ValidationMixin
@@ -17,9 +23,9 @@ class _CircularStripMesher(
 
     The object is a staged coordinator. Each private stage validates or derives
     state needed by the next one, while build preserves the original order:
-    normalize inputs, fit geometry, read topology, order boundaries, validate
-    existing geometry, resolve pattern connectors, triangulate, validate the
-    new strip, merge quads, and commit.
+    normalize inputs, fit geometry, prepare pattern guides, read topology,
+    order boundaries, validate existing geometry, resolve pattern connectors,
+    triangulate, validate the new strip, merge quads, and commit.
 
     Attributes:
         mesh: Mesh2D receiving elements only after every stage succeeds.
@@ -72,6 +78,7 @@ class _CircularStripMesher(
         """
         self._read_inputs()
         self._fit_concentric_geometry()
+        self._prepare_pattern_guides()
         self._read_existing_topology()
         self._order_boundaries()
         self._validate_existing_geometry()
@@ -83,7 +90,7 @@ class _CircularStripMesher(
         return self.mesh
 
     def _read_inputs(self):
-        """Normalize mesh arrays, indices, options, and pattern guide_segments.
+        """Normalize mesh arrays, indices, options, and retain pattern input.
 
         Raises:
             TypeError: If mesh, closed, or node-index types are invalid.
@@ -147,22 +154,14 @@ class _CircularStripMesher(
         ):
             raise ValueError("elements contain an out-of-range node index")
 
-        if self.guide_segments_input is None:
-            self.pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
-            return
-        try:
-            pattern_lines = np.asarray(self.guide_segments_input, dtype=np.float64)
-        except (TypeError, ValueError, OverflowError) as error:
-            raise ValueError("guide_segments must have shape (L, 2, 2)") from error
-        if pattern_lines.size == 0:
-            if pattern_lines.shape not in ((0,), (0, 2, 2)):
-                raise ValueError("guide_segments must have shape (L, 2, 2)")
-            pattern_lines = np.empty((0, 2, 2), dtype=np.float64)
-        elif pattern_lines.ndim != 3 or pattern_lines.shape[1:] != (2, 2):
-            raise ValueError("guide_segments must have shape (L, 2, 2)")
-        if not np.all(np.isfinite(pattern_lines)):
-            raise ValueError("guide_segments must contain finite coordinates")
-        self.pattern_lines = pattern_lines
+        # Pattern geometry is prepared after the concentric fit establishes
+        # the local coordinate scale. A set prepared by imprint_circle is
+        # retained directly and therefore is not parsed again.
+        if isinstance(self.guide_segments_input, _PatternGuideSet):
+            self.pattern_guides = self.guide_segments_input
+            self.raw_pattern_lines = None
+        else:
+            self.raw_pattern_lines = self.guide_segments_input
 
     def _normalize_indices(self, values, name):
         """Validate one ring or arc index sequence.
@@ -306,6 +305,21 @@ class _CircularStripMesher(
         offsets = self.xy - self.center
         self.node_angles = np.mod(
             np.arctan2(offsets[:, 1], offsets[:, 0]), 2.0 * np.pi
+        )
+
+    def _prepare_pattern_guides(self):
+        """Prepare raw guide segments using the fitted circle scale."""
+        if hasattr(self, "pattern_guides"):
+            return
+        coordinate_scale = max(
+            1.0,
+            float(np.max(np.abs(self.center))),
+            self.outer_radius,
+        )
+        self.pattern_guides = _coerce_pattern_guides(
+            self.raw_pattern_lines,
+            coordinate_scale=coordinate_scale,
+            minimum_tolerance=self.geometry_tolerance,
         )
 
     def _read_existing_topology(self):
@@ -977,85 +991,54 @@ class _CircularStripMesher(
                 anchors, creates conflicting connectors, or violates connector order.
         """
         connectors = set()
-        for segment in self.pattern_lines:
-            delta = segment[1] - segment[0]
-            axis_scales = np.max(np.abs(segment), axis=0)
-            axis_tolerances = np.maximum(
+        for segment in self.pattern_guides:
+            fixed_axis = segment.fixed_axis
+            varying_axis = segment.varying_axis
+            fixed_tolerance = max(
                 self.geometry_tolerance,
-                8.0 * np.abs(np.spacing(axis_scales)),
+                segment.fixed_tolerance,
             )
-            vertical = (
-                abs(delta[0]) <= axis_tolerances[0]
-                and abs(delta[1]) > axis_tolerances[1]
+            bound_tolerance = max(
+                self.geometry_tolerance,
+                segment.bound_tolerance,
             )
-            horizontal = (
-                abs(delta[1]) <= axis_tolerances[1]
-                and abs(delta[0]) > axis_tolerances[0]
+            intersection_tolerance = fixed_tolerance
+            fixed = segment.fixed_value
+            segment_lower = segment.lower
+            segment_upper = segment.upper
+
+            outer_points = _circle_line_intersections(
+                segment,
+                self.center,
+                self.outer_radius,
+                tolerance=intersection_tolerance,
             )
-            if vertical == horizontal:
-                raise ValueError(
-                    "each pattern segment must be non-zero and horizontal "
-                    "or vertical"
+            # An outer tangent has no nontrivial interval inside the strip.
+            if outer_points.shape[0] < 2:
+                continue
+            outer_lower, outer_upper = outer_points[:, varying_axis]
+
+            inner_points = _circle_line_intersections(
+                segment,
+                self.center,
+                self.inner_radius,
+                tolerance=intersection_tolerance,
+            )
+            if inner_points.shape[0] == 0:
+                overlap_lower, overlap_upper, overlaps = _interval_overlap(
+                    segment_lower,
+                    segment_upper,
+                    outer_lower,
+                    outer_upper,
+                    intersection_tolerance,
                 )
-
-            fixed_axis = 0 if vertical else 1
-            varying_axis = 1 - fixed_axis
-            fixed_tolerance = float(axis_tolerances[fixed_axis])
-            bound_tolerance = float(axis_tolerances[varying_axis])
-            intersection_tolerance = max(
-                self.geometry_tolerance, fixed_tolerance
-            )
-            fixed = float(segment[0, fixed_axis])
-            segment_lower = float(
-                np.min(segment[:, varying_axis])
-            )
-            segment_upper = float(
-                np.max(segment[:, varying_axis])
-            )
-            fixed_distance = abs(fixed - self.center[fixed_axis])
-            if (
-                fixed_distance
-                > self.outer_radius + fixed_tolerance
-            ):
-                continue
-            if (
-                abs(fixed_distance - self.outer_radius)
-                <= fixed_tolerance
-            ):
-                continue
-
-            normalized_outer = min(
-                fixed_distance / self.outer_radius, 1.0
-            )
-            outer_root = self.outer_radius * np.sqrt(
-                max(0.0, 1.0 - normalized_outer**2)
-            )
-            if outer_root <= intersection_tolerance:
-                continue
-            outer_lower = (
-                self.center[varying_axis] - outer_root
-            )
-            outer_upper = (
-                self.center[varying_axis] + outer_root
-            )
-
-            if (
-                fixed_distance
-                > self.inner_radius + fixed_tolerance
-            ):
-                overlap_lower = max(segment_lower, outer_lower)
-                overlap_upper = min(segment_upper, outer_upper)
-                active = (
-                    overlap_upper - overlap_lower
-                    > intersection_tolerance
-                    and self._axis_interval_is_active(
-                        fixed_axis,
-                        varying_axis,
-                        fixed,
-                        overlap_lower,
-                        overlap_upper,
-                        intersection_tolerance,
-                    )
+                active = overlaps and self._axis_interval_is_active(
+                    fixed_axis,
+                    varying_axis,
+                    fixed,
+                    overlap_lower,
+                    overlap_upper,
+                    intersection_tolerance,
                 )
                 if active:
                     raise ValueError(
@@ -1064,42 +1047,29 @@ class _CircularStripMesher(
                     )
                 continue
 
-            if (
-                abs(fixed_distance - self.inner_radius)
-                <= fixed_tolerance
-            ):
-                inner_lower = inner_upper = self.center[varying_axis]
+            if inner_points.shape[0] == 1:
+                inner_lower = inner_upper = float(
+                    inner_points[0, varying_axis]
+                )
             else:
-                normalized_inner = min(
-                    fixed_distance / self.inner_radius, 1.0
-                )
-                inner_root = self.inner_radius * np.sqrt(
-                    max(0.0, 1.0 - normalized_inner**2)
-                )
-                inner_lower = (
-                    self.center[varying_axis] - inner_root
-                )
-                inner_upper = (
-                    self.center[varying_axis] + inner_root
-                )
+                inner_lower, inner_upper = inner_points[:, varying_axis]
 
-            for first_value, second_value in (
+            for outer_value, inner_value in (
                 (outer_lower, inner_lower),
-                (inner_upper, outer_upper),
+                (outer_upper, inner_upper),
             ):
-                branch_lower = min(first_value, second_value)
-                branch_upper = max(first_value, second_value)
-                if (
-                    branch_upper - branch_lower
-                    <= intersection_tolerance
-                ):
+                branch_lower = min(outer_value, inner_value)
+                branch_upper = max(outer_value, inner_value)
+                if branch_upper - branch_lower <= intersection_tolerance:
                     continue
-                overlap_lower = max(segment_lower, branch_lower)
-                overlap_upper = min(segment_upper, branch_upper)
-                if (
-                    overlap_upper - overlap_lower
-                    <= intersection_tolerance
-                ):
+                overlap_lower, overlap_upper, overlaps = _interval_overlap(
+                    segment_lower,
+                    segment_upper,
+                    branch_lower,
+                    branch_upper,
+                    intersection_tolerance,
+                )
+                if not overlaps:
                     continue
                 active = self._axis_interval_is_active(
                     fixed_axis,
@@ -1121,12 +1091,6 @@ class _CircularStripMesher(
                         "a pattern segment ends inside the annular material"
                     )
 
-                if first_value in (outer_lower, outer_upper):
-                    outer_value = first_value
-                    inner_value = second_value
-                else:
-                    outer_value = second_value
-                    inner_value = first_value
                 outer_target = np.empty(2, dtype=np.float64)
                 inner_target = np.empty(2, dtype=np.float64)
                 outer_target[fixed_axis] = fixed
