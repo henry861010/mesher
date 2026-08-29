@@ -12,9 +12,9 @@ import argparse
 
 import numpy as np
 
-from mesher.circular import imprint_circle
-from mesher.generators import generate_rectilinear_mesh
-from mesher.quality import MeshQualityChecker
+from mesher.mesh2d.circular import imprint_circle
+from mesher.mesh2d.generators import generate_rectilinear_mesh
+from mesher.mesh2d.quality import MeshQualityChecker
 
 
 def main():
@@ -75,7 +75,7 @@ def main():
     print(f"invalid Jacobians: {quality.invalid_indices.size}")
 
     if args.view:
-        from mesher.visualization import view_mesh
+        from mesher.mesh2d.visualization import view_mesh
 
         view_mesh(
             mesh,

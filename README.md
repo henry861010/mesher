@@ -1,67 +1,62 @@
 # mesher
 
-`mesher` is a Python library for planar mixed Tri3/Quad4 meshes. It provides
-rectilinear mesh generation, circular feature imprinting, mesh quality checks,
-and optional PyVista visualization.
+`mesher` is a typed Python library for planar mixed Tri3/Quad4 meshes,
+layered Wedge6/Hex8 extrusion, mesh quality checks, visualization, and the
+process-flow geometry-to-CDB workflow.
 
-## Mesh data model
+The package is organized by responsibility:
 
-The former `Mesh` container has been renamed to `Mesh2D` to make the library's
-planar, two-dimensional scope explicit and to avoid confusion with surface or
-volume mesh types. Import it from the package root when constructing a mesh
-directly:
+- `mesher.mesh2d` owns planar models, generators, circular operations,
+  quality checks, and 2D visualization.
+- `mesher.mesh3d` owns solid models, typed extrusion, and 3D visualization.
+- `mesher.process_flow` translates Standard V1 geometry and coordinates the
+  complete 2D-to-3D process-flow pipeline.
 
-```python
-from mesher import Mesh2D
-
-mesh = Mesh2D(nodes=nodes, elements=elements)
-```
+See [Architecture](docs/architecture.md) for the dependency rules and
+[Migrating to 0.2](docs/migration-0.2.md) for breaking import and field changes.
 
 ## Installation
 
-Install the core package:
+Install the NumPy-only core:
 
 ```bash
 python -m pip install .
 ```
 
-Install visualization support:
+Install optional capabilities independently:
 
 ```bash
 python -m pip install '.[visualization]'
-```
-
-## Interactive element quality GUI
-
-Install the native GUI dependency:
-
-```bash
 python -m pip install '.[gui]'
+python -m pip install '.[process-flow]'
 ```
 
-Launch the native desktop quality explorer:
+The basic `import mesher` path does not import PyVista, Matplotlib, PySide6,
+or `process_flow_kernel`.
 
-```bash
-mesher-quality-gui
-```
+## Mesh models
 
-Alternatively, run it directly from a source checkout:
-
-```bash
-PYTHONPATH=src python -m mesher.quality.gui
-```
-
-Use **Triangle · 3 nodes** or **Quadrilateral · 4 nodes** to choose the
-element, then drag its nodes on the canvas. The Jacobian, scaled Jacobian,
-aspect ratio, status, and node coordinates update immediately. The pass/fail
-thresholds are editable in the side panel. This is a local PySide6/Qt desktop
-application; it does not start a web server or use a browser.
-
-## Circular feature imprinting
+The package root exports only the central models and topology enums:
 
 ```python
-from mesher.generators import generate_rectilinear_mesh
-from mesher.circular import imprint_circle
+from mesher import ElementType2D, ElementType3D, Mesh2D, Mesh3D
+```
+
+`Mesh2D` owns contiguous `float64` nodes with shape `(n, 3)` and `int32`
+connectivity with shape `(m, 4)`. XY input is accepted and normalized with a
+zero Z coordinate. Tri3 rows use `[n0, n1, n2, n2]`; `element_types` exposes
+the inferred Tri3/Quad4 topology.
+
+`Mesh3D` owns `(n, 3)` nodes, fixed-width `(m, 8)` connectivity, explicit
+Wedge6/Hex8 types, `element_component_ids`, and
+`component_ids_by_name`. Wedge6 connectivity remains padded to eight slots so
+the repository CDB format stays stable.
+
+## 2D generation and circular features
+
+```python
+from mesher.mesh2d.circular import extend_circular_mesh, imprint_circle
+from mesher.mesh2d.generators import generate_rectilinear_mesh
 
 mesh = generate_rectilinear_mesh(
     target_edge_size=1.0,
@@ -76,42 +71,6 @@ imprint_circle(
     band_width=1.0,
     target_edge_size=0.5,
 )
-```
-
-The operation is transactional and in place: it returns the same `Mesh2D`
-instance after success, while a failure leaves the input mesh unchanged.
-
-`topology="auto"` is the default. It accepts either a complete circular band
-or one connected open sector whose two domain-boundary sides lie on rays from
-`center`. For example, a mesh covering only the upper half-plane can receive a
-0-to-180-degree circular imprint:
-
-```python
-mesh = generate_rectilinear_mesh(
-    target_edge_size=0.5,
-    x_coordinates=[-8.0, 0.0, 8.0],
-    y_coordinates=[0.0, 8.0],
-)
-
-imprint_circle(
-    mesh,
-    center=(0.0, 0.0),
-    radius=5.0,
-    band_width=1.0,
-)
-```
-
-Pass `topology="closed"` or `topology="open"` to require one form explicitly.
-Open cuts that do not follow rays from `center`, disconnected angular regions,
-and ambiguous boundary topologies are rejected transactionally.
-
-## Circular mesh extension
-
-Use an existing exposed circular boundary to build concentric mesh layers out
-to a larger radius:
-
-```python
-from mesher.circular import extend_circular_mesh
 
 extend_circular_mesh(
     mesh,
@@ -120,23 +79,74 @@ extend_circular_mesh(
     center_y=0.0,
     inner_radius=5.0,
     outer_radius=10.0,
-    topology="auto",
 )
 ```
 
-The existing mesh outside `inner_radius` is discarded. The operation preserves
-the inner boundary's node count on every generated circle or arc and returns
-the same `Mesh2D` instance transactionally. `element_size` limits radial
-spacing only; it does not limit circumferential edge length.
+Both circular operations are transactional and in place: they return the same
+`Mesh2D` after success and leave it unchanged on failure.
 
-The default `topology="auto"` accepts either one complete circular loop or one
-continuous open arc on `inner_radius` and preserves its angular coverage.
-Pass `topology="closed"` or `topology="open"` to require one form explicitly.
-Disconnected arcs, multiple matching boundaries, and non-monotone angular
-ordering are rejected transactionally.
+## Typed 3D extrusion
+
+```python
+from mesher.mesh3d import ExtrusionLayer, extrude_mesh
+
+solid = extrude_mesh(
+    mesh,
+    [ExtrusionLayer(z_min=0.0, z_max=1.0, element_component_ids=component_ids)],
+    element_size=1.0,
+    component_ids_by_name={"EMPTY": 0, "silicon": 1},
+)
+```
+
+Component id zero represents an empty planar element. Adjacent layers reuse
+their shared top/bottom nodes.
+
+## Process-flow pipeline
+
+Install the `process-flow` extra, then build from a Standard V1 structure:
+
+```python
+from mesher.process_flow import SymmetryMode, build_mesh_from_structure
+
+mesh = build_mesh_from_structure(
+    structure,
+    element_size=100.0,
+    symmetry=SymmetryMode.UPPER_RIGHT_QUARTER,
+    progress=optional_event_callback,
+)
+```
+
+Supported symmetry values are `full`, `upper_half`, `right_half`, and
+`upper_right_quarter`.
+
+Run the worker through its console script or module path:
+
+```bash
+mesher-process-flow geometry.json 100 output.cdb upper_right_quarter
+python -m mesher.process_flow.worker geometry.json 100 output.cdb full
+```
+
+Success writes JSON metadata as the final stdout line. Progress events retain
+the `PROCESS_FLOW_PROGRESS ` stderr prefix.
+
+## Optional tools
+
+Launch the 2D quality GUI with:
+
+```bash
+mesher-quality-gui
+```
+
+Import visualization only after installing the corresponding extra:
+
+```python
+from mesher.mesh2d.visualization import view_mesh
+from mesher.mesh3d.visualization import MeshViewer
+```
 
 ## Tests
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
+python -m build
 ```

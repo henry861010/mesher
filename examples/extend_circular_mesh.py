@@ -13,8 +13,8 @@ import argparse
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.circular import extend_circular_mesh
-from mesher.quality import MeshQualityChecker
+from mesher.mesh2d.circular import extend_circular_mesh
+from mesher.mesh2d.quality import MeshQualityChecker
 
 
 def build_inner_disk(
@@ -109,7 +109,7 @@ def main():
     print(f"minimum scaled Jacobian: {quality.summary.minimum:.6f}")
 
     if args.view:
-        from mesher.visualization import view_mesh
+        from mesher.mesh2d.visualization import view_mesh
 
         view_mesh(
             mesh,

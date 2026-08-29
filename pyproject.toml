@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mesher"
-version = "0.1.0"
-description = "Planar mixed-element mesh generation, feature imprinting, and quality checks"
+version = "0.2.0"
+description = "Typed 2D/3D mesh generation and process-flow meshing workflows"
 readme = "README.md"
 requires-python = ">=3.11"
 license-files = ["LICENSE"]
@@ -14,20 +14,31 @@ dependencies = [
 ]
 
 [project.scripts]
-mesher-quality-gui = "mesher.quality.gui:main"
+mesher-quality-gui = "mesher.mesh2d.quality.gui:main"
+mesher-process-flow = "mesher.process_flow.worker:main"
 
 [project.optional-dependencies]
 gui = [
     "PySide6>=6.8",
 ]
 visualization = [
+    "matplotlib>=3.8",
     "pyvista>=0.48",
+]
+process-flow = [
+    "matplotlib>=3.8",
+    "process-flow-kernel",
 ]
 dev = [
     "build>=1.2",
+    "matplotlib>=3.8",
+    "process-flow-kernel",
     "PySide6>=6.8",
     "pyvista>=0.48",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+mesher = ["py.typed"]

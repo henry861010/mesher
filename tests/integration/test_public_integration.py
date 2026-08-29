@@ -4,23 +4,23 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.circular import extend_circular_mesh, imprint_circle
-from mesher.circular.extend import (
+from mesher.mesh2d.circular import extend_circular_mesh, imprint_circle
+from mesher.mesh2d.circular.extend import (
     extend_circular_mesh as extend_circular_mesh_implementation,
 )
-from mesher.circular.imprint import (
+from mesher.mesh2d.circular.imprint import (
     imprint_circle as imprint_circle_implementation,
 )
-from mesher.generators import generate_rectilinear_mesh
-from mesher.visualization import build_faces, view_mesh
+from mesher.mesh2d.generators import generate_rectilinear_mesh
+from mesher.mesh2d.visualization import build_faces, view_mesh
 
 
 class PublicIntegrationTests(unittest.TestCase):
     def test_public_api_imports_resolve_from_domain_namespaces(self):
-        self.assertEqual(Mesh2D.__module__, "mesher.mesh")
+        self.assertEqual(Mesh2D.__module__, "mesher.mesh2d.model")
         self.assertEqual(
             generate_rectilinear_mesh.__module__,
-            "mesher.generators.rectilinear",
+            "mesher.mesh2d.generators.rectilinear",
         )
         self.assertIs(imprint_circle, imprint_circle_implementation)
         self.assertIs(
@@ -113,7 +113,7 @@ class PublicIntegrationTests(unittest.TestCase):
         plotter = MagicMock()
 
         with patch(
-            "mesher.visualization.pyvista.pv.Plotter",
+            "mesher.mesh2d.visualization.pyvista.pv.Plotter",
             return_value=plotter,
         ):
             view_mesh(mesh, element_indices=[1])
@@ -142,7 +142,7 @@ class PublicIntegrationTests(unittest.TestCase):
         plotter = MagicMock()
 
         with patch(
-            "mesher.visualization.pyvista.pv.Plotter",
+            "mesher.mesh2d.visualization.pyvista.pv.Plotter",
             return_value=plotter,
         ):
             view_mesh(mesh, node_indices=[0, 2])
@@ -168,7 +168,7 @@ class PublicIntegrationTests(unittest.TestCase):
         plotter = MagicMock()
 
         with patch(
-            "mesher.visualization.pyvista.pv.Plotter",
+            "mesher.mesh2d.visualization.pyvista.pv.Plotter",
             return_value=plotter,
         ):
             view_mesh(mesh, node_indices=[1])
@@ -187,7 +187,7 @@ class PublicIntegrationTests(unittest.TestCase):
         plotter = MagicMock()
 
         with patch(
-            "mesher.visualization.pyvista.pv.Plotter",
+            "mesher.mesh2d.visualization.pyvista.pv.Plotter",
             return_value=plotter,
         ):
             view_mesh(mesh)
@@ -204,7 +204,7 @@ class PublicIntegrationTests(unittest.TestCase):
         plotter = MagicMock()
 
         with patch(
-            "mesher.visualization.pyvista.pv.Plotter",
+            "mesher.mesh2d.visualization.pyvista.pv.Plotter",
             return_value=plotter,
         ):
             view_mesh(
@@ -232,7 +232,7 @@ class PublicIntegrationTests(unittest.TestCase):
         plotter = MagicMock()
 
         with patch(
-            "mesher.visualization.pyvista.pv.Plotter",
+            "mesher.mesh2d.visualization.pyvista.pv.Plotter",
             return_value=plotter,
         ):
             view_mesh(
