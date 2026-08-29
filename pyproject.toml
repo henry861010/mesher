@@ -13,12 +13,19 @@ dependencies = [
     "numpy>=2.0",
 ]
 
+[project.scripts]
+mesher-quality-gui = "mesher.quality.gui:main"
+
 [project.optional-dependencies]
+gui = [
+    "PySide6>=6.8",
+]
 visualization = [
     "pyvista>=0.48",
 ]
 dev = [
     "build>=1.2",
+    "PySide6>=6.8",
     "pyvista>=0.48",
 ]
 

@@ -31,6 +31,32 @@ Install visualization support:
 python -m pip install '.[visualization]'
 ```
 
+## Interactive element quality GUI
+
+Install the native GUI dependency:
+
+```bash
+python -m pip install '.[gui]'
+```
+
+Launch the native desktop quality explorer:
+
+```bash
+mesher-quality-gui
+```
+
+Alternatively, run it directly from a source checkout:
+
+```bash
+PYTHONPATH=src python -m mesher.quality.gui
+```
+
+Use **Triangle · 3 nodes** or **Quadrilateral · 4 nodes** to choose the
+element, then drag its nodes on the canvas. The Jacobian, scaled Jacobian,
+aspect ratio, status, and node coordinates update immediately. The pass/fail
+thresholds are editable in the side panel. This is a local PySide6/Qt desktop
+application; it does not start a web server or use a browser.
+
 ## Circular feature imprinting
 
 ```python
