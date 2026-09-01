@@ -187,7 +187,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             ],
         )
 
-        soc_elements = mesh.elements[mesh.element_component_ids == mesh.component_ids_by_name["soc"]]
+        soc_elements = mesh.elements[mesh.element_comps == mesh.comps["soc"]]
         soc_xy = mesh.nodes[soc_elements[:, :4], :2]
         x = soc_xy[:, :, 0]
         y = soc_xy[:, :, 1]
@@ -207,8 +207,8 @@ class BuilderIntegrationTests(unittest.TestCase):
         self.assertEqual(mesh.node_count, 18)
         self.assertEqual(mesh.element_count, 4)
         self.assertEqual(mesh.component_count, 2)
-        self.assertEqual(mesh.component_ids_by_name, {"EMPTY": 0, "Si": 1})
-        np.testing.assert_array_equal(mesh.element_component_ids, [1, 1, 1, 1])
+        self.assertEqual(mesh.comps, {"EMPTY": 0, "Si": 1})
+        np.testing.assert_array_equal(mesh.element_comps, [1, 1, 1, 1])
         np.testing.assert_array_equal(
             mesh.nodes,
             [
@@ -483,8 +483,8 @@ class BuilderIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(structure, snapshot)
-        self.assertNotIn("outside", mesh.component_ids_by_name)
-        self.assertIn("crossing", mesh.component_ids_by_name)
+        self.assertNotIn("outside", mesh.comps)
+        self.assertIn("crossing", mesh.comps)
         self.assertTrue(np.all(mesh.nodes[:, 0] >= 0.0))
         self.assertTrue(np.all(mesh.nodes[:, 1] >= 0.0))
 
@@ -520,7 +520,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             symmetry="upper_right_quarter",
         )
 
-        self.assertNotIn("diagonal-outside", mesh.component_ids_by_name)
+        self.assertNotIn("diagonal-outside", mesh.comps)
 
     def test_rejects_a_selected_quarter_without_positive_area_geometry(self):
         structure = {
@@ -630,8 +630,8 @@ class BuilderIntegrationTests(unittest.TestCase):
         mesh = build_mesh_from_structure(_multi_circle_structure(), element_size=1.0)
 
         self.assertEqual(mesh.element_count, 66)
-        self.assertEqual(mesh.component_ids_by_name, {"EMPTY": 0, "Si": 1})
-        self.assertTrue(np.all(mesh.element_component_ids == 1))
+        self.assertEqual(mesh.comps, {"EMPTY": 0, "Si": 1})
+        self.assertTrue(np.all(mesh.element_comps == 1))
 
         element_xy = mesh.nodes[mesh.elements, :2]
         distance_squared = np.minimum(

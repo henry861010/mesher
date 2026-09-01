@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from mesher import ElementType2D, ElementType3D, Mesh2D, Mesh3D
+from mesher import ElementType2D, Mesh2D, Mesh3D
 from mesher.mesh3d.extrusion import Dragger
 
 
@@ -24,17 +24,12 @@ class MeshModelTests(unittest.TestCase):
         )
 
     def test_mesh3d_normalizes_and_owns_mesh_data(self):
-        nodes = np.array([[1, 2, 3]], dtype=np.float32)
+        nodes = np.array([[1, 2, 3, 99]], dtype=np.float32)
         elements = np.zeros((1, 8), dtype=np.int64)
         component_ids = np.array([1], dtype=np.int64)
         component_table = {"EMPTY": 0, "body": 1}
 
-        mesh = Mesh3D(
-            nodes=nodes,
-            elements=elements,
-            element_component_ids=component_ids,
-            component_ids_by_name=component_table,
-        )
+        mesh = Mesh3D(nodes, elements, component_ids, component_table)
         nodes[0, 0] = 100
         elements[0, 0] = 7
         component_ids[0] = 9
@@ -42,14 +37,18 @@ class MeshModelTests(unittest.TestCase):
 
         self.assertEqual(mesh.nodes.dtype, np.float64)
         self.assertEqual(mesh.elements.dtype, np.int32)
-        self.assertEqual(mesh.element_component_ids.dtype, np.int32)
+        self.assertEqual(mesh.element_comps.dtype, np.int32)
+        self.assertEqual(mesh.nodes.shape, (1, 3))
         self.assertEqual(mesh.nodes[0, 0], 1.0)
         self.assertEqual(mesh.elements[0, 0], 0)
-        self.assertEqual(mesh.element_component_ids[0], 1)
-        self.assertEqual(mesh.component_ids_by_name["body"], 1)
+        self.assertEqual(mesh.element_comps[0], 1)
+        self.assertEqual(mesh.comps["body"], 1)
         self.assertEqual(mesh.node_count, 1)
         self.assertEqual(mesh.element_count, 1)
         self.assertEqual(mesh.component_count, 2)
+        self.assertFalse(hasattr(mesh, "element_types"))
+        self.assertFalse(hasattr(mesh, "element_component_ids"))
+        self.assertFalse(hasattr(mesh, "component_ids_by_name"))
 
     def test_mesh3d_rejects_invalid_shapes(self):
         cases = (
@@ -57,7 +56,7 @@ class MeshModelTests(unittest.TestCase):
                 "nodes": np.empty((1, 2)),
                 "elements": np.empty((0, 8), dtype=np.int32),
                 "components": np.empty(0, dtype=np.int32),
-                "message": "nodes must have shape (n, 3)",
+                "message": "nodes must have shape (n, 3+)",
             },
             {
                 "nodes": np.empty((0, 3)),
@@ -69,7 +68,13 @@ class MeshModelTests(unittest.TestCase):
                 "nodes": np.empty((0, 3)),
                 "elements": np.empty((0, 8), dtype=np.int32),
                 "components": np.empty((0, 1), dtype=np.int32),
-                "message": "element_component_ids must have shape (m,)",
+                "message": "element_comps must have shape (m,)",
+            },
+            {
+                "nodes": np.empty((0, 3)),
+                "elements": np.empty((1, 8), dtype=np.int32),
+                "components": np.empty(0, dtype=np.int32),
+                "message": "element_comps length must match element count",
             },
         )
         for case in cases:
@@ -78,8 +83,8 @@ class MeshModelTests(unittest.TestCase):
                     Mesh3D(
                         nodes=case["nodes"],
                         elements=case["elements"],
-                        element_component_ids=case["components"],
-                        component_ids_by_name={},
+                        element_comps=case["components"],
+                        comps={},
                     )
 
     def test_dragger_build_returns_only_owned_valid_rows(self):
@@ -110,9 +115,8 @@ class MeshModelTests(unittest.TestCase):
             mesh.elements[0],
             [0, 1, 2, 2, 3, 4, 5, 5],
         )
-        np.testing.assert_array_equal(mesh.element_types, [ElementType3D.WEDGE6])
-        np.testing.assert_array_equal(mesh.element_component_ids, [1])
-        self.assertEqual(mesh.component_ids_by_name, {"EMPTY": 0, "Cu": 1})
+        np.testing.assert_array_equal(mesh.element_comps, [1])
+        self.assertEqual(mesh.comps, {"EMPTY": 0, "Cu": 1})
         self.assertAlmostEqual(dragger.element_2D_volume[0], 0.5)
 
     def test_dragger_extrudes_a_quad_as_hex(self):
@@ -124,8 +128,7 @@ class MeshModelTests(unittest.TestCase):
 
         mesh = dragger.build(_layers(), 1.0)
 
-        np.testing.assert_array_equal(mesh.element_types, [ElementType3D.HEX8])
-        np.testing.assert_array_equal(mesh.element_component_ids, [1])
+        np.testing.assert_array_equal(mesh.element_comps, [1])
 
     def test_dragger_reuses_adjacent_layer_nodes(self):
         dragger = Dragger()

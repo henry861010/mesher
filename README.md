@@ -36,10 +36,10 @@ or `process_flow_kernel`.
 
 ## Mesh models
 
-The package root exports only the central models and topology enums:
+The package root exports only the central mesh models and the planar topology enum:
 
 ```python
-from mesher import ElementType2D, ElementType3D, Mesh2D, Mesh3D
+from mesher import ElementType2D, Mesh2D, Mesh3D
 ```
 
 `Mesh2D` owns contiguous `float64` nodes with shape `(n, 3)` and `int32`
@@ -47,10 +47,10 @@ connectivity with shape `(m, 4)`. XY input is accepted and normalized with a
 zero Z coordinate. Tri3 rows use `[n0, n1, n2, n2]`; `element_types` exposes
 the inferred Tri3/Quad4 topology.
 
-`Mesh3D` owns `(n, 3)` nodes, fixed-width `(m, 8)` connectivity, explicit
-Wedge6/Hex8 types, `element_component_ids`, and
-`component_ids_by_name`. Wedge6 connectivity remains padded to eight slots so
-the repository CDB format stays stable.
+`Mesh3D` owns `(n, 3)` nodes, fixed-width `(m, 8)` connectivity,
+`element_comps`, and `comps`. Wedge-like connectivity remains padded to eight
+slots by repeating the third bottom and top nodes so the repository CDB format
+stays stable.
 
 ## 2D generation and circular features
 

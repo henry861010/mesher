@@ -602,8 +602,8 @@ class Dragger:
         return Mesh3D(
             nodes=self.nodes[: self.node_num],
             elements=self.elements[: self.element_num],
-            element_component_ids=self.element_comps[: self.element_num],
-            component_ids_by_name=self.comps,
+            element_comps=self.element_comps[: self.element_num],
+            comps=self.comps,
         )
 
 

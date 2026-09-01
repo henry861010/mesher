@@ -24,8 +24,9 @@ package.
   preserved.
 - `process_flow_mesher.translation.standard_v1.StandardV1Translator` moves to
   `mesher.process_flow.translation.standard_v1.StandardV1Translator`.
-- `Mesh3D.element_comps` is now `element_component_ids`.
-- `Mesh3D.comps` is now `component_ids_by_name`.
+- `Mesh3D` retains the original `element_comps` and `comps` field names; the
+  temporary `element_component_ids` and `component_ids_by_name` names are not
+  supported.
 - `model_type` is now `symmetry`.
 - `Full_Model`, `Quarter_Model`, `Half_Model_X`, and `Half_Model_Y` become
   `full`, `upper_right_quarter`, `upper_half`, and `right_half` respectively.

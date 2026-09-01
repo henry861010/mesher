@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
             total=(
                 mesh.node_count
                 + mesh.element_count
-                + len(mesh.element_component_ids)
+                + len(mesh.element_comps)
                 + mesh.component_count
             ),
             unit="records",

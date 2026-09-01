@@ -22,7 +22,7 @@ def write_cdb_text(
     total_records = (
         mesh.node_count
         + mesh.element_count
-        + len(mesh.element_component_ids)
+        + len(mesh.element_comps)
         + mesh.component_count
     )
     completed_records = 0
@@ -69,7 +69,7 @@ def write_cdb_text(
 
         handle.write("\n*ELEMENT_COMP,index,component_id\n")
         report("Writing CDB element components.", force=True)
-        for element_index, component_id in enumerate(mesh.element_component_ids):
+        for element_index, component_id in enumerate(mesh.element_comps):
             handle.write(f"{element_index},{int(component_id)}\n")
             completed_records += 1
             report("Writing CDB element components.")
@@ -77,7 +77,7 @@ def write_cdb_text(
         handle.write("\n*COMPS,component_id,name\n")
         report("Writing CDB component table.", force=True)
         for name, component_id in sorted(
-            mesh.component_ids_by_name.items(),
+            mesh.comps.items(),
             key=lambda item: item[1],
         ):
             encoded_name = json.dumps(str(name), ensure_ascii=False)

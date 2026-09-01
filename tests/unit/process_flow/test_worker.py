@@ -14,8 +14,8 @@ class AtomicWorkerOutputTests(unittest.TestCase):
         mesh = Mesh3D(
             nodes=np.empty((0, 3)),
             elements=np.empty((0, 8), dtype=np.int32),
-            element_component_ids=np.empty(0, dtype=np.int32),
-            component_ids_by_name={"EMPTY": 0},
+            element_comps=np.empty(0, dtype=np.int32),
+            comps={"EMPTY": 0},
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:

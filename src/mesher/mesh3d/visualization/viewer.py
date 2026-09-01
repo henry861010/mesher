@@ -7,7 +7,7 @@ from matplotlib.colors import to_hex
 import random
 from vtkmodules.vtkRenderingCore import vtkCellPicker, vtkPointPicker
 
-from ..model import ElementType3D, Mesh3D
+from ..model import Mesh3D
 
 _COLOR_RANDOM = random.Random(1)
 
@@ -19,10 +19,9 @@ class MeshViewer:
     def _build_grid(self):
         cells = []
         celltypes = np.empty(self.mesh.element_count, dtype=np.uint8)
-        for index, (element, element_type) in enumerate(
-            zip(self.mesh.elements, self.mesh.element_types)
-        ):
-            if element_type == ElementType3D.WEDGE6:
+        for index, element in enumerate(self.mesh.elements):
+            is_wedge = element[2] == element[3] and element[6] == element[7]
+            if is_wedge:
                 wedge = element[[0, 1, 2, 4, 5, 6]]
                 cells.append(np.concatenate(([6], wedge)))
                 celltypes[index] = pv.CellType.WEDGE
@@ -38,7 +37,7 @@ class MeshViewer:
         grid = pv.UnstructuredGrid(packed_cells, celltypes, self.mesh.nodes)
 
         ### Attach component ids as cell data for coloring
-        grid.cell_data['comp'] = self.mesh.element_component_ids.astype(np.int32)
+        grid.cell_data['comp'] = self.mesh.element_comps.astype(np.int32)
         return grid
 
     def _to_int(self, value):
@@ -65,10 +64,10 @@ class MeshViewer:
                 comp_id = value_id
                 name = str(key)
             elif (
-                key in self.mesh.component_ids_by_name
-                and self._to_int(self.mesh.component_ids_by_name[key]) is not None
+                key in self.mesh.comps
+                and self._to_int(self.mesh.comps[key]) is not None
             ):
-                comp_id = int(self.mesh.component_ids_by_name[key])
+                comp_id = int(self.mesh.comps[key])
                 name = str(value)
             else:
                 continue
@@ -78,7 +77,7 @@ class MeshViewer:
 
     def _component_name_map(self, component_names=None):
         comp_names = {}
-        self._update_component_name_map(comp_names, self.mesh.component_ids_by_name)
+        self._update_component_name_map(comp_names, self.mesh.comps)
         self._update_component_name_map(comp_names, self.component_names, overwrite=True)
         self._update_component_name_map(comp_names, component_names, overwrite=True)
         return comp_names

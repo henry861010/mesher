@@ -11,7 +11,7 @@ from mesher.process_flow.exporters.cdb import write_cdb_text
 class CdbWriteTests(unittest.TestCase):
     def test_write_exports_mesh_3d(self):
         mesh = Mesh3D(
-            component_ids_by_name={"EMPTY": 0, "body": 1},
+            comps={"EMPTY": 0, "body": 1},
             nodes=np.array(
                 [
                     [0.0, 0.0, 0.0],
@@ -23,7 +23,7 @@ class CdbWriteTests(unittest.TestCase):
                 [[0, 1, 1, 0, 0, 1, 1, 0]],
                 dtype=np.int32,
             ),
-            element_component_ids=np.array([1], dtype=np.int32),
+            element_comps=np.array([1], dtype=np.int32),
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:

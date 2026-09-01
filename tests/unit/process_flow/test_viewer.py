@@ -88,8 +88,8 @@ class MeshViewerSelectionTests(unittest.TestCase):
                 dtype=np.float32,
             ),
             elements=np.empty((0, 8), dtype=np.int32),
-            element_component_ids=np.empty((0,), dtype=np.int32),
-            component_ids_by_name={"EMPTY": 0},
+            element_comps=np.empty((0,), dtype=np.int32),
+            comps={"EMPTY": 0},
         )
         self.vision = MeshViewer(self.mesh)
         self.component_1 = FakeActor()
@@ -219,8 +219,8 @@ class MeshViewerDataTests(unittest.TestCase):
                 ]
             ),
             elements=np.array([[0, 1, 2, 3, 4, 5, 6, 7]]),
-            element_component_ids=np.array([1]),
-            component_ids_by_name={"EMPTY": 0, "body": 1},
+            element_comps=np.array([1]),
+            comps={"EMPTY": 0, "body": 1},
         )
         viewer = MeshViewer(mesh, component_names={1: "Display Body"})
 
@@ -235,7 +235,7 @@ class MeshViewerDataTests(unittest.TestCase):
             {0: "EMPTY", 1: "Display Body"},
         )
 
-    def test_builds_wedge_cells_from_explicit_element_types(self):
+    def test_builds_wedge_cells_from_padded_connectivity(self):
         mesh = Mesh3D(
             nodes=np.array(
                 [
@@ -248,8 +248,8 @@ class MeshViewerDataTests(unittest.TestCase):
                 ]
             ),
             elements=np.array([[0, 1, 2, 2, 3, 4, 5, 5]]),
-            element_component_ids=[1],
-            component_ids_by_name={"EMPTY": 0, "body": 1},
+            element_comps=[1],
+            comps={"EMPTY": 0, "body": 1},
         )
 
         grid = MeshViewer(mesh)._build_grid()
