@@ -14,7 +14,7 @@ from .domain import (
     domain_center_x as _domain_center_x,
     domain_center_y as _domain_center_y,
 )
-from .translation import _geometry_to_face
+from .translation.standard_v1 import _geometry_to_face
 
 JsonObject = dict[str, Any]
 

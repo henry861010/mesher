@@ -13,10 +13,10 @@ from typing import Any, Callable
 import numpy as np
 from process_flow_kernel import validate_geometry_semantic_keys
 
-from ..mesh2d import Mesh2D
 from ..mesh2d.circular import extend_circular_mesh, imprint_circle
 from ..mesh2d.generators import generate_rectilinear_mesh
-from ..mesh3d import Mesh3D, extrude_mesh
+from ..mesh3d.extrusion import Dragger
+from ..mesh3d.model import Mesh3D
 from .circle_planning import (
     CIRCLE_MINIMUM_QUAD_SCALED_JACOBIAN,
     _CircleExtension,
@@ -42,12 +42,7 @@ from .domain import (
     normalize_symmetry as _normalize_symmetry,
     restrict_grid_lines_to_domain as _restrict_grid_lines_to_domain,
 )
-from .material_assignment import MaterialAssignmentResolver
-from .translation import (
-    _geometry_to_face,
-    translate_layer_assignments,
-    translate_planar_pattern,
-)
+from .translation.standard_v1 import StandardV1Translator, _geometry_to_face
 
 JsonObject = dict[str, Any]
 ProgressCallback = Callable[[JsonObject], None]
@@ -84,9 +79,8 @@ def build_mesh_from_structure(
     # extraction, so keep the caller's preview snapshot immutable.
     stage = _start_stage(progress, "analyzing_geometry", "Analyzing geometry patterns.")
     container = copy.deepcopy(root)
-    planar_pattern = translate_planar_pattern(container)
-    base_face = planar_pattern.base_face
-    faces = list(planar_pattern.feature_faces)
+    translator = StandardV1Translator()
+    base_face, faces = translator.get_2D_pattern(container)
     if base_face is None:
         raise ValueError("CDB export requires at least one geometry body or feature.")
 
@@ -96,9 +90,7 @@ def build_mesh_from_structure(
     )
     if normalized_symmetry is not SymmetryMode.FULL:
         _filter_container_to_domain(container, domain)
-        planar_pattern = translate_planar_pattern(container)
-        base_face = planar_pattern.base_face
-        faces = list(planar_pattern.feature_faces)
+        base_face, faces = translator.get_2D_pattern(container)
         if base_face is None:
             raise ValueError(
                 f"CDB export has no geometry with positive XY area in "
@@ -155,7 +147,7 @@ def build_mesh_from_structure(
         domain,
     )
 
-    layer_infos = translate_layer_assignments(container)
+    layer_infos = translator.get_3D_pattern(container)
     _complete_stage(
         progress,
         "analyzing_geometry",
@@ -170,7 +162,8 @@ def build_mesh_from_structure(
             "layerBoundaryCount": len(layer_infos),
             "layerIntervalCount": max(0, len(layer_infos) - 1),
             "assignmentCount": sum(
-                len(layer_info.assignments) for layer_info in layer_infos[:-1]
+                len(layer_info.get("assignments", []))
+                for layer_info in layer_infos[:-1]
             ),
             "planarElementSize": planar_element_size,
             "symmetry": normalized_symmetry.value,
@@ -225,66 +218,9 @@ def build_mesh_from_structure(
         total=max(0, len(layer_infos) - 1),
         unit="layers",
     )
-    extrusion_source = Mesh2D(nodes=mesh_2d.nodes, elements=elements_2d)
-    resolver = MaterialAssignmentResolver(extrusion_source)
-    layer_started_at: dict[int, float] = {}
-
-    def on_layer_started(layer_index: int) -> None:
-        layer_started_at[layer_index] = time.perf_counter()
-
-    def on_layer_completed(
-        layer_index: int,
-        nodes_added: int,
-        elements_added: int,
-    ) -> None:
-        if progress is not None:
-            progress(
-                {
-                    "event": "item.completed",
-                    "stage": "building_3d_mesh",
-                    "data": {
-                        "itemType": "layer",
-                        "layerIndex": layer_index + 1,
-                        "assignmentCount": len(layer_infos[layer_index].assignments),
-                        "nodesAdded": nodes_added,
-                        "elementsAdded": elements_added,
-                        "wallDurationMs": int(
-                            round(
-                                (
-                                    time.perf_counter()
-                                    - layer_started_at.get(
-                                        layer_index,
-                                        time.perf_counter(),
-                                    )
-                                )
-                                * 1000
-                            )
-                        ),
-                    },
-                }
-            )
-        _emit_progress(
-            progress,
-            current=layer_index + 1,
-            total=max(0, len(layer_infos) - 1),
-            unit="layers",
-            message=(
-                f"Built layer {layer_index + 1} of "
-                f"{max(0, len(layer_infos) - 1)}."
-            ),
-        )
-
-    mesh = extrude_mesh(
-        extrusion_source,
-        resolver.iter_extrusion_layers(
-            layer_infos,
-            progress=progress,
-            _on_layer_started=on_layer_started,
-        ),
-        element_size=normalized_element_size,
-        component_ids_by_name=resolver.component_ids_by_name,
-        _on_layer_completed=on_layer_completed,
-    )
+    dragger = Dragger()
+    dragger.set_2D(mesh_2d.nodes, elements_2d)
+    mesh = dragger.build(layer_infos, normalized_element_size, progress=progress)
     _complete_stage(
         progress,
         "building_3d_mesh",

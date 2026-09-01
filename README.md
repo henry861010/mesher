@@ -8,7 +8,7 @@ The package is organized by responsibility:
 
 - `mesher.mesh2d` owns planar models, generators, circular operations,
   quality checks, and 2D visualization.
-- `mesher.mesh3d` owns solid models, typed extrusion, and 3D visualization.
+- `mesher.mesh3d` owns solid models, process-flow extrusion, and 3D visualization.
 - `mesher.process_flow` translates Standard V1 geometry and coordinates the
   complete 2D-to-3D process-flow pipeline.
 
@@ -85,21 +85,19 @@ extend_circular_mesh(
 Both circular operations are transactional and in place: they return the same
 `Mesh2D` after success and leave it unchanged on failure.
 
-## Typed 3D extrusion
+## Process-flow 3D extrusion
 
 ```python
-from mesher.mesh3d import ExtrusionLayer, extrude_mesh
+from mesher.mesh3d.extrusion import Dragger
 
-solid = extrude_mesh(
-    mesh,
-    [ExtrusionLayer(z_min=0.0, z_max=1.0, element_component_ids=component_ids)],
-    element_size=1.0,
-    component_ids_by_name={"EMPTY": 0, "silicon": 1},
-)
+dragger = Dragger()
+dragger.set_2D(mesh.nodes, mesh.elements)
+solid = dragger.build(layer_infos, element_size=1.0)
 ```
 
-Component id zero represents an empty planar element. Adjacent layers reuse
-their shared top/bottom nodes.
+`layer_infos` is the ordered dictionary structure returned by
+`StandardV1Translator.get_3D_pattern()`. Component id zero represents an empty
+planar element, and adjacent layers reuse their shared top/bottom nodes.
 
 ## Process-flow pipeline
 

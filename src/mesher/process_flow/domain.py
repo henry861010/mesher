@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from .translation import _geometry_to_face
+from .translation.standard_v1 import _geometry_to_face
 
 JsonObject = dict[str, Any]
 

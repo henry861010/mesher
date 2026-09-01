@@ -1,93 +1,76 @@
-"""Translate Standard V1 geometry payloads into typed meshing plans."""
-
-from __future__ import annotations
-
 import math
-from dataclasses import dataclass
-from enum import IntEnum
-from typing import Any
 
 
 DEFAULT_TOLERANCE = 1e-6
 CONTAINER_ITEM_FIELDS = ("bodies", "vias", "circuits", "bumps")
 
-JsonObject = dict[str, Any]
+START_NORMAL = 3
+START_DENSITY = 2
+START_CONVERT = 1
+END = 0
 
+class StandardV1Translator:
+    """Translates standard geometry containers into 2D print faces.
 
-class AssignmentKind(IntEnum):
-    """Material-state events emitted by Standard V1 translation."""
+    This version does not support ``ConeGeometry``. ``CylinderGeometry`` is
+    converted to a ``CIRCLE`` face.
+    """
 
-    END = 0
-    START_DENSITY = 2
-    START_NORMAL = 3
+    def get_2D_pattern(self, container, tolerance=DEFAULT_TOLERANCE):
+        """Extracts the 2D print pattern from a standard container tree.
 
+        Args:
+            container (dict): The root or subtree container payload from a
+                standard geometry structure.
+            tolerance (float): Numeric tolerance used when deduplicating
+                completely overlapping faces. Defaults to ``1e-6``.
 
-END = AssignmentKind.END
-START_DENSITY = AssignmentKind.START_DENSITY
-START_NORMAL = AssignmentKind.START_NORMAL
+        Returns:
+            tuple: A pair of ``(base_face, faces)``. ``base_face`` is the
+            largest footprint face or ``None`` for an empty tree. ``faces``
+            contains deduplicated non-base faces.
 
+        Raises:
+            ValueError: If the container contains unsupported geometry, invalid
+                payload shape, or invalid tolerance.
+        """
+        normalized_tolerance = _normalize_tolerance(tolerance)
+        all_faces = _collect_faces(container)
+        unique_faces = _dedupe_faces(all_faces, normalized_tolerance)
+        base_face = _select_base_face(unique_faces)
+        faces = _remove_base_face(unique_faces, base_face, normalized_tolerance)
 
-@dataclass(frozen=True)
-class PlanarPattern:
-    """Base footprint and non-base planar feature faces."""
+        return base_face, faces
 
-    base_face: JsonObject | None
-    feature_faces: tuple[JsonObject, ...]
-
-
-@dataclass(frozen=True)
-class LayerAssignments:
-    """All material events at one Z boundary."""
-
-    z: float
-    assignments: tuple[JsonObject, ...]
-
-
-def translate_planar_pattern(
-    container: JsonObject,
-    *,
-    tolerance: float = DEFAULT_TOLERANCE,
-) -> PlanarPattern:
-    """Extract the planar footprint and feature faces from a Standard V1 tree."""
-
-    normalized_tolerance = _normalize_tolerance(tolerance)
-    unique_faces = _dedupe_faces(_collect_faces(container), normalized_tolerance)
-    base_face = _select_base_face(unique_faces)
-    feature_faces = _remove_base_face(
-        unique_faces,
-        base_face,
-        normalized_tolerance,
-    )
-    return PlanarPattern(base_face, tuple(feature_faces))
-
-
-def translate_layer_assignments(
-    container: JsonObject,
-) -> tuple[LayerAssignments, ...]:
-    """Translate process geometry into ordered material events by Z boundary."""
-
-    _assign_priority(container)
-    assignments = sorted(
-        _get_assignments(container),
-        key=lambda item: (item["z"], item["type"]),
-    )
-    grouped: list[LayerAssignments] = []
-    for assignment in assignments:
-        if not grouped or grouped[-1].z < assignment["z"]:
-            grouped.append(LayerAssignments(float(assignment["z"]), (assignment,)))
-        else:
-            grouped[-1] = LayerAssignments(
-                grouped[-1].z,
-                (*grouped[-1].assignments, assignment),
-            )
-    return tuple(grouped)
+    def get_3D_pattern(self, container):
+        # assign priority
+        _assign_priority(container)
+        
+        # get assignment
+        assignments = _get_assignments(container)
+        
+        # order by priority and start/end
+        assignments = sorted(assignments, key=lambda item: (item['z'], item['type']))
+        
+        # group by z
+        layer_infos = []
+        for assignment in assignments:
+            if not layer_infos or layer_infos[-1]["z"] < assignment["z"]:
+                layer_infos.append({
+                    "z": assignment["z"],
+                    "assignments": [assignment]
+                })
+            else:
+                layer_infos[-1]["assignments"].append(assignment)
+                
+        return layer_infos
 
 
 def _get_assignments(container, ancestors=None, path="root"):
     '''
         assignment {
             z: float
-            type: END / START_DENSITY / START_NORMAL
+            type:  0 / 1 / 2 / 3 (END / START_CONVERT / START_DENSITY / START_NORMAL)
             face: face
             areas: area[]
         }
@@ -381,7 +364,7 @@ def _geometry_to_face(geometry):
         return {"type": "CIRCLE", "dim": [x, y, radius]}
 
     if geometry_type == "ConeGeometry":
-        raise ValueError("ConeGeometry is not supported by Standard V1 translation")
+        raise ValueError("ConeGeometry is not supported by StandardV1Translator")
 
     raise ValueError(f"Geometry type {geometry_type} is not supported")
 
@@ -406,7 +389,7 @@ def _geometry_to_z(geometry, isStart=True):
         return z
     
     if geometry["type"] == "ConeGeometry":
-        raise ValueError("ConeGeometry is not supported by Standard V1 translation")
+        raise ValueError("ConeGeometry is not supported by StandardV1Translator")
 
 
 def _polygon_dim(geometry):
@@ -815,12 +798,3 @@ def _finite_number(value, context):
     if not math.isfinite(number):
         raise ValueError(f"{context} must be a finite number")
     return number
-
-
-__all__ = [
-    "AssignmentKind",
-    "LayerAssignments",
-    "PlanarPattern",
-    "translate_layer_assignments",
-    "translate_planar_pattern",
-]

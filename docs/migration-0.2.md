@@ -19,7 +19,11 @@ package.
 
 ## API changes
 
-- `Dragger` and `set_2D` are replaced by `ExtrusionLayer` and `extrude_mesh`.
+- `process_flow_mesher.meshing.extrusion.Dragger` moves to
+  `mesher.mesh3d.extrusion.Dragger`; its `set_2D` and `build` workflow is
+  preserved.
+- `process_flow_mesher.translation.standard_v1.StandardV1Translator` moves to
+  `mesher.process_flow.translation.standard_v1.StandardV1Translator`.
 - `Mesh3D.element_comps` is now `element_component_ids`.
 - `Mesh3D.comps` is now `component_ids_by_name`.
 - `model_type` is now `symmetry`.

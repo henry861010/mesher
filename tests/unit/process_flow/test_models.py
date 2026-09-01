@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from mesher import ElementType2D, ElementType3D, Mesh2D, Mesh3D
-from mesher.mesh3d import ExtrusionLayer, extrude_mesh
+from mesher.mesh3d.extrusion import Dragger
 
 
 class MeshModelTests(unittest.TestCase):
@@ -82,17 +82,29 @@ class MeshModelTests(unittest.TestCase):
                         component_ids_by_name={},
                     )
 
-    def test_typed_extrusion_preserves_padded_wedge_contract(self):
-        planar = Mesh2D(
-            nodes=[[0, 0], [0, 1], [1, 0]],
-            elements=[[0, 1, 2, 2]],
+    def test_dragger_build_returns_only_owned_valid_rows(self):
+        dragger = Dragger()
+        dragger.node_num = 1
+        dragger.nodes = np.array(
+            [[0.0, 0.0, 0.0], [99.0, 99.0, 99.0]],
+            dtype=np.float64,
         )
-        mesh = extrude_mesh(
-            planar,
-            [ExtrusionLayer(0.0, 1.0, [1])],
-            element_size=1.0,
-            component_ids_by_name={"EMPTY": 0, "Cu": 1},
+
+        mesh = dragger.build([], 1.0)
+        dragger.nodes[0, 0] = 42.0
+
+        self.assertEqual(mesh.node_count, 1)
+        self.assertEqual(mesh.nodes[0, 0], 0.0)
+        self.assertFalse(np.any(mesh.nodes == 99.0))
+
+    def test_dragger_extrudes_a_padded_triangle_as_fixed_width_wedge(self):
+        dragger = Dragger()
+        dragger.set_2D(
+            np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]]),
+            np.array([[0, 1, 2, 2]], dtype=np.int32),
         )
+
+        mesh = dragger.build(_layers(), 1.0)
 
         np.testing.assert_array_equal(
             mesh.elements[0],
@@ -100,60 +112,77 @@ class MeshModelTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(mesh.element_types, [ElementType3D.WEDGE6])
         np.testing.assert_array_equal(mesh.element_component_ids, [1])
+        self.assertEqual(mesh.component_ids_by_name, {"EMPTY": 0, "Cu": 1})
+        self.assertAlmostEqual(dragger.element_2D_volume[0], 0.5)
 
-    def test_typed_extrusion_reuses_adjacent_layer_nodes(self):
-        planar = Mesh2D(
-            nodes=[[0, 0], [1, 0], [1, 1], [0, 1]],
-            elements=[[0, 1, 2, 3]],
+    def test_dragger_extrudes_a_quad_as_hex(self):
+        dragger = Dragger()
+        dragger.set_2D(
+            np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+            np.array([[0, 1, 2, 3]], dtype=np.int32),
         )
-        mesh = extrude_mesh(
-            planar,
-            [
-                ExtrusionLayer(0.0, 1.0, [1]),
-                ExtrusionLayer(1.0, 2.0, [1]),
-            ],
-            element_size=1.0,
-            component_ids_by_name={"EMPTY": 0, "body": 1},
+
+        mesh = dragger.build(_layers(), 1.0)
+
+        np.testing.assert_array_equal(mesh.element_types, [ElementType3D.HEX8])
+        np.testing.assert_array_equal(mesh.element_component_ids, [1])
+
+    def test_dragger_reuses_adjacent_layer_nodes(self):
+        dragger = Dragger()
+        dragger.set_2D(
+            np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+            np.array([[0, 1, 2, 3]], dtype=np.int32),
         )
+        layers = _layers()
+        layers.insert(1, {"z": 1.0, "assignments": []})
+        layers[-1]["z"] = 2.0
+
+        mesh = dragger.build(layers, 1.0)
 
         self.assertEqual(mesh.node_count, 12)
         self.assertEqual(mesh.element_count, 2)
         np.testing.assert_array_equal(mesh.elements[0, 4:], mesh.elements[1, :4])
-        np.testing.assert_array_equal(mesh.element_types, [ElementType3D.HEX8] * 2)
 
-    def test_typed_extrusion_accepts_an_empty_planar_mesh(self):
-        planar = Mesh2D(
-            nodes=np.empty((0, 2)),
-            elements=np.empty((0, 4), dtype=np.int32),
+    def test_dragger_skips_a_layer_without_material(self):
+        dragger = Dragger()
+        dragger.set_2D(
+            np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+            np.array([[0, 1, 2, 3]], dtype=np.int32),
         )
 
-        mesh = extrude_mesh(
-            planar,
-            [ExtrusionLayer(0.0, 1.0, [])],
-            element_size=1.0,
-            component_ids_by_name={"EMPTY": 0},
-        )
-
-        self.assertEqual(mesh.nodes.shape, (0, 3))
-        self.assertEqual(mesh.elements.shape, (0, 8))
-        self.assertEqual(mesh.element_types.shape, (0,))
-        self.assertEqual(mesh.element_component_ids.shape, (0,))
-
-    def test_typed_extrusion_skips_a_layer_without_material(self):
-        planar = Mesh2D(
-            nodes=[[0, 0], [1, 0], [1, 1], [0, 1]],
-            elements=[[0, 1, 2, 3]],
-        )
-
-        mesh = extrude_mesh(
-            planar,
-            [ExtrusionLayer(0.0, 1.0, [0])],
-            element_size=1.0,
-            component_ids_by_name={"EMPTY": 0},
+        mesh = dragger.build(
+            [{"z": 0.0, "assignments": []}, {"z": 1.0, "assignments": []}],
+            1.0,
         )
 
         self.assertEqual(mesh.node_count, 0)
         self.assertEqual(mesh.element_count, 0)
+
+    def test_dragger_rejects_malformed_mixed_connectivity(self):
+        dragger = Dragger()
+        nodes = np.zeros((4, 2), dtype=np.float64)
+
+        with self.assertRaisesRegex(ValueError, "Quad4 rows or padded Tri3"):
+            dragger.set_2D(nodes, [[0, 1, 1, 2]])
+
+        with self.assertRaisesRegex(ValueError, "out-of-range node index"):
+            dragger.set_2D(nodes, [[0, 1, 2, 4]])
+
+
+def _layers():
+    return [
+        {
+            "z": 0.0,
+            "assignments": [
+                {
+                    "type": 3,
+                    "face": None,
+                    "areas": [{"priority": 1.0, "material": "Cu"}],
+                }
+            ],
+        },
+        {"z": 1.0, "assignments": []},
+    ]
 
 
 if __name__ == "__main__":

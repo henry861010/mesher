@@ -1,12 +1,9 @@
 import unittest
 
-from mesher.process_flow.translation import (
-    translate_layer_assignments,
-    translate_planar_pattern,
-)
+from mesher.process_flow.translation.standard_v1 import StandardV1Translator
 
 
-class StandardV1TranslationTests(unittest.TestCase):
+class StandardV1TranslatorTests(unittest.TestCase):
     def test_translates_box_geometry_to_face_and_layers(self):
         container = {
             "bodies": [
@@ -26,15 +23,13 @@ class StandardV1TranslationTests(unittest.TestCase):
             "children": [],
         }
 
-        pattern = translate_planar_pattern(container)
-        layers = translate_layer_assignments(container)
+        translator = StandardV1Translator()
+        base_face, faces = translator.get_2D_pattern(container)
+        layers = translator.get_3D_pattern(container)
 
-        self.assertEqual(
-            pattern.base_face,
-            {"type": "BOX", "dim": [0.0, 0.0, 2.0, 1.0]},
-        )
-        self.assertEqual(pattern.feature_faces, ())
-        self.assertEqual([layer.z for layer in layers], [0.0, 1.0])
+        self.assertEqual(base_face, {"type": "BOX", "dim": [0.0, 0.0, 2.0, 1.0]})
+        self.assertEqual(faces, [])
+        self.assertEqual([layer["z"] for layer in layers], [0.0, 1.0])
 
     def test_accepts_multiple_circles_when_another_shape_is_the_base_face(self):
         container = {
@@ -73,18 +68,15 @@ class StandardV1TranslationTests(unittest.TestCase):
             "children": [],
         }
 
-        pattern = translate_planar_pattern(container)
+        base_face, faces = StandardV1Translator().get_2D_pattern(container)
 
+        self.assertEqual(base_face, {"type": "BOX", "dim": [-10.0, -10.0, 10.0, 10.0]})
         self.assertEqual(
-            pattern.base_face,
-            {"type": "BOX", "dim": [-10.0, -10.0, 10.0, 10.0]},
-        )
-        self.assertEqual(
-            pattern.feature_faces,
-            (
+            faces,
+            [
                 {"type": "CIRCLE", "dim": [-4.0, 0.0, 2.0]},
                 {"type": "CIRCLE", "dim": [4.0, 0.0, 3.0]},
-            ),
+            ],
         )
 
     def test_collects_circle_faces_from_every_container_item_type(self):
@@ -116,17 +108,17 @@ class StandardV1TranslationTests(unittest.TestCase):
             "children": [],
         }
 
-        pattern = translate_planar_pattern(container)
+        base_face, faces = StandardV1Translator().get_2D_pattern(container)
 
-        self.assertEqual(pattern.base_face["type"], "BOX")
+        self.assertEqual(base_face["type"], "BOX")
         self.assertEqual(
-            pattern.feature_faces,
-            (
+            faces,
+            [
                 {"type": "CIRCLE", "dim": [-6.0, 0.0, 1.0]},
                 {"type": "CIRCLE", "dim": [-2.0, 0.0, 1.0]},
                 {"type": "CIRCLE", "dim": [2.0, 0.0, 1.0]},
                 {"type": "CIRCLE", "dim": [6.0, 0.0, 1.0]},
-            ),
+            ],
         )
 
 
