@@ -63,10 +63,11 @@ def build_mesh_from_structure(
 ) -> Mesh3D:
     """Build a full or symmetry-reduced 2.5D mesh from a geometry structure.
 
-    Reduced models use the center of the complete XY footprint bounds as
-    their symmetry origin. ``upper_half`` retains the upper half,
-    ``right_half`` retains the right half, and ``upper_right_quarter`` retains
-    the upper-right quarter.
+    Reduced models use the center of the root container bodies' combined XY
+    bounds as their symmetry origin. If the root container has no bodies, the
+    complete XY footprint bounds are used instead. ``upper_half`` retains the
+    upper half, ``right_half`` retains the right half, and
+    ``upper_right_quarter`` retains the upper-right quarter.
     """
     stage = _start_stage(progress, "validating", "Checking geometry input.")
     normalized_element_size = _positive_finite_number(element_size, "elementSize")
@@ -84,10 +85,12 @@ def build_mesh_from_structure(
     if base_face is None:
         raise ValueError("CDB export requires at least one geometry body or feature.")
 
-    domain = _model_domain(
-        normalized_symmetry,
-        [base_face, *faces],
-    )
+    all_faces = [base_face, *faces]
+    root_body_faces = [
+        _geometry_to_face(body["geometry"])
+        for body in (container.get("bodies") or [])
+    ]
+    domain = _model_domain(normalized_symmetry, root_body_faces or all_faces)
     if normalized_symmetry is not SymmetryMode.FULL:
         _filter_container_to_domain(container, domain)
         base_face, faces = translator.get_2D_pattern(container)

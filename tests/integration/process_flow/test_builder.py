@@ -415,7 +415,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             ],
         )
 
-    def test_symmetry_modes_use_the_full_boundary_box_center(self):
+    def test_symmetry_modes_use_the_root_body_center(self):
         structure = _offset_box_structure()
         cases = (
             ("full", 16, [10.0, 20.0], [14.0, 24.0]),
@@ -435,6 +435,139 @@ class BuilderIntegrationTests(unittest.TestCase):
                 self.assertEqual(mesh.element_count, element_count)
                 np.testing.assert_array_equal(mesh.nodes[:, :2].min(axis=0), xy_min)
                 np.testing.assert_array_equal(mesh.nodes[:, :2].max(axis=0), xy_max)
+
+    def test_symmetry_center_ignores_child_body_bounds(self):
+        structure = {
+            "root": {
+                "bodies": [
+                    {
+                        "geometry": {
+                            "type": "BoxGeometry",
+                            "bottom_left": [-4.0, -4.0, 0.0],
+                            "top_right": [4.0, 4.0, 0.0],
+                            "thk": 1.0,
+                        },
+                        "material": "root",
+                    }
+                ],
+                "vias": [],
+                "circuits": [],
+                "bumps": [],
+                "children": [
+                    {
+                        "bodies": [
+                            {
+                                "geometry": {
+                                    "type": "BoxGeometry",
+                                    "bottom_left": [8.0, -1.0, 1.0],
+                                    "top_right": [10.0, 1.0, 1.0],
+                                    "thk": 1.0,
+                                },
+                                "material": "child",
+                            }
+                        ],
+                        "vias": [],
+                        "circuits": [],
+                        "bumps": [],
+                        "children": [],
+                    }
+                ],
+            }
+        }
+
+        mesh = build_mesh_from_structure(
+            structure,
+            element_size=1.0,
+            symmetry="right_half",
+        )
+
+        self.assertTrue(np.all(mesh.nodes[:, 0] >= 0.0))
+        self.assertTrue(np.any(np.isclose(mesh.nodes[:, 0], 0.0)))
+        self.assertIn("child", mesh.comps)
+
+    def test_symmetry_center_ignores_root_non_body_feature_bounds(self):
+        structure = _box_structure()
+        geometry = structure["root"]["bodies"][0]["geometry"]
+        geometry["bottom_left"] = [-4.0, -4.0, 0.0]
+        geometry["top_right"] = [4.0, 4.0, 0.0]
+        structure["root"]["vias"].append(
+            {
+                "geometry": {
+                    "type": "BoxGeometry",
+                    "bottom_left": [8.0, -1.0, 0.0],
+                    "top_right": [10.0, 1.0, 0.0],
+                    "thk": 1.0,
+                },
+                "material": "Cu",
+                "density": 1.0,
+                "koz": 0.0,
+            }
+        )
+
+        mesh = build_mesh_from_structure(
+            structure,
+            element_size=1.0,
+            symmetry="right_half",
+        )
+
+        self.assertTrue(np.all(mesh.nodes[:, 0] >= 0.0))
+        self.assertTrue(np.any(np.isclose(mesh.nodes[:, 0], 0.0)))
+
+    def test_symmetry_center_uses_combined_bounds_of_all_root_bodies(self):
+        structure = _box_structure()
+        first_geometry = structure["root"]["bodies"][0]["geometry"]
+        first_geometry["bottom_left"] = [-10.0, -2.0, 0.0]
+        first_geometry["top_right"] = [-6.0, 2.0, 0.0]
+        _append_box(structure, x1=2.0, y1=-2.0, x2=4.0, y2=2.0)
+
+        mesh = build_mesh_from_structure(
+            structure,
+            element_size=1.0,
+            symmetry="right_half",
+        )
+
+        self.assertNotIn("Si", mesh.comps)
+        self.assertIn("Cu", mesh.comps)
+        self.assertEqual(float(mesh.nodes[:, 0].min()), 2.0)
+        self.assertEqual(float(mesh.nodes[:, 0].max()), 4.0)
+
+    def test_symmetry_center_falls_back_to_all_faces_without_root_bodies(self):
+        structure = {
+            "root": {
+                "bodies": [],
+                "vias": [],
+                "circuits": [],
+                "bumps": [],
+                "children": [
+                    {
+                        "bodies": [
+                            {
+                                "geometry": {
+                                    "type": "BoxGeometry",
+                                    "bottom_left": [10.0, 20.0, 0.0],
+                                    "top_right": [14.0, 24.0, 0.0],
+                                    "thk": 1.0,
+                                },
+                                "material": "child",
+                            }
+                        ],
+                        "vias": [],
+                        "circuits": [],
+                        "bumps": [],
+                        "children": [],
+                    }
+                ],
+            }
+        }
+
+        mesh = build_mesh_from_structure(
+            structure,
+            element_size=1.0,
+            symmetry="upper_right_quarter",
+        )
+
+        np.testing.assert_array_equal(mesh.nodes[:, :2].min(axis=0), [12.0, 22.0])
+        np.testing.assert_array_equal(mesh.nodes[:, :2].max(axis=0), [14.0, 24.0])
 
     def test_quarter_model_filters_outside_patterns_and_keeps_crossing_patterns(self):
         structure = {
