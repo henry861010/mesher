@@ -13,7 +13,8 @@ from typing import Any, Callable
 import numpy as np
 from process_flow_kernel import validate_geometry_semantic_keys
 
-from ..mesh2d.circular import extend_circular_mesh, imprint_circle
+from ..mesh2d.circular.extend import extend_circular_mesh
+from ..mesh2d.circular.imprint import imprint_circle
 from ..mesh2d.generators import generate_rectilinear_mesh
 from ..mesh3d.extrusion import Dragger
 from ..mesh3d.model import Mesh3D

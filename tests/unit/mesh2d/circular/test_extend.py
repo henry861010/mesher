@@ -5,8 +5,8 @@ import numpy as np
 
 from mesher import Mesh2D
 from mesher.mesh2d.circular import extend_circular_mesh
-from mesher.mesh2d.circular import extend as extend_module
-from mesher.mesh2d.circular.topology import _get_boundary
+from mesher.mesh2d.circular.extend import mesher as extend_module
+from mesher.mesh2d.circular.utils.topology import _get_boundary
 from mesher.mesh2d.quality import MeshQualityChecker
 
 

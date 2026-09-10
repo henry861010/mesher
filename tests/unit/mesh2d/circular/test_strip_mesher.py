@@ -3,8 +3,11 @@ from collections import Counter
 
 import numpy as np
 
-from mesher.mesh2d.circular.pattern_segments import _PatternGuideSet
-from mesher.mesh2d.circular.strip_mesher import _CircularStripMesher, _mesh_inner_outer_circle
+from mesher.mesh2d.circular.imprint.strip_mesher import (
+    _CircularStripMesher,
+    _mesh_inner_outer_circle,
+)
+from mesher.mesh2d.circular.utils.pattern_segments import _PatternGuideSet
 from mesher import Mesh2D
 from mesher.mesh2d.quality import MeshQualityChecker
 

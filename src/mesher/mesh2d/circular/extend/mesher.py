@@ -4,9 +4,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..model import Mesh2D
-from .projection import _to_circle
-from .topology import _clear_node, _get_boundary
+from ...model import Mesh2D
+from ..utils.projection import _to_circle
+from ..utils.topology import _clear_node, _get_boundary
 
 
 @dataclass(frozen=True)

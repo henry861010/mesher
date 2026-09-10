@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-import mesher.mesh2d.circular.geometry as geometry
+import mesher.mesh2d.circular.utils.geometry as geometry
 
 
 class CandidateEdgePairTests(unittest.TestCase):

@@ -11,10 +11,10 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ..model import Mesh2D
+from ...model import Mesh2D
 
 # Private helper re-exports keep the implementation-focused test surface small.
-from .geometry import (
+from ..utils.geometry import (
     _minimum_scaled_jacobian,
     _segments_intersect_xy,
     _smooth_circle_nodes,
@@ -22,14 +22,14 @@ from .geometry import (
     _validate_generated_strip,
 )
 from .pattern import _generate_pattern_circle_nodes
-from .pattern_segments import _coerce_pattern_guides
-from .projection import _to_circle
+from ..utils.pattern_segments import _coerce_pattern_guides
+from ..utils.projection import _to_circle
 from .strip_mesher import (
     _CircularStripMesher,
     _StripScore,
     _mesh_inner_outer_circle,
 )
-from .topology import (
+from ..utils.topology import (
     _clear_node,
     _delete,
     _delete_element,

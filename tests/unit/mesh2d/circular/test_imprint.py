@@ -5,8 +5,8 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher.mesh2d.generators import generate_rectilinear_mesh
-from mesher.mesh2d.circular.pattern_segments import _PatternGuideSet
-from mesher.mesh2d.circular.imprint import (
+from mesher.mesh2d.circular.utils.pattern_segments import _PatternGuideSet
+from mesher.mesh2d.circular.imprint.mesher import (
     _clear_node,
     _delete,
     _delete_element,
@@ -1088,15 +1088,15 @@ class CircleIntegrationTests(unittest.TestCase):
         )
         with (
             patch(
-                "mesher.mesh2d.circular.imprint._project_band_boundaries",
+                "mesher.mesh2d.circular.imprint.mesher._project_band_boundaries",
                 wraps=_project_band_boundaries,
             ) as project_spy,
             patch(
-                "mesher.mesh2d.circular.imprint._append_pattern_ring",
+                "mesher.mesh2d.circular.imprint.mesher._append_pattern_ring",
                 wraps=_append_pattern_ring,
             ) as pattern_spy,
             patch(
-                "mesher.mesh2d.circular.imprint._mesh_pattern_strips",
+                "mesher.mesh2d.circular.imprint.mesher._mesh_pattern_strips",
                 wraps=_mesh_pattern_strips,
             ) as strip_spy,
         ):
@@ -1587,7 +1587,7 @@ class OpenCircleIntegrationTests(unittest.TestCase):
             topology="open",
         )
         with patch(
-            "mesher.mesh2d.circular.imprint._project_band_boundaries",
+            "mesher.mesh2d.circular.imprint.mesher._project_band_boundaries",
             wraps=_project_band_boundaries,
         ) as project_spy:
             imprint_circle(

@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from ..model import Mesh2D
-from .pattern_segments import (
+from ...model import Mesh2D
+from ..utils.pattern_segments import (
     _PatternGuideSet,
     _circle_line_intersections,
     _coerce_pattern_guides,

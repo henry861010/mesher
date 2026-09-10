@@ -4,7 +4,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from ..model import Mesh2D
+from ...model import Mesh2D
 
 from .geometry import (
     _minimum_scaled_jacobian,

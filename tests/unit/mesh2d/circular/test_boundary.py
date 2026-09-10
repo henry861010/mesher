@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from mesher.mesh2d.circular.topology import (
+from mesher.mesh2d.circular.utils.topology import (
     _get_boundary,
     _get_boundary_edge_groups,
 )

@@ -3,8 +3,8 @@ import unittest
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.circular.pattern import _generate_pattern_circle_nodes
-from mesher.mesh2d.circular.pattern_segments import (
+from mesher.mesh2d.circular.imprint.pattern import _generate_pattern_circle_nodes
+from mesher.mesh2d.circular.utils.pattern_segments import (
     _PatternGuideSet,
     _circle_line_intersections,
     _circle_segment_intersections,

@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ..model import Mesh2D
+from ...model import Mesh2D
 
 
 def _search_circle(
