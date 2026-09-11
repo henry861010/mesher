@@ -516,9 +516,346 @@ def _get_areas(
     return inner_areas, outer_areas
 
 
-def _tri_quad(    
-    mesh: Mesh2D
-):
-    
+def _tri_quad(
+    mesh: Mesh2D,
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """Return triangle and quadrilateral element-row indices.
 
-__all__ = ["_find_intersect_element_and_sort", "_get_areas"]
+    Tri3 elements use the canonical padded representation
+    ``[n0, n1, n2, n2]``.  Classification therefore depends only on whether
+    the final two connectivity entries match; all other rows are classified
+    as Quad4 elements.  The returned indices retain element-row order.
+
+    Args:
+        mesh: Mesh whose elements are classified.
+
+    Returns:
+        A pair ``(triangle_indices, quadrilateral_indices)`` containing
+        one-dimensional int64 arrays of indices into ``mesh.elements``.
+
+    Raises:
+        TypeError: If ``mesh`` is not a :class:`Mesh2D`.
+    """
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
+
+    is_triangle = mesh.elements[:, 2] == mesh.elements[:, 3]
+    triangle_indices = np.flatnonzero(is_triangle).astype(
+        np.int64, copy=False
+    )
+    quadrilateral_indices = np.flatnonzero(~is_triangle).astype(
+        np.int64, copy=False
+    )
+    return triangle_indices, quadrilateral_indices
+
+
+def _intersect_nodes(
+    mesh: Mesh2D,
+    center_x: float,
+    center_y: float,
+    radius: float,
+) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    """Return each element's unique intersections with a circle boundary.
+
+    Intersections are ordered counter-clockwise by their angle around the
+    circle, starting at the positive X axis.  A Tri3 can have at most six
+    unique intersections and a Quad4 can have at most eight, so the result is
+    padded to eight slots for both topologies.  Only the first
+    ``intersection_counts[i]`` entries in row ``i`` are valid; all remaining
+    entries are ``(0, 0)``.  Tangencies and contacts at an element vertex count
+    as one intersection, even when the same vertex is found on two edges.
+
+    The calculation is vectorized over every element and edge.  Node Z
+    coordinates are ignored.
+
+    Args:
+        mesh: Mesh whose element perimeters are queried in the XY plane.
+        center_x: Circle-center X coordinate.
+        center_y: Circle-center Y coordinate.
+        radius: Strictly positive circle radius.
+
+    Returns:
+        A pair ``(intersection_counts, intersection_nodes)``.  Counts has
+        shape ``(mesh.element_count,)`` and dtype int64.  Nodes has shape
+        ``(mesh.element_count, 8, 2)`` and dtype float64.
+
+    Raises:
+        TypeError: If ``mesh`` is not a :class:`Mesh2D`.
+        ValueError: If the circle or mutable mesh data are invalid.
+    """
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
+
+    try:
+        circle = np.asarray(
+            [float(center_x), float(center_y), float(radius)],
+            dtype=np.float64,
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            "center_x, center_y, and radius must be real numbers"
+        ) from error
+    if not np.all(np.isfinite(circle)):
+        raise ValueError("center_x, center_y, and radius must be finite")
+    if circle[2] <= 0.0:
+        raise ValueError("radius must be positive")
+
+    nodes = np.asarray(mesh.nodes)
+    elements = np.asarray(mesh.elements)
+    if nodes.ndim != 2 or nodes.shape[1] not in (2, 3):
+        raise ValueError("nodes must have shape (N, 2) or (N, 3)")
+    if (
+        not np.issubdtype(nodes.dtype, np.number)
+        or np.issubdtype(nodes.dtype, np.bool_)
+        or np.issubdtype(nodes.dtype, np.complexfloating)
+    ):
+        raise ValueError("nodes must have a real numeric dtype")
+    if elements.ndim != 2 or elements.shape[1] != 4:
+        raise ValueError("elements must have shape (M, 4)")
+    if (
+        not np.issubdtype(elements.dtype, np.integer)
+        or np.issubdtype(elements.dtype, np.bool_)
+    ):
+        raise ValueError("elements must have an integer dtype")
+
+    try:
+        xy = nodes[:, :2].astype(np.float64, copy=False)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("nodes must be representable as float64") from error
+    if not np.all(np.isfinite(xy)):
+        raise ValueError("nodes must contain finite XY coordinates")
+    if elements.size and (
+        np.any(elements < 0) or np.any(elements >= nodes.shape[0])
+    ):
+        raise ValueError("elements contain an out-of-range node index")
+
+    element_count = elements.shape[0]
+    intersection_counts = np.zeros(element_count, dtype=np.int64)
+    intersection_nodes = np.zeros((element_count, 8, 2), dtype=np.float64)
+    if element_count == 0:
+        return intersection_counts, intersection_nodes
+
+    is_triangle = elements[:, 2] == elements[:, 3]
+    triangle_valid = (
+        (elements[:, 0] != elements[:, 1])
+        & (elements[:, 0] != elements[:, 2])
+        & (elements[:, 1] != elements[:, 2])
+    )
+    quad_valid = (
+        (elements[:, 0] != elements[:, 1])
+        & (elements[:, 0] != elements[:, 2])
+        & (elements[:, 0] != elements[:, 3])
+        & (elements[:, 1] != elements[:, 2])
+        & (elements[:, 1] != elements[:, 3])
+        & (elements[:, 2] != elements[:, 3])
+    )
+    if np.any(is_triangle & ~triangle_valid) or np.any(
+        ~is_triangle & ~quad_valid
+    ):
+        raise ValueError(
+            "elements must contain valid padded Tri3 or Quad4 connectivity"
+        )
+
+    center = circle[:2]
+    circle_radius = float(circle[2])
+    coordinate_scale = max(float(np.max(np.abs(center))), circle_radius)
+    coordinate_ulp = abs(float(np.spacing(coordinate_scale)))
+    linear_tolerance = max(
+        8.0 * coordinate_ulp,
+        256.0 * np.finfo(np.float64).eps * circle_radius,
+    )
+    angular_tolerance = max(
+        256.0 * np.finfo(np.float64).eps,
+        linear_tolerance / circle_radius,
+    )
+
+    # The result remains aligned with every element, but the more expensive
+    # quadratic solve only runs for bounding boxes that overlap the circle.
+    element_xy = xy[elements]
+    element_minimum = np.min(element_xy, axis=1)
+    element_maximum = np.max(element_xy, axis=1)
+    with np.errstate(over="ignore", invalid="ignore"):
+        circle_minimum = center - circle_radius - linear_tolerance
+        circle_maximum = center + circle_radius + linear_tolerance
+    if not np.all(np.isfinite([circle_minimum, circle_maximum])):
+        raise ValueError("circle bounds exceed the float64 range")
+    broad_phase_mask = np.all(
+        element_maximum >= circle_minimum, axis=1
+    ) & np.all(element_minimum <= circle_maximum, axis=1)
+    candidate_indices = np.flatnonzero(broad_phase_mask)
+    if candidate_indices.size == 0:
+        return intersection_counts, intersection_nodes
+
+    candidate_elements = elements[candidate_indices]
+    candidate_count = candidate_indices.size
+    edge_start_indices = candidate_elements
+    edge_end_indices = np.roll(candidate_elements, -1, axis=1)
+
+    # A canonical edge direction gives adjacent elements bit-identical roots
+    # on their shared edge, regardless of their perimeter winding.
+    canonical_start = np.minimum(edge_start_indices, edge_end_indices)
+    canonical_end = np.maximum(edge_start_indices, edge_end_indices)
+    with np.errstate(over="ignore", invalid="ignore"):
+        start_offsets = xy[canonical_start] - center
+        end_offsets = xy[canonical_end] - center
+    if not np.all(np.isfinite(start_offsets)) or not np.all(
+        np.isfinite(end_offsets)
+    ):
+        raise ValueError("node-to-center coordinate differences exceed float64")
+
+    # Normalize each edge independently to keep the quadratic stable for very
+    # large and very small finite coordinates.
+    edge_scale = np.maximum.reduce(
+        (
+            np.max(np.abs(start_offsets), axis=2),
+            np.max(np.abs(end_offsets), axis=2),
+            np.full(start_offsets.shape[:2], circle_radius),
+        )
+    )
+    normalized_start = start_offsets / edge_scale[..., None]
+    normalized_end = end_offsets / edge_scale[..., None]
+    normalized_radius = circle_radius / edge_scale
+    normalized_tolerance = np.maximum(
+        linear_tolerance / edge_scale,
+        256.0 * np.finfo(np.float64).eps,
+    )
+    edge_vectors = normalized_end - normalized_start
+
+    edge_squared_lengths = np.einsum(
+        "...i,...i->...", edge_vectors, edge_vectors
+    )
+    start_dot_edge = np.einsum(
+        "...i,...i->...", normalized_start, edge_vectors
+    )
+    circle_equation_at_start = (
+        np.einsum("...i,...i->...", normalized_start, normalized_start)
+        - normalized_radius * normalized_radius
+    )
+    half_discriminant = (
+        start_dot_edge * start_dot_edge
+        - edge_squared_lengths * circle_equation_at_start
+    )
+    discriminant_scale = (
+        start_dot_edge * start_dot_edge
+        + np.abs(edge_squared_lengths * circle_equation_at_start)
+        + edge_squared_lengths * normalized_radius * normalized_radius
+    )
+    discriminant_tolerance = (
+        512.0 * np.finfo(np.float64).eps * discriminant_scale
+        + edge_squared_lengths * normalized_tolerance * normalized_tolerance
+    )
+
+    nondegenerate = edge_squared_lengths > (
+        normalized_tolerance * normalized_tolerance
+    )
+    safe_squared_lengths = np.where(
+        nondegenerate, edge_squared_lengths, 1.0
+    )
+    root_term = np.sqrt(np.maximum(half_discriminant, 0.0))
+    parameters = np.stack(
+        (
+            (-start_dot_edge - root_term) / safe_squared_lengths,
+            (-start_dot_edge + root_term) / safe_squared_lengths,
+        ),
+        axis=2,
+    )
+    parameter_tolerance = np.minimum(
+        1.0,
+        normalized_tolerance / np.sqrt(safe_squared_lengths),
+    )
+    valid_intersections = (
+        nondegenerate[..., None]
+        & (half_discriminant[..., None] >= -discriminant_tolerance[..., None])
+        & (parameters >= -parameter_tolerance[..., None])
+        & (parameters <= 1.0 + parameter_tolerance[..., None])
+    )
+    clipped_parameters = np.clip(parameters, 0.0, 1.0)
+    intersection_offsets = (
+        normalized_start[..., None, :]
+        + clipped_parameters[..., None] * edge_vectors[..., None, :]
+    )
+
+    # This includes the padded fourth edge of a Tri3.  If its point lies on
+    # the circle it is later deduplicated with the two real adjacent edges.
+    start_distances = np.hypot(
+        normalized_start[..., 0], normalized_start[..., 1]
+    )
+    degenerate_hits = (~nondegenerate) & (
+        np.abs(start_distances - normalized_radius) <= normalized_tolerance
+    )
+    valid_intersections[..., 0] |= degenerate_hits
+    intersection_offsets[..., 0, :] = np.where(
+        degenerate_hits[..., None],
+        normalized_start,
+        intersection_offsets[..., 0, :],
+    )
+
+    flat_offsets = intersection_offsets.reshape(candidate_count, 8, 2)
+    flat_valid = valid_intersections.reshape(candidate_count, 8)
+    angles = np.mod(
+        np.arctan2(flat_offsets[..., 1], flat_offsets[..., 0]),
+        2.0 * np.pi,
+    )
+    angles[~flat_valid] = np.inf
+
+    full_turn = 2.0 * np.pi
+    seam_hits = np.isfinite(angles) & (
+        (angles <= angular_tolerance)
+        | (angles >= full_turn - angular_tolerance)
+    )
+    angles[seam_hits] = 0.0
+
+    order = np.argsort(angles, axis=1, kind="stable")
+    angles = np.take_along_axis(angles, order, axis=1)
+    flat_offsets = np.take_along_axis(
+        flat_offsets, order[..., None], axis=1
+    )
+    flat_scales = np.take_along_axis(
+        np.repeat(edge_scale, 2, axis=1), order, axis=1
+    )
+
+    adjacent_finite = np.isfinite(angles[:, 1:]) & np.isfinite(
+        angles[:, :-1]
+    )
+    angle_differences = np.full(
+        (candidate_count, 7), np.inf, dtype=np.float64
+    )
+    np.subtract(
+        angles[:, 1:],
+        angles[:, :-1],
+        out=angle_differences,
+        where=adjacent_finite,
+    )
+    duplicate_intersections = adjacent_finite & (
+        angle_differences <= angular_tolerance
+    )
+    angles[:, 1:][duplicate_intersections] = np.inf
+
+    # A second stable sort compacts unique intersections into the leading
+    # slots while preserving their counter-clockwise order.
+    compact_order = np.argsort(angles, axis=1, kind="stable")
+    angles = np.take_along_axis(angles, compact_order, axis=1)
+    flat_offsets = np.take_along_axis(
+        flat_offsets, compact_order[..., None], axis=1
+    )
+    flat_scales = np.take_along_axis(flat_scales, compact_order, axis=1)
+    valid_unique = np.isfinite(angles)
+    candidate_intersection_counts = np.count_nonzero(
+        valid_unique, axis=1
+    ).astype(np.int64, copy=False)
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        calculated_nodes = center + flat_offsets * flat_scales[..., None]
+    if not np.all(np.isfinite(calculated_nodes[valid_unique])):
+        raise ValueError("intersection coordinates exceed the float64 range")
+    calculated_nodes[~valid_unique] = 0.0
+    intersection_counts[candidate_indices] = candidate_intersection_counts
+    intersection_nodes[candidate_indices] = calculated_nodes
+    return intersection_counts, intersection_nodes
+
+__all__ = [
+    "_find_intersect_element_and_sort",
+    "_get_areas",
+    "_intersect_nodes",
+    "_tri_quad",
+]

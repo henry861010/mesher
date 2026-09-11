@@ -7,6 +7,8 @@ from mesher import Mesh2D
 from mesher.mesh2d.circular.imprint_v2.main import (
     _find_intersect_element_and_sort,
     _get_areas,
+    _intersect_nodes,
+    _tri_quad,
 )
 
 
@@ -350,6 +352,227 @@ class GetAreasPerformanceTests(unittest.TestCase):
         np.testing.assert_allclose(np.sum(inner), np.pi * 30.0**2)
         np.testing.assert_allclose(inner + outer, np.ones(mesh.element_count))
         self.assertLess(elapsed, self.maximum_seconds)
+
+
+class IntersectNodesTests(unittest.TestCase):
+    @staticmethod
+    def _mesh_from_polygons(polygons):
+        nodes = []
+        elements = []
+        for polygon in polygons:
+            start = len(nodes)
+            polygon = np.asarray(polygon, dtype=np.float64)
+            nodes.extend(np.column_stack((polygon, np.zeros(len(polygon)))))
+            if len(polygon) == 3:
+                elements.append([start, start + 1, start + 2, start + 2])
+            else:
+                elements.append([start, start + 1, start + 2, start + 3])
+        return Mesh2D(nodes=nodes, elements=elements)
+
+    def test_returns_counts_and_counter_clockwise_padded_nodes(self):
+        no_intersection = [
+            [-0.2, -0.2],
+            [0.2, -0.2],
+            [0.2, 0.2],
+            [-0.2, 0.2],
+        ]
+        two_intersections = [
+            [0.0, -0.2],
+            [2.0, -0.2],
+            [2.0, 0.2],
+            [0.0, 0.2],
+        ]
+        four_intersections = [
+            [-2.0, -0.2],
+            [2.0, -0.2],
+            [2.0, 0.2],
+            [-2.0, 0.2],
+        ]
+        mesh = self._mesh_from_polygons(
+            [no_intersection, two_intersections, four_intersections]
+        )
+
+        counts, nodes = _intersect_nodes(mesh, 0.0, 0.0, 1.0)
+
+        x = np.sqrt(1.0 - 0.2**2)
+        np.testing.assert_array_equal(counts, [0, 2, 4])
+        np.testing.assert_allclose(
+            nodes[1, :2], [[x, 0.2], [x, -0.2]], atol=1.0e-14
+        )
+        np.testing.assert_allclose(
+            nodes[2, :4],
+            [[x, 0.2], [-x, 0.2], [-x, -0.2], [x, -0.2]],
+            atol=1.0e-14,
+        )
+        np.testing.assert_array_equal(nodes[0], np.zeros((8, 2)))
+        np.testing.assert_array_equal(nodes[1, 2:], np.zeros((6, 2)))
+        np.testing.assert_array_equal(nodes[2, 4:], np.zeros((4, 2)))
+        self.assertEqual(counts.dtype, np.dtype(np.int64))
+        self.assertEqual(nodes.dtype, np.dtype(np.float64))
+        self.assertEqual(nodes.shape, (3, 8, 2))
+
+    def test_supports_eight_quad_intersections_without_truncation(self):
+        mesh = self._mesh_from_polygons(
+            [[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]]
+        )
+
+        counts, nodes = _intersect_nodes(mesh, 0.0, 0.0, 1.1)
+
+        offset = np.sqrt(1.1**2 - 1.0)
+        expected = [
+            [1.0, offset],
+            [offset, 1.0],
+            [-offset, 1.0],
+            [-1.0, offset],
+            [-1.0, -offset],
+            [-offset, -1.0],
+            [offset, -1.0],
+            [1.0, -offset],
+        ]
+        np.testing.assert_array_equal(counts, [8])
+        np.testing.assert_allclose(nodes[0], expected, atol=1.0e-14)
+
+    def test_deduplicates_tangencies_and_shared_vertex_contacts(self):
+        tangent_quad = [
+            [1.0, -0.5],
+            [2.0, -0.5],
+            [2.0, 0.5],
+            [1.0, 0.5],
+        ]
+        vertex_triangle = [[1.0, 0.0], [2.0, 1.0], [2.0, -1.0]]
+        mesh = self._mesh_from_polygons([tangent_quad, vertex_triangle])
+
+        counts, nodes = _intersect_nodes(mesh, 0.0, 0.0, 1.0)
+
+        np.testing.assert_array_equal(counts, [1, 1])
+        np.testing.assert_allclose(nodes[0, 0], [1.0, 0.0], atol=1.0e-14)
+        np.testing.assert_allclose(nodes[1, 0], [1.0, 0.0], atol=1.0e-14)
+        np.testing.assert_array_equal(nodes[0, 1:], np.zeros((7, 2)))
+        np.testing.assert_array_equal(nodes[1, 1:], np.zeros((7, 2)))
+
+    def test_handles_offset_center_reversed_winding_and_ignores_z(self):
+        center = np.array([10.0, -4.0])
+        polygon = (
+            np.array(
+                [[0.0, 0.2], [2.0, 0.2], [2.0, -0.2], [0.0, -0.2]]
+            )
+            + center
+        )
+        mesh = self._mesh_from_polygons([polygon])
+        mesh.nodes[:, 2] = np.linspace(-1.0e12, 1.0e12, mesh.node_count)
+
+        counts, nodes = _intersect_nodes(
+            mesh, center[0], center[1], 1.0
+        )
+
+        x = np.sqrt(1.0 - 0.2**2)
+        np.testing.assert_array_equal(counts, [2])
+        np.testing.assert_allclose(
+            nodes[0, :2], center + [[x, 0.2], [x, -0.2]], atol=1.0e-14
+        )
+
+    def test_empty_mesh_returns_correctly_shaped_arrays(self):
+        mesh = Mesh2D(
+            nodes=np.empty((0, 3)),
+            elements=np.empty((0, 4), dtype=np.int32),
+        )
+
+        counts, nodes = _intersect_nodes(mesh, 0.0, 0.0, 1.0)
+
+        np.testing.assert_array_equal(counts, np.empty(0, dtype=np.int64))
+        np.testing.assert_array_equal(
+            nodes, np.empty((0, 8, 2), dtype=np.float64)
+        )
+
+    def test_validates_mesh_circle_and_mutated_mesh_data(self):
+        mesh = self._mesh_from_polygons(
+            [[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]]]
+        )
+        with self.assertRaisesRegex(TypeError, "Mesh2D"):
+            _intersect_nodes(object(), 0.0, 0.0, 1.0)
+        with self.assertRaisesRegex(ValueError, "positive"):
+            _intersect_nodes(mesh, 0.0, 0.0, 0.0)
+        with self.assertRaisesRegex(ValueError, "finite"):
+            _intersect_nodes(mesh, np.nan, 0.0, 1.0)
+
+        mesh.nodes[0, 0] = np.inf
+        with self.assertRaisesRegex(ValueError, "finite XY"):
+            _intersect_nodes(mesh, 0.0, 0.0, 1.0)
+
+
+class TriQuadTests(unittest.TestCase):
+    @staticmethod
+    def _mesh(elements):
+        elements = np.asarray(elements, dtype=np.int32).reshape(-1, 4)
+        node_count = int(elements.max()) + 1 if elements.size else 0
+        return Mesh2D(
+            nodes=np.zeros((node_count, 3), dtype=np.float64),
+            elements=elements,
+        )
+
+    def test_returns_mixed_element_indices_in_row_order(self):
+        mesh = self._mesh(
+            [
+                [0, 1, 2, 2],
+                [2, 3, 4, 5],
+                [5, 6, 7, 7],
+                [7, 8, 9, 10],
+            ]
+        )
+
+        triangle_indices, quadrilateral_indices = _tri_quad(mesh)
+
+        np.testing.assert_array_equal(triangle_indices, [0, 2])
+        np.testing.assert_array_equal(quadrilateral_indices, [1, 3])
+        self.assertEqual(triangle_indices.dtype, np.dtype(np.int64))
+        self.assertEqual(quadrilateral_indices.dtype, np.dtype(np.int64))
+
+    def test_handles_single_topology_meshes(self):
+        cases = (
+            ([[0, 1, 2, 2], [2, 3, 4, 4]], [0, 1], []),
+            ([[0, 1, 2, 3], [3, 4, 5, 6]], [], [0, 1]),
+        )
+        for elements, expected_triangles, expected_quadrilaterals in cases:
+            with self.subTest(elements=elements):
+                mesh = self._mesh(elements)
+
+                triangle_indices, quadrilateral_indices = _tri_quad(mesh)
+
+                np.testing.assert_array_equal(
+                    triangle_indices, expected_triangles
+                )
+                np.testing.assert_array_equal(
+                    quadrilateral_indices, expected_quadrilaterals
+                )
+
+    def test_empty_mesh_returns_empty_int64_arrays(self):
+        mesh = self._mesh([])
+
+        triangle_indices, quadrilateral_indices = _tri_quad(mesh)
+
+        np.testing.assert_array_equal(
+            triangle_indices, np.empty(0, dtype=np.int64)
+        )
+        np.testing.assert_array_equal(
+            quadrilateral_indices, np.empty(0, dtype=np.int64)
+        )
+
+    def test_only_uses_the_last_two_connectivity_entries(self):
+        mesh = self._mesh(
+            [
+                [0, 0, 1, 1],
+                [0, 0, 1, 2],
+            ]
+        )
+
+        triangle_indices, quadrilateral_indices = _tri_quad(mesh)
+
+        np.testing.assert_array_equal(triangle_indices, [0])
+        np.testing.assert_array_equal(quadrilateral_indices, [1])
+
+    def test_rejects_non_mesh_input(self):
+        with self.assertRaisesRegex(TypeError, "Mesh2D"):
+            _tri_quad(object())
 
 
 if __name__ == "__main__":
