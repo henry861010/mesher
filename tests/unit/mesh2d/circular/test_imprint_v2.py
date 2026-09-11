@@ -6,6 +6,7 @@ import numpy as np
 from mesher import Mesh2D
 from mesher.mesh2d.circular.imprint_v2.main import (
     _find_intersect_element_and_sort,
+    _get_areas,
 )
 
 
@@ -199,6 +200,155 @@ class FindIntersectElementAndSortPerformanceTests(unittest.TestCase):
         np.testing.assert_array_equal(
             result, np.arange(count, dtype=np.int64)
         )
+        self.assertLess(elapsed, self.maximum_seconds)
+
+
+class GetAreasTests(unittest.TestCase):
+    @staticmethod
+    def _mesh_from_polygons(polygons):
+        nodes = []
+        elements = []
+        for polygon in polygons:
+            start = len(nodes)
+            polygon = np.asarray(polygon, dtype=np.float64)
+            nodes.extend(
+                np.column_stack(
+                    (polygon, np.zeros(polygon.shape[0], dtype=np.float64))
+                )
+            )
+            if polygon.shape[0] == 3:
+                elements.append([start, start + 1, start + 2, start + 2])
+            else:
+                elements.append([start, start + 1, start + 2, start + 3])
+        return Mesh2D(nodes=nodes, elements=elements)
+
+    def test_returns_inner_and_outer_areas_in_requested_order(self):
+        inside_triangle = [[0.0, 0.0], [0.5, 0.0], [0.0, 0.5]]
+        outside_quad = [[2.0, 2.0], [3.0, 2.0], [3.0, 3.0], [2.0, 3.0]]
+        partial_triangle = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]]
+        containing_quad = [
+            [-2.0, -2.0],
+            [2.0, -2.0],
+            [2.0, 2.0],
+            [-2.0, 2.0],
+        ]
+        mesh = self._mesh_from_polygons(
+            [inside_triangle, outside_quad, partial_triangle, containing_quad]
+        )
+
+        inner, outer = _get_areas(mesh, 0.0, 0.0, 1.0, [2, 0, 3, 1])
+
+        np.testing.assert_allclose(
+            inner,
+            [np.pi / 4.0, 0.125, np.pi, 0.0],
+            rtol=1.0e-13,
+            atol=1.0e-13,
+        )
+        np.testing.assert_allclose(
+            outer,
+            [2.0 - np.pi / 4.0, 0.0, 16.0 - np.pi, 1.0],
+            rtol=1.0e-13,
+            atol=1.0e-13,
+        )
+        self.assertEqual(inner.dtype, np.dtype(np.float64))
+        self.assertEqual(outer.dtype, np.dtype(np.float64))
+
+    def test_handles_tangency_offset_center_reversed_winding_and_ignores_z(self):
+        center = np.array([10.0, -4.0])
+        containing_clockwise = (
+            np.array(
+                [
+                    [-2.0, -2.0],
+                    [-2.0, 2.0],
+                    [2.0, 2.0],
+                    [2.0, -2.0],
+                ]
+            )
+            + center
+        )
+        tangent_outside = (
+            np.array(
+                [[1.0, -0.5], [2.0, -0.5], [2.0, 0.5], [1.0, 0.5]]
+            )
+            + center
+        )
+        mesh = self._mesh_from_polygons(
+            [containing_clockwise, tangent_outside]
+        )
+        mesh.nodes[:, 2] = np.linspace(-1.0e12, 1.0e12, mesh.node_count)
+
+        inner, outer = _get_areas(
+            mesh, center[0], center[1], 1.0, np.array([0, 1])
+        )
+
+        np.testing.assert_allclose(inner, [np.pi, 0.0], atol=1.0e-13)
+        np.testing.assert_allclose(outer, [16.0 - np.pi, 1.0], atol=1.0e-13)
+
+    def test_empty_indices_return_empty_float64_arrays(self):
+        mesh = self._mesh_from_polygons(
+            [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
+        )
+
+        inner, outer = _get_areas(
+            mesh, 0.0, 0.0, 1.0, np.empty(0, dtype=np.int32)
+        )
+
+        np.testing.assert_array_equal(inner, np.empty(0, dtype=np.float64))
+        np.testing.assert_array_equal(outer, np.empty(0, dtype=np.float64))
+
+    def test_validates_mesh_circle_and_indices(self):
+        mesh = self._mesh_from_polygons(
+            [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
+        )
+        with self.assertRaisesRegex(TypeError, "Mesh2D"):
+            _get_areas(object(), 0.0, 0.0, 1.0, [0])
+        with self.assertRaisesRegex(ValueError, "positive"):
+            _get_areas(mesh, 0.0, 0.0, 0.0, [0])
+        with self.assertRaisesRegex(ValueError, "finite"):
+            _get_areas(mesh, np.nan, 0.0, 1.0, [0])
+        with self.assertRaisesRegex(ValueError, "one-dimensional"):
+            _get_areas(mesh, 0.0, 0.0, 1.0, [[0]])
+        with self.assertRaisesRegex(TypeError, "integers"):
+            _get_areas(mesh, 0.0, 0.0, 1.0, [0.0])
+        with self.assertRaisesRegex(TypeError, "integers"):
+            _get_areas(mesh, 0.0, 0.0, 1.0, np.array([True]))
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            _get_areas(mesh, 0.0, 0.0, 1.0, [0, 0])
+        with self.assertRaisesRegex(IndexError, "out of range"):
+            _get_areas(mesh, 0.0, 0.0, 1.0, [1])
+
+
+class GetAreasPerformanceTests(unittest.TestCase):
+    maximum_seconds = 5.0
+
+    def test_one_hundred_thousand_selected_elements(self):
+        nx = 1000
+        ny = 100
+        x, y = np.meshgrid(
+            np.arange(nx + 1, dtype=np.float64),
+            np.arange(ny + 1, dtype=np.float64),
+        )
+        nodes = np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size)))
+        lower_left = np.arange(ny * (nx + 1), dtype=np.int32).reshape(
+            ny, nx + 1
+        )[:, :-1]
+        elements = np.column_stack(
+            (
+                lower_left.ravel(),
+                lower_left.ravel() + 1,
+                lower_left.ravel() + nx + 2,
+                lower_left.ravel() + nx + 1,
+            )
+        )
+        mesh = Mesh2D(nodes=nodes, elements=elements)
+        indices = np.arange(mesh.element_count, dtype=np.int64)
+
+        started = time.perf_counter()
+        inner, outer = _get_areas(mesh, 500.0, 50.0, 30.0, indices)
+        elapsed = time.perf_counter() - started
+
+        np.testing.assert_allclose(np.sum(inner), np.pi * 30.0**2)
+        np.testing.assert_allclose(inner + outer, np.ones(mesh.element_count))
         self.assertLess(elapsed, self.maximum_seconds)
 
 

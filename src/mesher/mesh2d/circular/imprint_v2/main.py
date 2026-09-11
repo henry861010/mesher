@@ -1,7 +1,7 @@
 """Fast element/circle-boundary intersection queries."""
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from ...model import Mesh2D
 
@@ -296,12 +296,229 @@ def _find_intersect_element_and_sort(
     order = np.lexsort(lexicographic_keys)
     return selected_indices[order]
 
-def _get_areas(    
+
+def _get_areas(
     mesh: Mesh2D,
     center_x: float,
     center_y: float,
     radius: float,
-    indices
-):
+    indices: ArrayLike,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return selected element areas inside and outside a circle.
 
-__all__ = ["_find_intersect_element_and_sort"]
+    The calculation is analytic: each directed element edge is split at its
+    intersections with the circle.  A sub-edge inside the circle contributes
+    its signed triangle area, while a sub-edge outside contributes the signed
+    circular-sector area.  Summing those contributions around the perimeter
+    gives the exact polygon/circle intersection area without approximating the
+    circle with line segments.
+
+    Tri3 rows must use the canonical ``[n0, n1, n2, n2]`` representation.
+    Their zero-length padded edge contributes no area.  Quad4 rows use all
+    four perimeter edges.  Input element winding does not affect the returned
+    non-negative areas, and node Z coordinates are ignored.
+
+    Args:
+        mesh: Mesh providing valid, non-degenerate Tri3 or Quad4 elements.
+        center_x: Circle-center X coordinate.
+        center_y: Circle-center Y coordinate.
+        radius: Strictly positive circle radius.
+        indices: Unique one-dimensional integer sequence of element rows.  The
+            result arrays follow this sequence's order.
+
+    Returns:
+        A pair ``(inner_areas, outer_areas)`` of float64 arrays.  The first
+        contains each element's area inside the circle; the second contains
+        its area outside.  Their element-wise sum is the full element area.
+
+    Raises:
+        TypeError: If ``mesh`` is not a Mesh2D or indices are not integers.
+        ValueError: If the circle or indices shape is invalid, or indices
+            contain duplicates.
+        IndexError: If an element index is out of range.
+    """
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
+
+    try:
+        circle = np.asarray(
+            [float(center_x), float(center_y), float(radius)],
+            dtype=np.float64,
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            "center_x, center_y, and radius must be real numbers"
+        ) from error
+    if not np.all(np.isfinite(circle)):
+        raise ValueError("center_x, center_y, and radius must be finite")
+    if circle[2] <= 0.0:
+        raise ValueError("radius must be positive")
+
+    element_indices = np.asarray(indices)
+    if element_indices.ndim != 1:
+        raise ValueError("indices must be a one-dimensional sequence")
+    if element_indices.size:
+        if not np.issubdtype(
+            element_indices.dtype, np.integer
+        ) or np.issubdtype(element_indices.dtype, np.bool_):
+            raise TypeError("indices must contain integers")
+        if np.any(element_indices < 0) or np.any(
+            element_indices >= mesh.element_count
+        ):
+            raise IndexError(
+                "indices contain an element index that is out of range"
+            )
+        if np.unique(element_indices).size != element_indices.size:
+            raise ValueError("indices must not contain duplicates")
+        element_indices = element_indices.astype(np.int64, copy=False)
+    else:
+        empty = np.empty(0, dtype=np.float64)
+        return empty, empty.copy()
+
+    circle_center = circle[:2]
+    circle_radius = float(circle[2])
+    circle_area = np.pi * circle_radius * circle_radius
+
+    selected_elements = mesh.elements[element_indices]
+    points = mesh.nodes[selected_elements, :2] - circle_center
+    edge_starts = points
+    edge_ends = np.roll(points, -1, axis=1)
+    edge_vectors = edge_ends - edge_starts
+
+    # Normalize each edge separately before solving its quadratic.  This keeps
+    # the discriminant near unit scale for both small and large coordinates.
+    edge_scale = np.maximum.reduce(
+        (
+            np.max(np.abs(edge_starts), axis=2),
+            np.max(np.abs(edge_ends), axis=2),
+            np.full(edge_starts.shape[:2], circle_radius),
+        )
+    )
+    normalized_starts = edge_starts / edge_scale[..., None]
+    normalized_vectors = edge_vectors / edge_scale[..., None]
+    normalized_radius = circle_radius / edge_scale
+
+    squared_lengths = np.einsum(
+        "...i,...i->...", normalized_vectors, normalized_vectors
+    )
+    start_dot_vector = np.einsum(
+        "...i,...i->...", normalized_starts, normalized_vectors
+    )
+    circle_equation_at_start = (
+        np.einsum(
+            "...i,...i->...", normalized_starts, normalized_starts
+        )
+        - normalized_radius * normalized_radius
+    )
+    half_discriminant = (
+        start_dot_vector * start_dot_vector
+        - squared_lengths * circle_equation_at_start
+    )
+    discriminant_scale = (
+        start_dot_vector * start_dot_vector
+        + np.abs(squared_lengths * circle_equation_at_start)
+        + squared_lengths * normalized_radius * normalized_radius
+    )
+    discriminant_tolerance = (
+        512.0 * np.finfo(np.float64).eps * discriminant_scale
+    )
+
+    nondegenerate = squared_lengths > np.finfo(np.float64).eps**2
+    safe_squared_lengths = np.where(nondegenerate, squared_lengths, 1.0)
+    root_term = np.sqrt(np.maximum(half_discriminant, 0.0))
+    intersection_parameters = np.stack(
+        (
+            (-start_dot_vector - root_term) / safe_squared_lengths,
+            (-start_dot_vector + root_term) / safe_squared_lengths,
+        ),
+        axis=2,
+    )
+    parameter_tolerance = 256.0 * np.finfo(np.float64).eps
+    valid_intersections = (
+        nondegenerate[..., None]
+        & (
+            half_discriminant[..., None]
+            >= -discriminant_tolerance[..., None]
+        )
+        & (intersection_parameters >= -parameter_tolerance)
+        & (intersection_parameters <= 1.0 + parameter_tolerance)
+    )
+    intersection_parameters = np.where(
+        valid_intersections,
+        np.clip(intersection_parameters, 0.0, 1.0),
+        1.0,
+    )
+
+    # Invalid roots become 1.0.  Sorting therefore produces one complete
+    # [0, 1] interval plus zero-length trailing intervals for a missed edge.
+    cuts = np.concatenate(
+        (
+            np.zeros((*squared_lengths.shape, 1), dtype=np.float64),
+            intersection_parameters,
+            np.ones((*squared_lengths.shape, 1), dtype=np.float64),
+        ),
+        axis=2,
+    )
+    cuts.sort(axis=2)
+    subedge_starts = (
+        edge_starts[..., None, :]
+        + cuts[..., :-1, None] * edge_vectors[..., None, :]
+    )
+    subedge_ends = (
+        edge_starts[..., None, :]
+        + cuts[..., 1:, None] * edge_vectors[..., None, :]
+    )
+    subedge_midpoints = 0.5 * (subedge_starts + subedge_ends)
+    midpoint_inside = (
+        np.einsum(
+            "...i,...i->...", subedge_midpoints, subedge_midpoints
+        )
+        <= circle_radius * circle_radius
+    )
+
+    subedge_cross = (
+        subedge_starts[..., 0] * subedge_ends[..., 1]
+        - subedge_starts[..., 1] * subedge_ends[..., 0]
+    )
+    subedge_dot = (
+        subedge_starts[..., 0] * subedge_ends[..., 0]
+        + subedge_starts[..., 1] * subedge_ends[..., 1]
+    )
+    subedge_contributions = np.where(
+        midpoint_inside,
+        0.5 * subedge_cross,
+        0.5
+        * circle_radius
+        * circle_radius
+        * np.arctan2(subedge_cross, subedge_dot),
+    )
+    inner_areas = np.abs(np.sum(subedge_contributions, axis=(1, 2)))
+
+    edge_cross = (
+        edge_starts[..., 0] * edge_ends[..., 1]
+        - edge_starts[..., 1] * edge_ends[..., 0]
+    )
+    total_areas = 0.5 * np.abs(np.sum(edge_cross, axis=1))
+
+    # Snap round-off at the physical bounds.  In particular, sector terms for
+    # a wholly external polygon mathematically cancel but may leave a tiny
+    # residual in floating-point arithmetic.
+    area_tolerance = (
+        1024.0
+        * np.finfo(np.float64).eps
+        * np.maximum(total_areas, circle_area)
+    )
+    inner_areas[inner_areas <= area_tolerance] = 0.0
+    nearly_full = total_areas - inner_areas <= area_tolerance
+    inner_areas[nearly_full] = total_areas[nearly_full]
+    np.clip(inner_areas, 0.0, total_areas, out=inner_areas)
+    outer_areas = total_areas - inner_areas
+    return inner_areas, outer_areas
+
+
+def _tri_quad(    
+    mesh: Mesh2D
+):
+    
+
+__all__ = ["_find_intersect_element_and_sort", "_get_areas"]
