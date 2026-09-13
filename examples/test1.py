@@ -74,6 +74,10 @@ def main():
         tolerance = 1,
     )
     
+    mesh = remove_redundant_element(
+        mesh = mesh,
+    )
+    
     view_mesh(
         mesh,
         reference_circles=[[center_x, center_y, radius]],
