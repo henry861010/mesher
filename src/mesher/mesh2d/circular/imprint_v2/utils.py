@@ -1296,6 +1296,123 @@ def _accumulate_guide_constraints(
         node_start = node_end
 
 
+def _merge_close_circle_targets(
+    target_xy: NDArray[np.float64],
+    guided: NDArray[np.bool_],
+    center: NDArray[np.float64],
+    tolerance: float,
+    numerical_tolerance: float,
+) -> NDArray[np.float64]:
+    """Merge nearby projected targets in one clockwise circular sweep.
+
+    Targets are ordered clockwise from the positive X axis.  Each free target
+    closer than ``tolerance`` to the current group representative receives the
+    representative's XY coordinate.  A guided target promotes itself to the
+    representative of a free group so guide/circle intersections remain
+    fixed.  Two distinct guided representatives form a group boundary even
+    when they are closer than ``tolerance``.
+
+    The first and last groups are compared after the linear pass so targets
+    straddling the positive-X seam receive the same treatment.  Only the
+    returned coordinate array changes; node identities and connectivity are
+    deliberately outside this helper's scope.
+    """
+    target_count = target_xy.shape[0]
+    if target_count < 2 or tolerance <= 0.0:
+        return target_xy.copy()
+
+    offsets = target_xy - center
+    clockwise_angles = np.mod(
+        -np.arctan2(offsets[:, 1], offsets[:, 0]),
+        2.0 * np.pi,
+    )
+    order = np.argsort(clockwise_angles, kind="stable")
+
+    # Each tuple describes a contiguous slice of ``order`` and the target
+    # within that slice whose coordinate is the group's representative.
+    groups: list[tuple[int, int, int, bool]] = []
+    group_start = 0
+    representative = int(order[0])
+    representative_is_guided = bool(guided[representative])
+
+    for ordered_position in range(1, target_count):
+        candidate = int(order[ordered_position])
+        difference = target_xy[candidate] - target_xy[representative]
+        distance = float(np.hypot(difference[0], difference[1]))
+        candidate_is_guided = bool(guided[candidate])
+        distinct_guides = (
+            representative_is_guided
+            and candidate_is_guided
+            and distance > numerical_tolerance
+        )
+        if distance >= tolerance or distinct_guides:
+            groups.append(
+                (
+                    group_start,
+                    ordered_position,
+                    representative,
+                    representative_is_guided,
+                )
+            )
+            group_start = ordered_position
+            representative = candidate
+            representative_is_guided = candidate_is_guided
+            continue
+
+        if candidate_is_guided and not representative_is_guided:
+            representative = candidate
+            representative_is_guided = True
+
+    groups.append(
+        (
+            group_start,
+            target_count,
+            representative,
+            representative_is_guided,
+        )
+    )
+
+    # Reconcile the circular seam.  The first group is earlier in the sweep,
+    # except that a guide representative always takes precedence over a free
+    # representative on either side of the seam.
+    if len(groups) > 1:
+        first_start, first_end, first_rep, first_guided = groups[0]
+        last_start, last_end, last_rep, last_guided = groups[-1]
+        seam_difference = target_xy[last_rep] - target_xy[first_rep]
+        seam_distance = float(
+            np.hypot(seam_difference[0], seam_difference[1])
+        )
+        distinct_guides = (
+            first_guided
+            and last_guided
+            and seam_distance > numerical_tolerance
+        )
+        if seam_distance < tolerance and not distinct_guides:
+            if last_guided and not first_guided:
+                first_rep = last_rep
+                first_guided = True
+            else:
+                last_rep = first_rep
+                last_guided = first_guided
+            groups[0] = (
+                first_start,
+                first_end,
+                first_rep,
+                first_guided,
+            )
+            groups[-1] = (
+                last_start,
+                last_end,
+                last_rep,
+                last_guided,
+            )
+
+    merged_xy = target_xy.copy()
+    for start, end, group_representative, _ in groups:
+        merged_xy[order[start:end]] = target_xy[group_representative]
+    return merged_xy
+
+
 def to_circle(
     mesh: Mesh2D,
     center_x: float,
@@ -1313,6 +1430,10 @@ def to_circle(
     segment.  Unconstrained nodes move radially.  A constrained node moves to
     the nearest finite-segment/circle intersection only when every segment
     touching it agrees on the same target; otherwise that node is left alone.
+    After projection, movable circle targets are swept clockwise from the
+    positive X axis.  A target strictly closer than ``tolerance`` to the
+    current representative receives the same XY coordinate.  Guide targets
+    remain fixed and take precedence over nearby unconstrained targets.
 
     When ``indices`` is provided it contains element-row indices, and only
     nodes referenced by those elements are considered.  ``None`` considers
@@ -1351,11 +1472,15 @@ def to_circle(
         4. Radially project free nodes; accept a constrained target only when
            every touching guide agrees.  Missing, ambiguous, or conflicting
            constraints leave that node unchanged.
-        5. Validate every proposed target, then perform one XY assignment.
+        5. Merge nearby movable targets in a clockwise circular sweep while
+           preserving guide anchors.
+        6. Validate every proposed target, then perform one XY assignment.
 
         Nodes exactly at the circle center cannot be projected radially and
         remain unchanged.  Per-node guide conflicts are normal outcomes, not
-        exceptions.  No element-quality or inversion check is performed.
+        exceptions.  The merge changes coordinates only, so it can create
+        zero-length element edges.  No element-quality, topology, or inversion
+        check is performed.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -1565,6 +1690,15 @@ def to_circle(
             / candidate_distances[radial_positions, None]
         )
     target_xy[guided_movable] = reference_targets[guided_movable]
+
+    movable_positions = np.flatnonzero(movable)
+    target_xy[movable_positions] = _merge_close_circle_targets(
+        target_xy[movable_positions],
+        guided_movable[movable_positions],
+        center,
+        radial_tolerance,
+        numerical_tolerance,
+    )
 
     if not np.all(np.isfinite(target_xy[movable])):
         raise ValueError("projected circle coordinates exceed float64 range")
@@ -2719,6 +2853,17 @@ def imprint_circle(
     mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
     return mesh
 
+
+def trim_element(
+    mesh: Mesh2D
+) -> Mesh2D:
+
+
+def trim_element(
+    mesh: Mesh2D,
+    tolerance: float,
+):
+    print()
 
 __all__ = [
     "get_circle_intersect",

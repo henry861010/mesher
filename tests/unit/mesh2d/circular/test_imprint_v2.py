@@ -1,10 +1,12 @@
 import inspect
+import random
 import time
 import unittest
 
 import numpy as np
 
 from mesher import Mesh2D
+from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.circular.imprint_v2.utils import (
     get_circle_intersect,
     get_inner_outer_areas,
@@ -929,6 +931,174 @@ class ToCircleTests(unittest.TestCase):
 
         self.assertIs(result, mesh)
         np.testing.assert_array_equal(mesh.nodes, once)
+
+    def test_clockwise_merge_uses_current_representative_and_preserves_data(self):
+        angles = np.deg2rad([0.0, -2.0, -4.0, 180.0])
+        mesh = self._mesh(
+            np.column_stack(
+                (np.cos(angles), np.sin(angles), [1.0, 2.0, 3.0, 4.0])
+            ),
+            [[0, 1, 2, 3]],
+        )
+        original_nodes = mesh.nodes.copy()
+        original_elements = mesh.elements.copy()
+
+        result = to_circle(mesh, 0.0, 0.0, 1.0, 0.05, 0.0, None)
+
+        self.assertIs(result, mesh)
+        np.testing.assert_array_equal(mesh.nodes[1, :2], mesh.nodes[0, :2])
+        np.testing.assert_allclose(mesh.nodes[2, :2], original_nodes[2, :2])
+        np.testing.assert_array_equal(mesh.nodes[:, 2], original_nodes[:, 2])
+        np.testing.assert_array_equal(mesh.elements, original_elements)
+        self.assertEqual(mesh.nodes.shape, original_nodes.shape)
+        self.assertEqual(mesh.elements.shape, original_elements.shape)
+
+        once = mesh.nodes.copy()
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.05, 0.0, None)
+        np.testing.assert_array_equal(mesh.nodes, once)
+
+    def test_clockwise_merge_reconciles_the_positive_x_seam(self):
+        angles = np.deg2rad([-1.0, 180.0, 1.0])
+        mesh = self._mesh(np.column_stack((np.cos(angles), np.sin(angles))))
+
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.04, 0.0, None)
+
+        np.testing.assert_array_equal(mesh.nodes[2, :2], mesh.nodes[0, :2])
+        np.testing.assert_allclose(
+            mesh.nodes[1, :2],
+            [-1.0, 0.0],
+            atol=1.0e-15,
+        )
+
+    def test_merge_distance_is_strict_and_zero_disables_merging(self):
+        exact_tolerance = float(np.hypot(1.0, 1.0))
+        at_tolerance = self._mesh([[1.0, 0.0], [0.0, -1.0]])
+
+        to_circle(
+            at_tolerance,
+            0.0,
+            0.0,
+            1.0,
+            exact_tolerance,
+            0.0,
+            None,
+        )
+
+        self.assertFalse(
+            np.array_equal(
+                at_tolerance.nodes[0, :2],
+                at_tolerance.nodes[1, :2],
+            )
+        )
+
+        disabled = self._mesh([[1.0, 0.0], [0.0, 1.0]])
+        original = disabled.nodes.copy()
+        to_circle(disabled, 0.0, 0.0, 1.0, 0.0, 0.0, None)
+        np.testing.assert_array_equal(disabled.nodes, original)
+
+    def test_guided_targets_take_precedence_and_remain_distinct(self):
+        first_angle = np.deg2rad(-2.0)
+        first_anchor = np.array(
+            [np.cos(first_angle), np.sin(first_angle)]
+        )
+        promoted = self._mesh([[1.0, 0.0], first_anchor])
+        first_guide = [
+            [[first_anchor[0], -0.1], [first_anchor[0], 0.0]]
+        ]
+
+        to_circle(
+            promoted,
+            0.0,
+            0.0,
+            1.0,
+            0.05,
+            1.0e-6,
+            first_guide,
+        )
+
+        np.testing.assert_allclose(
+            promoted.nodes[:, :2],
+            np.tile(first_anchor, (2, 1)),
+        )
+
+        second_angle = np.deg2rad(-4.0)
+        second_anchor = np.array(
+            [np.cos(second_angle), np.sin(second_angle)]
+        )
+        distinct = self._mesh([first_anchor, second_anchor])
+        guides = first_guide + [
+            [[second_anchor[0], -0.1], [second_anchor[0], 0.0]]
+        ]
+
+        to_circle(
+            distinct,
+            0.0,
+            0.0,
+            1.0,
+            0.05,
+            1.0e-6,
+            guides,
+        )
+
+        np.testing.assert_allclose(
+            distinct.nodes[:, :2],
+            [first_anchor, second_anchor],
+            atol=1.0e-14,
+        )
+
+    def test_element_selection_limits_circle_target_merging(self):
+        angles = np.deg2rad(
+            [0.0, -2.0, 90.0, 180.0, 1.0, 45.0, 135.0, 225.0]
+        )
+        mesh = self._mesh(
+            np.column_stack((np.cos(angles), np.sin(angles))),
+            [[0, 1, 2, 3], [4, 5, 6, 7]],
+        )
+        unselected = mesh.nodes[4:].copy()
+
+        to_circle(
+            mesh,
+            0.0,
+            0.0,
+            1.0,
+            0.05,
+            0.0,
+            None,
+            indices=[0],
+        )
+
+        np.testing.assert_array_equal(mesh.nodes[1, :2], mesh.nodes[0, :2])
+        np.testing.assert_array_equal(mesh.nodes[4:], unselected)
+
+    def test_seeded_rectilinear_example_merges_twenty_four_pairs(self):
+        generator = random.Random(1)
+
+        def coordinates(begin, end, minimum_step):
+            values = [begin]
+            current = begin
+            while True:
+                current += generator.uniform(minimum_step, 2.0 * minimum_step)
+                if current > end:
+                    return values
+                values.append(current)
+
+        mesh = generate_rectilinear_mesh(
+            5.0,
+            coordinates(-100.0, 100.0, 1.0),
+            coordinates(-100.0, 100.0, 2.0),
+        )
+        original_elements = mesh.elements.copy()
+
+        to_circle(mesh, 0.0, 0.0, 57.0, 1.0, 1.0, [])
+
+        radii = np.hypot(mesh.nodes[:, 0], mesh.nodes[:, 1])
+        circle_nodes = mesh.nodes[
+            np.isclose(radii, 57.0, rtol=0.0, atol=1.0e-10),
+            :2,
+        ]
+        self.assertEqual(circle_nodes.shape[0], 150)
+        self.assertEqual(np.unique(circle_nodes, axis=0).shape[0], 126)
+        np.testing.assert_array_equal(mesh.elements, original_elements)
 
     def test_invalid_inputs_raise_before_mutation(self):
         invalid_calls = (
