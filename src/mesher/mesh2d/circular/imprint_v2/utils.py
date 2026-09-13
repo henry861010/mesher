@@ -1593,15 +1593,1138 @@ def imprint_circle(
     center_y: float,
     radius: float,
     tolerance: float,
-    guide_tolerance: float,
-    guide_segments,
     indices: ArrayLike | None = None,
 ) -> Mesh2D:
-    
+    """Split selected elements where a circle properly crosses two edges.
+
+    The two circle/element intersections are joined by a straight chord.  A
+    Tri3 is split into a Tri3 and a Quad4, while a Quad4 produces either two
+    Quad4 elements (opposite crossed edges) or three mixed elements (adjacent
+    crossed edges).  Tangencies, same-edge double intersections, and elements
+    with any other number of proper crossings are left unchanged.
+
+    ``tolerance`` is a geometric merge distance.  An intersection within that
+    distance of an edge endpoint reuses the endpoint after projecting its XY
+    coordinate radially onto the circle.  Intersections within that distance
+    of one another are treated as a single contact.  Newly inserted nodes on
+    a shared selected edge are deduplicated; their Z coordinate is linearly
+    interpolated along the source edge.
+
+    When ``indices`` is provided, only those element rows may have their
+    connectivity split.  Reused endpoint nodes are shared mesh nodes, so
+    snapping one can also move an unselected neighbouring element.  No
+    conformity closure is performed across the selection boundary.
+
+    The operation is transactional: all geometry and connectivity are built
+    and validated before :meth:`Mesh2D.replace_data` is called.
+
+    Args:
+        mesh: Mesh to update in place.
+        center_x: Circle-center X coordinate.
+        center_y: Circle-center Y coordinate.
+        radius: Strictly positive circle radius.
+        tolerance: Non-negative endpoint/intersection merge distance.
+        indices: Optional unique one-dimensional element-row selection.
+
+    Returns:
+        The same ``mesh`` instance after a successful batch update.
+
+    Raises:
+        TypeError: If ``mesh`` or ``indices`` has an invalid type.
+        ValueError: If mesh data, circle values, tolerance, or selected
+            element geometry are invalid.
+        IndexError: If an element index is out of range.
+    """
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
+
+    try:
+        circle_values = np.asarray(
+            [
+                float(center_x),
+                float(center_y),
+                float(radius),
+                float(tolerance),
+            ],
+            dtype=np.float64,
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            "center_x, center_y, radius, and tolerance must be real numbers"
+        ) from error
+    if not np.all(np.isfinite(circle_values)):
+        raise ValueError(
+            "center_x, center_y, radius, and tolerance must be finite"
+        )
+
+    center = circle_values[:2]
+    circle_radius = float(circle_values[2])
+    merge_tolerance = float(circle_values[3])
+    if circle_radius <= 0.0:
+        raise ValueError("radius must be positive")
+    if merge_tolerance < 0.0:
+        raise ValueError("tolerance must be non-negative")
+
+    nodes = np.asarray(mesh.nodes)
+    elements = np.asarray(mesh.elements)
+    if nodes.ndim != 2 or nodes.shape[1] not in (2, 3):
+        raise ValueError("nodes must have shape (N, 2) or (N, 3)")
+    if (
+        not np.issubdtype(nodes.dtype, np.number)
+        or np.issubdtype(nodes.dtype, np.bool_)
+        or np.issubdtype(nodes.dtype, np.complexfloating)
+    ):
+        raise ValueError("nodes must have a real numeric dtype")
+    if elements.ndim != 2 or elements.shape[1] != 4:
+        raise ValueError("elements must have shape (M, 4)")
+    if (
+        not np.issubdtype(elements.dtype, np.integer)
+        or np.issubdtype(elements.dtype, np.bool_)
+    ):
+        raise ValueError("elements must have an integer dtype")
+
+    try:
+        float_nodes = nodes.astype(np.float64, copy=False)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("nodes must be representable as float64") from error
+    if not np.all(np.isfinite(float_nodes)):
+        raise ValueError("nodes must contain finite coordinates")
+    if elements.size and (
+        np.any(elements < 0) or np.any(elements >= nodes.shape[0])
+    ):
+        raise ValueError("elements contain an out-of-range node index")
+
+    element_indices = _normalize_indices(elements.shape[0], indices)
+    if element_indices.size == 0:
+        return mesh
+
+    selected_elements = elements[element_indices]
+    is_triangle = selected_elements[:, 2] == selected_elements[:, 3]
+    triangle_valid = (
+        (selected_elements[:, 0] != selected_elements[:, 1])
+        & (selected_elements[:, 0] != selected_elements[:, 2])
+        & (selected_elements[:, 1] != selected_elements[:, 2])
+    )
+    sorted_quads = np.sort(selected_elements, axis=1)
+    quad_valid = np.all(np.diff(sorted_quads, axis=1) != 0, axis=1)
+    if np.any(is_triangle & ~triangle_valid) or np.any(
+        ~is_triangle & ~quad_valid
+    ):
+        raise ValueError(
+            "elements must contain valid padded Tri3 or Quad4 connectivity"
+        )
+
+    xy = float_nodes[:, :2]
+    selected_xy = xy[selected_elements]
+    topology_counts = np.where(is_triangle, 3, 4).astype(np.int64)
+    edge_positions = np.arange(4, dtype=np.int64)[None, :]
+    valid_edges = edge_positions < topology_counts[:, None]
+
+    # Validate the documented simple Tri3/convex Quad4 precondition.  This is
+    # done before the broad phase so invalid selected geometry cannot be hidden
+    # merely because the requested circle is far away.
+    next_xy = np.roll(selected_xy, -1, axis=1)
+    previous_xy = np.roll(selected_xy, 1, axis=1)
+    triangle_rows = np.flatnonzero(is_triangle)
+    if triangle_rows.size:
+        next_xy[triangle_rows, 2] = selected_xy[triangle_rows, 0]
+        next_xy[triangle_rows, 3] = selected_xy[triangle_rows, 3]
+        previous_xy[triangle_rows, 0] = selected_xy[triangle_rows, 2]
+    outgoing = next_xy - selected_xy
+    incoming_reverse = previous_xy - selected_xy
+    corner_cross = (
+        outgoing[..., 0] * incoming_reverse[..., 1]
+        - outgoing[..., 1] * incoming_reverse[..., 0]
+    )
+    edge_lengths = np.hypot(outgoing[..., 0], outgoing[..., 1])
+    element_scales = np.max(
+        np.where(valid_edges, edge_lengths, 0.0), axis=1
+    )
+    geometry_tolerances = (
+        2048.0
+        * np.finfo(np.float64).eps
+        * np.maximum(element_scales, 1.0) ** 2
+    )
+    triangle_cross = corner_cross[:, 0]
+    triangle_geometry_valid = np.abs(triangle_cross) > geometry_tolerances
+    quad_positive = np.all(
+        corner_cross > geometry_tolerances[:, None], axis=1
+    )
+    quad_negative = np.all(
+        corner_cross < -geometry_tolerances[:, None], axis=1
+    )
+    if np.any(is_triangle & ~triangle_geometry_valid) or np.any(
+        ~is_triangle & ~(quad_positive | quad_negative)
+    ):
+        raise ValueError(
+            "selected elements must be non-degenerate Tri3 or convex Quad4"
+        )
+
+    coordinate_scale = max(
+        float(np.max(np.abs(center))),
+        circle_radius,
+    )
+    coordinate_ulp = abs(float(np.spacing(coordinate_scale)))
+    numerical_tolerance = max(
+        8.0 * coordinate_ulp,
+        256.0 * np.finfo(np.float64).eps * circle_radius,
+    )
+    effective_merge_tolerance = max(
+        merge_tolerance,
+        numerical_tolerance,
+    )
+
+    element_minimum = np.min(selected_xy, axis=1)
+    element_maximum = np.max(selected_xy, axis=1)
+    with np.errstate(over="ignore", invalid="ignore"):
+        circle_minimum = center - circle_radius - numerical_tolerance
+        circle_maximum = center + circle_radius + numerical_tolerance
+    if not np.all(np.isfinite([circle_minimum, circle_maximum])):
+        raise ValueError("circle bounds exceed the float64 range")
+    broad_phase = np.all(
+        element_maximum >= circle_minimum, axis=1
+    ) & np.all(element_minimum <= circle_maximum, axis=1)
+    candidate_positions = np.flatnonzero(broad_phase)
+    if candidate_positions.size == 0:
+        return mesh
+
+    candidate_elements = selected_elements[candidate_positions]
+    candidate_xy = selected_xy[candidate_positions]
+    candidate_counts = topology_counts[candidate_positions]
+    candidate_valid_edges = valid_edges[candidate_positions]
+    candidate_count = candidate_positions.size
+
+    local_edge_starts = candidate_elements
+    local_edge_ends = np.roll(candidate_elements, -1, axis=1)
+    candidate_triangle_rows = np.flatnonzero(candidate_counts == 3)
+    if candidate_triangle_rows.size:
+        local_edge_ends[candidate_triangle_rows, 2] = candidate_elements[
+            candidate_triangle_rows, 0
+        ]
+        local_edge_ends[candidate_triangle_rows, 3] = candidate_elements[
+            candidate_triangle_rows, 3
+        ]
+    canonical_starts = np.minimum(local_edge_starts, local_edge_ends)
+    canonical_ends = np.maximum(local_edge_starts, local_edge_ends)
+    with np.errstate(over="ignore", invalid="ignore"):
+        start_offsets = xy[canonical_starts] - center
+        end_offsets = xy[canonical_ends] - center
+    if not np.all(np.isfinite(start_offsets)) or not np.all(
+        np.isfinite(end_offsets)
+    ):
+        raise ValueError("node-to-center coordinate differences exceed float64")
+
+    edge_scale = np.maximum.reduce(
+        (
+            np.max(np.abs(start_offsets), axis=2),
+            np.max(np.abs(end_offsets), axis=2),
+            np.full(start_offsets.shape[:2], circle_radius),
+        )
+    )
+    normalized_start = start_offsets / edge_scale[..., None]
+    normalized_end = end_offsets / edge_scale[..., None]
+    normalized_radius = circle_radius / edge_scale
+    normalized_numerical_tolerance = np.maximum(
+        numerical_tolerance / edge_scale,
+        256.0 * np.finfo(np.float64).eps,
+    )
+    edge_vectors = normalized_end - normalized_start
+    squared_lengths = np.einsum(
+        "...i,...i->...", edge_vectors, edge_vectors
+    )
+    start_dot_edge = np.einsum(
+        "...i,...i->...", normalized_start, edge_vectors
+    )
+    circle_at_start = (
+        np.einsum("...i,...i->...", normalized_start, normalized_start)
+        - normalized_radius * normalized_radius
+    )
+    half_discriminant = (
+        start_dot_edge * start_dot_edge
+        - squared_lengths * circle_at_start
+    )
+    discriminant_scale = (
+        start_dot_edge * start_dot_edge
+        + np.abs(squared_lengths * circle_at_start)
+        + squared_lengths * normalized_radius * normalized_radius
+    )
+    discriminant_tolerance = (
+        512.0 * np.finfo(np.float64).eps * discriminant_scale
+        + squared_lengths
+        * normalized_numerical_tolerance
+        * normalized_numerical_tolerance
+    )
+    nondegenerate = candidate_valid_edges & (
+        squared_lengths
+        > normalized_numerical_tolerance * normalized_numerical_tolerance
+    )
+    safe_squared_lengths = np.where(nondegenerate, squared_lengths, 1.0)
+    root_term = np.sqrt(np.maximum(half_discriminant, 0.0))
+    canonical_parameters = np.stack(
+        (
+            (-start_dot_edge - root_term) / safe_squared_lengths,
+            (-start_dot_edge + root_term) / safe_squared_lengths,
+        ),
+        axis=2,
+    )
+    parameter_tolerance = np.minimum(
+        1.0,
+        normalized_numerical_tolerance / np.sqrt(safe_squared_lengths),
+    )
+    valid_roots = (
+        nondegenerate[..., None]
+        & (
+            half_discriminant[..., None]
+            >= -discriminant_tolerance[..., None]
+        )
+        & (canonical_parameters >= -parameter_tolerance[..., None])
+        & (canonical_parameters <= 1.0 + parameter_tolerance[..., None])
+    )
+    canonical_parameters = np.clip(canonical_parameters, 0.0, 1.0)
+    normalized_root_offsets = (
+        normalized_start[..., None, :]
+        + canonical_parameters[..., None] * edge_vectors[..., None, :]
+    )
+    with np.errstate(over="ignore", invalid="ignore"):
+        root_xy = (
+            center
+            + normalized_root_offsets * edge_scale[..., None, None]
+        )
+    if not np.all(np.isfinite(root_xy[valid_roots])):
+        raise ValueError("intersection coordinates exceed the float64 range")
+
+    # Work in local perimeter orientation for endpoint tests and later
+    # insertion order, while retaining canonical parameters for shared-edge
+    # node keys and Z interpolation.
+    canonical_is_local = local_edge_starts == canonical_starts
+    local_parameters = np.where(
+        canonical_is_local[..., None],
+        canonical_parameters,
+        1.0 - canonical_parameters,
+    )
+    root_edge_positions = np.broadcast_to(
+        np.arange(4, dtype=np.int64)[None, :, None],
+        valid_roots.shape,
+    )
+    root_ordinals = np.broadcast_to(
+        np.arange(2, dtype=np.int64)[None, None, :],
+        valid_roots.shape,
+    )
+
+    local_start_xy = xy[local_edge_starts][..., None, :]
+    local_end_xy = xy[local_edge_ends][..., None, :]
+    start_distances = np.hypot(
+        root_xy[..., 0] - local_start_xy[..., 0],
+        root_xy[..., 1] - local_start_xy[..., 1],
+    )
+    end_distances = np.hypot(
+        root_xy[..., 0] - local_end_xy[..., 0],
+        root_xy[..., 1] - local_end_xy[..., 1],
+    )
+    start_snap = (
+        valid_roots
+        & (start_distances <= effective_merge_tolerance)
+        & (start_distances <= end_distances)
+    )
+    end_snap = (
+        valid_roots
+        & ~start_snap
+        & (end_distances <= effective_merge_tolerance)
+    )
+    snap_vertex_positions = np.full(valid_roots.shape, -1, dtype=np.int64)
+    snap_vertex_positions[start_snap] = root_edge_positions[start_snap]
+    end_vertex_positions = (
+        root_edge_positions + 1
+    ) % candidate_counts[:, None, None]
+    snap_vertex_positions[end_snap] = end_vertex_positions[end_snap]
+
+    candidate_offsets = candidate_xy - center
+    candidate_distances = np.hypot(
+        candidate_offsets[..., 0], candidate_offsets[..., 1]
+    )
+    projectable_vertices = candidate_distances > 0.0
+    projected_vertices = candidate_xy.copy()
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        projected_vertices[projectable_vertices] = (
+            center
+            + circle_radius
+            * candidate_offsets[projectable_vertices]
+            / candidate_distances[projectable_vertices, None]
+        )
+
+    # A snapped vertex is a proper boundary crossing only when the two local
+    # perimeter directions immediately leave it on opposite sides of the
+    # circle.  A zero radial derivative is tangent and therefore outside.
+    previous_positions = (
+        np.arange(4, dtype=np.int64)[None, :] - 1
+    ) % candidate_counts[:, None]
+    next_positions = (
+        np.arange(4, dtype=np.int64)[None, :] + 1
+    ) % candidate_counts[:, None]
+    row_positions = np.arange(candidate_count, dtype=np.int64)[:, None]
+    previous_vertices = candidate_xy[row_positions, previous_positions]
+    next_vertices = candidate_xy[row_positions, next_positions]
+    projected_offsets = projected_vertices - center
+    previous_derivative = 2.0 * np.einsum(
+        "...i,...i->...",
+        projected_offsets,
+        previous_vertices - projected_vertices,
+    )
+    next_derivative = 2.0 * np.einsum(
+        "...i,...i->...",
+        projected_offsets,
+        next_vertices - projected_vertices,
+    )
+    derivative_scales = np.maximum.reduce(
+        (
+            np.abs(previous_derivative),
+            np.abs(next_derivative),
+            np.full(previous_derivative.shape, circle_radius**2),
+        )
+    )
+    derivative_tolerances = (
+        2048.0 * np.finfo(np.float64).eps * derivative_scales
+    )
+    previous_inside = previous_derivative < -derivative_tolerances
+    next_inside = next_derivative < -derivative_tolerances
+    vertex_crossings = (
+        projectable_vertices
+        & (previous_inside != next_inside)
+        & valid_edges[candidate_positions]
+    )
+
+    flat_valid_roots = valid_roots.reshape(candidate_count, 8)
+    flat_discriminants = np.repeat(half_discriminant, 2, axis=1)
+    flat_discriminant_tolerances = np.repeat(
+        discriminant_tolerance, 2, axis=1
+    )
+    flat_snap_vertices = snap_vertex_positions.reshape(candidate_count, 8)
+    snapped = flat_snap_vertices >= 0
+    safe_snap_vertices = np.maximum(flat_snap_vertices, 0)
+    snapped_crossings = vertex_crossings[
+        np.arange(candidate_count)[:, None], safe_snap_vertices
+    ]
+    interior_crossings = (
+        flat_discriminants > flat_discriminant_tolerances
+    )
+    flat_valid_roots &= np.where(
+        snapped,
+        snapped_crossings,
+        interior_crossings,
+    )
+
+    flat_root_xy = root_xy.reshape(candidate_count, 8, 2)
+    flat_edge_positions = root_edge_positions.reshape(candidate_count, 8)
+    flat_root_ordinals = root_ordinals.reshape(candidate_count, 8)
+    flat_canonical_parameters = canonical_parameters.reshape(
+        candidate_count, 8
+    )
+    flat_local_parameters = local_parameters.reshape(candidate_count, 8)
+    flat_snap_nodes = np.full((candidate_count, 8), -1, dtype=np.int64)
+    snap_rows, snap_slots = np.nonzero(snapped)
+    if snap_rows.size:
+        flat_snap_nodes[snap_rows, snap_slots] = candidate_elements[
+            snap_rows,
+            flat_snap_vertices[snap_rows, snap_slots],
+        ]
+
+    root_support = (
+        np.left_shift(np.uint8(1), flat_edge_positions.astype(np.uint8))
+    )
+    if snap_rows.size:
+        snap_vertices = flat_snap_vertices[snap_rows, snap_slots]
+        previous_edges = (
+            snap_vertices - 1
+        ) % candidate_counts[snap_rows]
+        support = np.left_shift(
+            np.uint8(1), snap_vertices.astype(np.uint8)
+        ) | np.left_shift(np.uint8(1), previous_edges.astype(np.uint8))
+        root_support[snap_rows, snap_slots] = support
+
+    angles = np.mod(
+        np.arctan2(
+            flat_root_xy[..., 1] - center[1],
+            flat_root_xy[..., 0] - center[0],
+        ),
+        2.0 * np.pi,
+    )
+    angles[~flat_valid_roots] = np.inf
+    angle_order = np.argsort(angles, axis=1, kind="stable")
+
+    def _take_rows(values):
+        if values.ndim == 3:
+            return np.take_along_axis(values, angle_order[..., None], axis=1)
+        return np.take_along_axis(values, angle_order, axis=1)
+
+    sorted_angles = _take_rows(angles)
+    sorted_xy = _take_rows(flat_root_xy)
+    sorted_edges = _take_rows(flat_edge_positions)
+    sorted_ordinals = _take_rows(flat_root_ordinals)
+    sorted_canonical_parameters = _take_rows(flat_canonical_parameters)
+    sorted_local_parameters = _take_rows(flat_local_parameters)
+    sorted_snap_nodes = _take_rows(flat_snap_nodes)
+    sorted_support = _take_rows(root_support)
+    sorted_valid = _take_rows(flat_valid_roots)
+    valid_counts = np.count_nonzero(sorted_valid, axis=1).astype(np.int64)
+
+    tolerance_ratio = min(
+        1.0,
+        0.5 * (effective_merge_tolerance / circle_radius),
+    )
+    angular_merge_tolerance = 2.0 * np.arcsin(tolerance_ratio)
+    circular_gaps = np.full(
+        (candidate_count, 8), -np.inf, dtype=np.float64
+    )
+    if candidate_count:
+        consecutive_valid = (
+            np.arange(7, dtype=np.int64)[None, :]
+            < (valid_counts[:, None] - 1)
+        )
+        consecutive_gaps = np.full(
+            (candidate_count, 7), -np.inf, dtype=np.float64
+        )
+        np.subtract(
+            sorted_angles[:, 1:],
+            sorted_angles[:, :-1],
+            out=consecutive_gaps,
+            where=consecutive_valid,
+        )
+        circular_gaps[:, :7] = consecutive_gaps
+        rows_with_roots = valid_counts > 0
+        root_rows = np.flatnonzero(rows_with_roots)
+        last_positions = valid_counts[rows_with_roots] - 1
+        circular_gaps[root_rows, last_positions] = (
+            sorted_angles[root_rows, 0]
+            + 2.0 * np.pi
+            - sorted_angles[root_rows, last_positions]
+        )
+
+    largest_gap_positions = np.argmax(circular_gaps, axis=1)
+    rotation_starts = np.where(
+        valid_counts > 0,
+        (largest_gap_positions + 1) % np.maximum(valid_counts, 1),
+        0,
+    )
+    rotated_positions = (
+        rotation_starts[:, None] + np.arange(8, dtype=np.int64)[None, :]
+    ) % np.maximum(valid_counts[:, None], 1)
+    rotated_valid = (
+        np.arange(8, dtype=np.int64)[None, :] < valid_counts[:, None]
+    )
+
+    def _rotate_rows(values):
+        if values.ndim == 3:
+            return np.take_along_axis(
+                values, rotated_positions[..., None], axis=1
+            )
+        return np.take_along_axis(values, rotated_positions, axis=1)
+
+    rotated_angles = _rotate_rows(sorted_angles)
+    rotated_xy = _rotate_rows(sorted_xy)
+    rotated_edges = _rotate_rows(sorted_edges)
+    rotated_ordinals = _rotate_rows(sorted_ordinals)
+    rotated_canonical_parameters = _rotate_rows(
+        sorted_canonical_parameters
+    )
+    rotated_local_parameters = _rotate_rows(sorted_local_parameters)
+    rotated_snap_nodes = _rotate_rows(sorted_snap_nodes)
+    rotated_support = _rotate_rows(sorted_support)
+
+    group_starts = np.zeros((candidate_count, 8), dtype=np.bool_)
+    group_starts[:, 0] = rotated_valid[:, 0]
+    rotated_gaps = np.zeros(
+        (candidate_count, 7), dtype=np.float64
+    )
+    rotated_pair_valid = rotated_valid[:, 1:] & rotated_valid[:, :-1]
+    np.subtract(
+        rotated_angles[:, 1:],
+        rotated_angles[:, :-1],
+        out=rotated_gaps,
+        where=rotated_pair_valid,
+    )
+    np.mod(rotated_gaps, 2.0 * np.pi, out=rotated_gaps)
+    group_starts[:, 1:] = (
+        rotated_valid[:, 1:]
+        & (rotated_gaps > angular_merge_tolerance)
+    )
+    group_ids = np.cumsum(group_starts, axis=1, dtype=np.int64) - 1
+    unique_counts = np.count_nonzero(group_starts, axis=1).astype(np.int64)
+
+    group_xy = np.zeros((candidate_count, 8, 2), dtype=np.float64)
+    group_edges = np.zeros((candidate_count, 8), dtype=np.int64)
+    group_ordinals = np.zeros((candidate_count, 8), dtype=np.int64)
+    group_canonical_parameters = np.zeros(
+        (candidate_count, 8), dtype=np.float64
+    )
+    group_local_parameters = np.zeros(
+        (candidate_count, 8), dtype=np.float64
+    )
+    start_rows, start_slots = np.nonzero(group_starts)
+    start_groups = group_ids[start_rows, start_slots]
+    if start_rows.size:
+        group_xy[start_rows, start_groups] = rotated_xy[
+            start_rows, start_slots
+        ]
+        group_edges[start_rows, start_groups] = rotated_edges[
+            start_rows, start_slots
+        ]
+        group_ordinals[start_rows, start_groups] = rotated_ordinals[
+            start_rows, start_slots
+        ]
+        group_canonical_parameters[start_rows, start_groups] = (
+            rotated_canonical_parameters[start_rows, start_slots]
+        )
+        group_local_parameters[start_rows, start_groups] = (
+            rotated_local_parameters[start_rows, start_slots]
+        )
+
+    group_support = np.zeros((candidate_count, 8), dtype=np.uint8)
+    group_snap_minimum = np.full(
+        (candidate_count, 8), np.iinfo(np.int64).max, dtype=np.int64
+    )
+    group_snap_maximum = np.full(
+        (candidate_count, 8), -1, dtype=np.int64
+    )
+    aggregate_rows, aggregate_slots = np.nonzero(rotated_valid)
+    aggregate_groups = group_ids[aggregate_rows, aggregate_slots]
+    if aggregate_rows.size:
+        np.bitwise_or.at(
+            group_support,
+            (aggregate_rows, aggregate_groups),
+            rotated_support[aggregate_rows, aggregate_slots],
+        )
+        aggregate_snap_nodes = rotated_snap_nodes[
+            aggregate_rows, aggregate_slots
+        ]
+        has_snap_node = aggregate_snap_nodes >= 0
+        np.minimum.at(
+            group_snap_minimum,
+            (
+                aggregate_rows[has_snap_node],
+                aggregate_groups[has_snap_node],
+            ),
+            aggregate_snap_nodes[has_snap_node],
+        )
+        np.maximum.at(
+            group_snap_maximum,
+            (
+                aggregate_rows[has_snap_node],
+                aggregate_groups[has_snap_node],
+            ),
+            aggregate_snap_nodes[has_snap_node],
+        )
+
+    ambiguous_snap = (
+        (group_snap_maximum >= 0)
+        & (group_snap_minimum != group_snap_maximum)
+    )
+    group_has_snap = group_snap_maximum >= 0
+    support_as_int = group_support.astype(np.int64)
+    merged_across_edges_without_vertex = (
+        ~group_has_snap
+        & (support_as_int != 0)
+        & ((support_as_int & (support_as_int - 1)) != 0)
+    )
+    two_crossings = unique_counts == 2
+    different_edges = (
+        group_support[:, 0] & group_support[:, 1]
+    ) == 0
+    eligible_candidates = (
+        two_crossings
+        & different_edges
+        & ~ambiguous_snap[:, 0]
+        & ~ambiguous_snap[:, 1]
+        & ~merged_across_edges_without_vertex[:, 0]
+        & ~merged_across_edges_without_vertex[:, 1]
+    )
+    eligible_candidate_positions = np.flatnonzero(eligible_candidates)
+    if eligible_candidate_positions.size == 0:
+        return mesh
+
+    eligible_selection_positions = candidate_positions[
+        eligible_candidate_positions
+    ]
+    eligible_element_indices = element_indices[eligible_selection_positions]
+    eligible_elements = candidate_elements[eligible_candidate_positions]
+    eligible_counts = candidate_counts[eligible_candidate_positions]
+    eligible_count = eligible_candidate_positions.size
+    eligible_group_edges = group_edges[eligible_candidate_positions, :2]
+    eligible_group_ordinals = group_ordinals[
+        eligible_candidate_positions, :2
+    ]
+    eligible_group_xy = group_xy[eligible_candidate_positions, :2]
+    eligible_group_canonical_parameters = group_canonical_parameters[
+        eligible_candidate_positions, :2
+    ]
+    eligible_group_local_parameters = group_local_parameters[
+        eligible_candidate_positions, :2
+    ]
+    eligible_snap_nodes = group_snap_maximum[
+        eligible_candidate_positions, :2
+    ]
+
+    # Assign one node to every unique unsnapped edge/root.  The root ordinal
+    # disambiguates the two possible intersections of the same undirected
+    # edge, even though eligible elements normally use only one of them.
+    intersection_node_indices = eligible_snap_nodes.copy()
+    unsnapped = eligible_snap_nodes < 0
+    unsnapped_rows, unsnapped_groups = np.nonzero(unsnapped)
+    new_node_coordinates = np.empty((0, 3), dtype=np.float64)
+    if unsnapped_rows.size:
+        unsnapped_edges = eligible_group_edges[
+            unsnapped_rows, unsnapped_groups
+        ]
+        edge_start_nodes = eligible_elements[
+            unsnapped_rows, unsnapped_edges
+        ]
+        edge_end_nodes = eligible_elements[
+            unsnapped_rows,
+            (unsnapped_edges + 1) % eligible_counts[unsnapped_rows],
+        ]
+        key_starts = np.minimum(edge_start_nodes, edge_end_nodes)
+        key_ends = np.maximum(edge_start_nodes, edge_end_nodes)
+        edge_keys = np.column_stack(
+            (
+                key_starts,
+                key_ends,
+                eligible_group_ordinals[unsnapped_rows, unsnapped_groups],
+            )
+        )
+        unique_keys, first_key_positions, key_inverse = np.unique(
+            edge_keys,
+            axis=0,
+            return_index=True,
+            return_inverse=True,
+        )
+        if nodes.shape[0] + unique_keys.shape[0] > np.iinfo(np.int32).max:
+            raise ValueError("imprint would exceed the int32 node-index range")
+
+        unique_rows = unsnapped_rows[first_key_positions]
+        unique_groups = unsnapped_groups[first_key_positions]
+        unique_parameters = eligible_group_canonical_parameters[
+            unique_rows, unique_groups
+        ]
+        unique_start_nodes = unique_keys[:, 0]
+        unique_end_nodes = unique_keys[:, 1]
+        new_node_coordinates = np.empty(
+            (unique_keys.shape[0], 3), dtype=np.float64
+        )
+        new_node_coordinates[:, :2] = eligible_group_xy[
+            unique_rows, unique_groups
+        ]
+        new_node_coordinates[:, 2] = (
+            float_nodes[unique_start_nodes, 2]
+            + unique_parameters
+            * (
+                float_nodes[unique_end_nodes, 2]
+                - float_nodes[unique_start_nodes, 2]
+            )
+        )
+        assigned_nodes = nodes.shape[0] + key_inverse
+        intersection_node_indices[unsnapped_rows, unsnapped_groups] = (
+            assigned_nodes
+        )
+
+    proposed_nodes = np.concatenate(
+        (float_nodes.copy(), new_node_coordinates), axis=0
+    )
+    snapped_node_indices = eligible_snap_nodes[eligible_snap_nodes >= 0]
+    if snapped_node_indices.size:
+        snapped_node_indices = np.unique(snapped_node_indices)
+        snap_offsets = xy[snapped_node_indices] - center
+        snap_distances = np.hypot(snap_offsets[:, 0], snap_offsets[:, 1])
+        if np.any(snap_distances <= 0.0):
+            raise ValueError("a circle-center node cannot be snapped")
+        proposed_nodes[snapped_node_indices, :2] = (
+            center
+            + circle_radius
+            * snap_offsets
+            / snap_distances[:, None]
+        )
+
+    # Insert both chord endpoints into each original perimeter.  Existing
+    # snapped vertices appear twice in the six-item work array and are then
+    # compacted back to one perimeter occurrence.
+    perimeter_nodes = np.full((eligible_count, 6), -1, dtype=np.int64)
+    perimeter_positions = np.full(
+        (eligible_count, 6), np.inf, dtype=np.float64
+    )
+    perimeter_valid = np.zeros((eligible_count, 6), dtype=np.bool_)
+    perimeter_nodes[:, :4] = eligible_elements
+    perimeter_positions[:, :4] = np.arange(4, dtype=np.float64)
+    perimeter_valid[:, :4] = (
+        np.arange(4, dtype=np.int64)[None, :] < eligible_counts[:, None]
+    )
+    perimeter_nodes[:, 4:] = intersection_node_indices
+    for group_position in (0, 1):
+        snapped_group = eligible_snap_nodes[:, group_position] >= 0
+        group_edge = eligible_group_edges[:, group_position]
+        local_parameter = eligible_group_local_parameters[:, group_position]
+        group_position_value = group_edge.astype(np.float64) + local_parameter
+        if np.any(snapped_group):
+            group_node = intersection_node_indices[:, group_position]
+            matches = eligible_elements == group_node[:, None]
+            snapped_positions = np.argmax(matches, axis=1)
+            group_position_value[snapped_group] = snapped_positions[
+                snapped_group
+            ]
+        perimeter_positions[:, 4 + group_position] = group_position_value
+        perimeter_valid[:, 4 + group_position] = True
+
+    perimeter_positions[~perimeter_valid] = np.inf
+    perimeter_order = np.argsort(
+        perimeter_positions, axis=1, kind="stable"
+    )
+    sorted_perimeter_nodes = np.take_along_axis(
+        perimeter_nodes, perimeter_order, axis=1
+    )
+    sorted_perimeter_valid = np.take_along_axis(
+        perimeter_valid, perimeter_order, axis=1
+    )
+    keep_perimeter = sorted_perimeter_valid.copy()
+    keep_perimeter[:, 1:] &= (
+        sorted_perimeter_nodes[:, 1:] != sorted_perimeter_nodes[:, :-1]
+    )
+    compact_keys = np.where(
+        keep_perimeter,
+        np.arange(6, dtype=np.int64)[None, :],
+        6,
+    )
+    compact_order = np.argsort(compact_keys, axis=1, kind="stable")
+    compact_perimeter = np.take_along_axis(
+        sorted_perimeter_nodes, compact_order, axis=1
+    )
+    perimeter_counts = np.count_nonzero(keep_perimeter, axis=1).astype(
+        np.int64
+    )
+    compact_valid = (
+        np.arange(6, dtype=np.int64)[None, :] < perimeter_counts[:, None]
+    )
+
+    first_cut_positions = np.argmax(
+        compact_valid
+        & (compact_perimeter == intersection_node_indices[:, 0, None]),
+        axis=1,
+    )
+    second_cut_positions = np.argmax(
+        compact_valid
+        & (compact_perimeter == intersection_node_indices[:, 1, None]),
+        axis=1,
+    )
+    perimeter_steps = np.arange(6, dtype=np.int64)[None, :]
+    rotated_perimeter_positions = (
+        first_cut_positions[:, None] + perimeter_steps
+    ) % perimeter_counts[:, None]
+    rotated_perimeter = np.take_along_axis(
+        compact_perimeter, rotated_perimeter_positions, axis=1
+    )
+    second_offsets = (
+        second_cut_positions - first_cut_positions
+    ) % perimeter_counts
+    first_path_counts = second_offsets + 1
+    second_path_counts = perimeter_counts - second_offsets + 1
+    if np.any(
+        (first_path_counts < 3)
+        | (first_path_counts > 5)
+        | (second_path_counts < 3)
+        | (second_path_counts > 5)
+    ):
+        raise ValueError("circle chord does not split an element interior")
+
+    first_paths = rotated_perimeter.copy()
+    second_paths = np.full((eligible_count, 5), -1, dtype=np.int64)
+    for offset in range(5):
+        source_positions = (
+            second_offsets + offset
+        ) % perimeter_counts
+        second_paths[:, offset] = rotated_perimeter[
+            np.arange(eligible_count), source_positions
+        ]
+
+    child_elements = np.full(
+        (eligible_count, 3, 4), -1, dtype=np.int64
+    )
+    child_counts = np.full(eligible_count, 2, dtype=np.int64)
+
+    def _encode_short_paths(paths, path_counts, child_positions):
+        triangle_rows = np.flatnonzero(path_counts == 3)
+        if triangle_rows.size:
+            triangles = paths[triangle_rows, :3]
+            encoded = np.column_stack((triangles, triangles[:, 2]))
+            child_elements[
+                triangle_rows, child_positions[triangle_rows]
+            ] = encoded
+        quad_rows = np.flatnonzero(path_counts == 4)
+        if quad_rows.size:
+            child_elements[
+                quad_rows, child_positions[quad_rows]
+            ] = paths[quad_rows, :4]
+
+    first_child_positions = np.zeros(eligible_count, dtype=np.int64)
+    _encode_short_paths(
+        first_paths, first_path_counts, first_child_positions
+    )
+
+    # Split a convex five-node side into the best-conditioned Tri3/Quad4 pair.
+    # Five fixed ear candidates keep this stage fully vectorized.
+    def _encode_pentagons(paths, path_counts, first_slot):
+        pentagon_rows = np.flatnonzero(path_counts == 5)
+        if pentagon_rows.size == 0:
+            return pentagon_rows
+        pentagons = paths[pentagon_rows, :5]
+        ears = np.arange(5, dtype=np.int64)
+        triangle_positions = np.stack(
+            (ears, (ears + 1) % 5, (ears + 2) % 5), axis=1
+        )
+        quad_positions = np.stack(
+            (ears, (ears + 2) % 5, (ears + 3) % 5, (ears + 4) % 5),
+            axis=1,
+        )
+        triangle_candidates = pentagons[:, triangle_positions]
+        quad_candidates = pentagons[:, quad_positions]
+        triangle_points = proposed_nodes[triangle_candidates, :2]
+        quad_points = proposed_nodes[quad_candidates, :2]
+
+        def _minimum_corner_sine(points):
+            previous = np.roll(points, 1, axis=2) - points
+            following = np.roll(points, -1, axis=2) - points
+            cross = (
+                following[..., 0] * previous[..., 1]
+                - following[..., 1] * previous[..., 0]
+            )
+            denominator = np.hypot(
+                following[..., 0], following[..., 1]
+            ) * np.hypot(previous[..., 0], previous[..., 1])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return np.min(np.abs(cross) / denominator, axis=2)
+
+        candidate_scores = np.minimum(
+            _minimum_corner_sine(triangle_points),
+            _minimum_corner_sine(quad_points),
+        )
+        candidate_scores[~np.isfinite(candidate_scores)] = -np.inf
+        best_candidates = np.argmax(candidate_scores, axis=1)
+        best_scores = candidate_scores[
+            np.arange(pentagon_rows.size), best_candidates
+        ]
+        if np.any(best_scores <= 2048.0 * np.finfo(np.float64).eps):
+            raise ValueError("cannot split a five-node side into valid elements")
+        chosen_triangles = triangle_candidates[
+            np.arange(pentagon_rows.size), best_candidates
+        ]
+        chosen_quads = quad_candidates[
+            np.arange(pentagon_rows.size), best_candidates
+        ]
+        encoded_triangles = np.column_stack(
+            (chosen_triangles, chosen_triangles[:, 2])
+        )
+        slots = first_slot[pentagon_rows]
+        child_elements[pentagon_rows, slots] = encoded_triangles
+        child_elements[pentagon_rows, slots + 1] = chosen_quads
+        child_counts[pentagon_rows] = 3
+        return pentagon_rows
+
+    first_pentagon_rows = _encode_pentagons(
+        first_paths, first_path_counts, first_child_positions
+    )
+    second_child_positions = np.ones(eligible_count, dtype=np.int64)
+    second_child_positions[first_pentagon_rows] = 2
+    _encode_short_paths(
+        second_paths, second_path_counts, second_child_positions
+    )
+    second_pentagon_rows = _encode_pentagons(
+        second_paths, second_path_counts, second_child_positions
+    )
+    if second_pentagon_rows.size:
+        # The other side is necessarily the three-node side and already
+        # occupies slot zero, so the pentagon starts at slot one.
+        child_counts[second_pentagon_rows] = 3
+
+    child_valid = (
+        np.arange(3, dtype=np.int64)[None, :] < child_counts[:, None]
+    )
+    if np.any(child_elements[child_valid] < 0):
+        raise ValueError("failed to construct every imprinted child element")
+
+    flat_children = child_elements[child_valid]
+    child_is_triangle = flat_children[:, 2] == flat_children[:, 3]
+    sorted_child_triangles = np.sort(flat_children[:, :3], axis=1)
+    valid_child_triangles = np.all(
+        np.diff(sorted_child_triangles, axis=1) != 0, axis=1
+    )
+    sorted_child_quads = np.sort(flat_children, axis=1)
+    valid_child_quads = np.all(
+        np.diff(sorted_child_quads, axis=1) != 0, axis=1
+    )
+    if np.any(child_is_triangle & ~valid_child_triangles) or np.any(
+        ~child_is_triangle & ~valid_child_quads
+    ):
+        raise ValueError("imprint produced duplicate child node indices")
+
+    child_points = proposed_nodes[flat_children, :2]
+    child_next_points = np.roll(child_points, -1, axis=1)
+    if np.any(child_is_triangle):
+        child_next_points[child_is_triangle, 2] = child_points[
+            child_is_triangle, 0
+        ]
+        child_next_points[child_is_triangle, 3] = child_points[
+            child_is_triangle, 3
+        ]
+    child_edges = child_next_points - child_points
+    child_valid_edges = np.ones((flat_children.shape[0], 4), dtype=np.bool_)
+    child_valid_edges[child_is_triangle, 3] = False
+    child_relative_points = child_points - child_points[:, :1]
+    child_relative_next = child_next_points - child_points[:, :1]
+    child_cross = (
+        child_relative_points[..., 0] * child_relative_next[..., 1]
+        - child_relative_points[..., 1] * child_relative_next[..., 0]
+    )
+    child_signed_areas = 0.5 * np.sum(
+        np.where(child_valid_edges, child_cross, 0.0), axis=1
+    )
+    child_scales = np.max(
+        np.where(
+            child_valid_edges,
+            np.hypot(child_edges[..., 0], child_edges[..., 1]),
+            0.0,
+        ),
+        axis=1,
+    )
+    child_area_tolerances = (
+        4096.0
+        * np.finfo(np.float64).eps
+        * np.maximum(child_scales, 1.0) ** 2
+    )
+
+    proposed_parent_points = proposed_nodes[eligible_elements, :2]
+    parent_next_points = np.roll(proposed_parent_points, -1, axis=1)
+    parent_previous_points = np.roll(proposed_parent_points, 1, axis=1)
+    eligible_triangle_rows = np.flatnonzero(eligible_counts == 3)
+    if eligible_triangle_rows.size:
+        parent_next_points[eligible_triangle_rows, 2] = (
+            proposed_parent_points[eligible_triangle_rows, 0]
+        )
+        parent_next_points[eligible_triangle_rows, 3] = (
+            proposed_parent_points[eligible_triangle_rows, 3]
+        )
+        parent_previous_points[eligible_triangle_rows, 0] = (
+            proposed_parent_points[eligible_triangle_rows, 2]
+        )
+    parent_relative_points = (
+        proposed_parent_points - proposed_parent_points[:, :1]
+    )
+    parent_relative_next = parent_next_points - proposed_parent_points[:, :1]
+    parent_cross = (
+        parent_relative_points[..., 0] * parent_relative_next[..., 1]
+        - parent_relative_points[..., 1] * parent_relative_next[..., 0]
+    )
+    parent_valid_edges = (
+        np.arange(4, dtype=np.int64)[None, :] < eligible_counts[:, None]
+    )
+    parent_signed_areas = 0.5 * np.sum(
+        np.where(parent_valid_edges, parent_cross, 0.0), axis=1
+    )
+    original_parent_signs = np.sign(
+        np.where(
+            eligible_counts == 3,
+            triangle_cross[eligible_selection_positions],
+            corner_cross[eligible_selection_positions, 0],
+        )
+    )
+    parent_corner_cross = (
+        (parent_next_points[..., 0] - proposed_parent_points[..., 0])
+        * (
+            parent_previous_points[..., 1]
+            - proposed_parent_points[..., 1]
+        )
+        - (parent_next_points[..., 1] - proposed_parent_points[..., 1])
+        * (
+            parent_previous_points[..., 0]
+            - proposed_parent_points[..., 0]
+        )
+    )
+    parent_geometry_tolerances = geometry_tolerances[
+        eligible_selection_positions
+    ]
+    if np.any(
+        parent_valid_edges
+        & (
+            parent_corner_cross * original_parent_signs[:, None]
+            <= parent_geometry_tolerances[:, None]
+        )
+    ) or np.any(
+        parent_signed_areas * original_parent_signs
+        <= parent_geometry_tolerances
+    ):
+        raise ValueError(
+            "snapping an intersection would invert or fold its parent element"
+        )
+    parent_signs = original_parent_signs
+    child_parent_rows = np.repeat(
+        np.arange(eligible_count, dtype=np.int64), child_counts
+    )
+    if np.any(
+        child_signed_areas * parent_signs[child_parent_rows]
+        <= child_area_tolerances
+    ):
+        raise ValueError("imprint produced a degenerate or inverted child")
+
+    child_previous_points = np.roll(child_points, 1, axis=1)
+    if np.any(child_is_triangle):
+        child_previous_points[child_is_triangle, 0] = child_points[
+            child_is_triangle, 2
+        ]
+    child_corner_cross = (
+        child_edges[..., 0]
+        * (child_previous_points[..., 1] - child_points[..., 1])
+        - child_edges[..., 1]
+        * (child_previous_points[..., 0] - child_points[..., 0])
+    )
+    if np.any(
+        child_valid_edges
+        & (
+            child_corner_cross * parent_signs[child_parent_rows, None]
+            <= child_area_tolerances[:, None]
+        )
+    ):
+        raise ValueError("imprint produced a folded child element")
+
+    child_absolute_areas = np.abs(child_signed_areas)
+    area_sums = np.zeros(eligible_count, dtype=np.float64)
+    np.add.at(area_sums, child_parent_rows, child_absolute_areas)
+    parent_absolute_areas = np.abs(parent_signed_areas)
+    area_tolerances = (
+        8192.0
+        * np.finfo(np.float64).eps
+        * np.maximum.reduce(
+            (
+                parent_absolute_areas,
+                element_scales[eligible_selection_positions] ** 2,
+                np.ones(eligible_count, dtype=np.float64),
+            )
+        )
+    )
+    if np.any(
+        np.abs(area_sums - parent_absolute_areas) > area_tolerances
+    ):
+        raise ValueError("imprinted child areas do not cover their parent")
+
+    proposed_elements = elements.astype(np.int64, copy=True)
+    proposed_elements[eligible_element_indices] = child_elements[:, 0]
+    appended_elements = child_elements[:, 1:].reshape(-1, 4)
+    appended_valid = child_valid[:, 1:].reshape(-1)
+    proposed_elements = np.concatenate(
+        (proposed_elements, appended_elements[appended_valid]), axis=0
+    )
+    mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
+    return mesh
+
+
 __all__ = [
     "get_circle_intersect",
     "get_inner_outer_areas",
     "get_intersect_nodes",
     "get_tri_quad",
+    "imprint_circle",
     "to_circle",
 ]

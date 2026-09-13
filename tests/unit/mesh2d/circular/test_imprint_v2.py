@@ -10,6 +10,7 @@ from mesher.mesh2d.circular.imprint_v2.utils import (
     get_inner_outer_areas,
     get_intersect_nodes,
     get_tri_quad,
+    imprint_circle,
     to_circle,
 )
 from mesher.mesh2d.circular.utils.pattern_segments import _PatternGuideSet
@@ -22,6 +23,7 @@ class FunctionSignatureTests(unittest.TestCase):
             get_inner_outer_areas,
             get_intersect_nodes,
             get_tri_quad,
+            imprint_circle,
             to_circle,
         )
 
@@ -31,6 +33,19 @@ class FunctionSignatureTests(unittest.TestCase):
                 parameter = tuple(parameters)[-1]
                 self.assertEqual(parameter.name, "indices")
                 self.assertIsNone(parameter.default)
+
+    def test_imprint_circle_has_the_requested_public_signature(self):
+        self.assertEqual(
+            tuple(inspect.signature(imprint_circle).parameters),
+            (
+                "mesh",
+                "center_x",
+                "center_y",
+                "radius",
+                "tolerance",
+                "indices",
+            ),
+        )
 
 
 class GetCircleIntersectTests(unittest.TestCase):
@@ -1010,6 +1025,352 @@ class ToCirclePerformanceTests(unittest.TestCase):
         elapsed = time.perf_counter() - started
 
         self.assertIs(result, mesh)
+        self.assertLess(elapsed, self.maximum_seconds)
+
+
+class ImprintCircleTests(unittest.TestCase):
+    @staticmethod
+    def _area(mesh, element):
+        count = 3 if element[2] == element[3] else 4
+        points = mesh.nodes[element[:count], :2]
+        following = np.roll(points, -1, axis=0)
+        return 0.5 * abs(
+            np.sum(
+                points[:, 0] * following[:, 1]
+                - points[:, 1] * following[:, 0]
+            )
+        )
+
+    @staticmethod
+    def _snapshot(mesh):
+        return (
+            mesh.nodes.copy(),
+            mesh.elements.copy(),
+            id(mesh.nodes),
+            id(mesh.elements),
+        )
+
+    def test_splits_triangle_into_triangle_and_quad_and_interpolates_z(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0, 0.0], [2.0, 0.0, 2.0], [0.0, 2.0, 4.0]],
+            elements=[[0, 1, 2, 2]],
+        )
+
+        result = imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+
+        self.assertIs(result, mesh)
+        self.assertEqual(mesh.node_count, 5)
+        self.assertEqual(mesh.element_count, 2)
+        np.testing.assert_allclose(
+            mesh.nodes[3:],
+            [[1.0, 0.0, 1.0], [0.0, 1.0, 2.0]],
+            atol=1.0e-14,
+        )
+        self.assertEqual(np.count_nonzero(mesh.element_types == 3), 1)
+        self.assertEqual(np.count_nonzero(mesh.element_types == 4), 1)
+        self.assertAlmostEqual(
+            sum(self._area(mesh, element) for element in mesh.elements),
+            2.0,
+        )
+
+    def test_preserves_clockwise_triangle_winding(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            elements=[[0, 2, 1, 1]],
+        )
+
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+
+        for element in mesh.elements:
+            count = 3 if element[2] == element[3] else 4
+            points = mesh.nodes[element[:count], :2]
+            following = np.roll(points, -1, axis=0)
+            signed_area = 0.5 * np.sum(
+                points[:, 0] * following[:, 1]
+                - points[:, 1] * following[:, 0]
+            )
+            self.assertLess(signed_area, 0.0)
+
+    def test_handles_a_large_offset_circle_without_area_cancellation(self):
+        center = np.array([1.0e12, -1.0e12])
+        nodes = np.array([[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]]) + center
+        mesh = Mesh2D(nodes=nodes, elements=[[0, 1, 2, 2]])
+
+        imprint_circle(mesh, center[0], center[1], 1.0, 0.0)
+
+        self.assertEqual(mesh.node_count, 5)
+        self.assertEqual(mesh.element_count, 2)
+        np.testing.assert_allclose(
+            np.hypot(
+                mesh.nodes[3:, 0] - center[0],
+                mesh.nodes[3:, 1] - center[1],
+            ),
+            1.0,
+        )
+
+    def test_splits_opposite_edge_quad_into_two_quads(self):
+        mesh = Mesh2D(
+            nodes=[
+                [0.8, -0.2, 0.0],
+                [1.2, -0.2, 1.0],
+                [1.2, 0.2, 2.0],
+                [0.8, 0.2, 3.0],
+            ],
+            elements=[[0, 1, 2, 3]],
+        )
+
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+
+        self.assertEqual(mesh.node_count, 6)
+        self.assertEqual(mesh.element_count, 2)
+        np.testing.assert_array_equal(mesh.element_types, [4, 4])
+        self.assertAlmostEqual(
+            sum(self._area(mesh, element) for element in mesh.elements),
+            0.16,
+        )
+
+    def test_splits_adjacent_edge_quad_into_two_triangles_and_quad(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            elements=[[0, 1, 2, 3]],
+        )
+
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+
+        self.assertEqual(mesh.node_count, 6)
+        self.assertEqual(mesh.element_count, 3)
+        self.assertEqual(np.count_nonzero(mesh.element_types == 3), 2)
+        self.assertEqual(np.count_nonzero(mesh.element_types == 4), 1)
+        self.assertAlmostEqual(
+            sum(self._area(mesh, element) for element in mesh.elements),
+            4.0,
+        )
+
+    def test_reuses_one_new_node_on_a_shared_selected_edge(self):
+        mesh = Mesh2D(
+            nodes=[
+                [0.8, -0.2, 0.0],
+                [1.2, -0.2, 1.0],
+                [0.8, 0.0, 2.0],
+                [1.2, 0.0, 3.0],
+                [0.8, 0.2, 4.0],
+                [1.2, 0.2, 5.0],
+            ],
+            elements=[[0, 1, 3, 2], [2, 3, 5, 4]],
+        )
+
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+
+        self.assertEqual(mesh.node_count, 9)
+        self.assertEqual(mesh.element_count, 4)
+        shared_hits = np.flatnonzero(
+            np.all(np.isclose(mesh.nodes[:, :2], [1.0, 0.0]), axis=1)
+        )
+        np.testing.assert_array_equal(shared_hits, [7])
+        self.assertEqual(np.count_nonzero(mesh.elements == 7), 4)
+
+    def test_tolerance_snaps_endpoint_and_preserves_its_z(self):
+        mesh = Mesh2D(
+            nodes=[
+                [0.95, 0.0, 7.0],
+                [2.0, 1.0, 8.0],
+                [0.0, 0.0, 9.0],
+            ],
+            elements=[[0, 1, 2, 2]],
+        )
+
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.1)
+
+        np.testing.assert_allclose(mesh.nodes[0], [1.0, 0.0, 7.0])
+        self.assertEqual(mesh.node_count, 4)
+        self.assertEqual(mesh.element_count, 2)
+
+    def test_selection_leaves_unselected_connectivity_but_shared_snap_moves(self):
+        mesh = Mesh2D(
+            nodes=[
+                [0.95, 0.0],
+                [2.0, 1.0],
+                [0.0, 0.0],
+                [2.0, -1.0],
+                [3.0, 0.0],
+            ],
+            elements=[[0, 1, 2, 2], [0, 3, 4, 4]],
+        )
+        unselected = mesh.elements[1].copy()
+
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.1, indices=[0])
+
+        np.testing.assert_array_equal(mesh.elements[1], unselected)
+        np.testing.assert_allclose(mesh.nodes[0, :2], [1.0, 0.0])
+        self.assertEqual(mesh.element_count, 3)
+
+    def test_other_intersection_topologies_are_no_ops(self):
+        cases = (
+            (
+                [[-2.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+                [[0, 1, 2, 2]],
+                "two intersections on one edge",
+            ),
+            (
+                [
+                    [-2.0, -0.2],
+                    [2.0, -0.2],
+                    [2.0, 0.2],
+                    [-2.0, 0.2],
+                ],
+                [[0, 1, 2, 3]],
+                "four intersections",
+            ),
+            (
+                [[1.0, -0.5], [2.0, -0.5], [2.0, 0.5], [1.0, 0.5]],
+                [[0, 1, 2, 3]],
+                "tangent",
+            ),
+            (
+                [[2.0, 2.0], [3.0, 2.0], [2.0, 3.0]],
+                [[0, 1, 2, 2]],
+                "no intersection",
+            ),
+        )
+        for nodes, elements, label in cases:
+            with self.subTest(label=label):
+                mesh = Mesh2D(nodes=nodes, elements=elements)
+                snapshot = self._snapshot(mesh)
+
+                imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+
+                np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+                np.testing.assert_array_equal(mesh.elements, snapshot[1])
+                self.assertEqual(id(mesh.nodes), snapshot[2])
+                self.assertEqual(id(mesh.elements), snapshot[3])
+
+    def test_close_intersections_merge_to_one_contact_without_snapping(self):
+        mesh = Mesh2D(
+            nodes=[[0.95, 0.0], [2.0, 0.1], [2.0, -0.1]],
+            elements=[[0, 1, 2, 2]],
+        )
+        snapshot = self._snapshot(mesh)
+
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.2)
+
+        np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+        np.testing.assert_array_equal(mesh.elements, snapshot[1])
+        self.assertEqual(id(mesh.nodes), snapshot[2])
+        self.assertEqual(id(mesh.elements), snapshot[3])
+
+    def test_is_idempotent(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            elements=[[0, 1, 2, 2]],
+        )
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+        snapshot = self._snapshot(mesh)
+
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+
+        np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+        np.testing.assert_array_equal(mesh.elements, snapshot[1])
+        self.assertEqual(id(mesh.nodes), snapshot[2])
+        self.assertEqual(id(mesh.elements), snapshot[3])
+
+    def test_invalid_inputs_raise_before_mutation(self):
+        with self.assertRaisesRegex(TypeError, "Mesh2D"):
+            imprint_circle(object(), 0.0, 0.0, 1.0, 0.0)
+
+        invalid_arguments = (
+            ((np.nan, 0.0, 1.0, 0.0), ValueError),
+            ((0.0, 0.0, 0.0, 0.0), ValueError),
+            ((0.0, 0.0, 1.0, -1.0), ValueError),
+        )
+        for arguments, error_type in invalid_arguments:
+            mesh = Mesh2D(
+                nodes=[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+                elements=[[0, 1, 2, 2]],
+            )
+            snapshot = self._snapshot(mesh)
+            with self.assertRaises(error_type):
+                imprint_circle(mesh, *arguments)
+            np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+            np.testing.assert_array_equal(mesh.elements, snapshot[1])
+
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            elements=[[0, 1, 2, 2]],
+        )
+        snapshot = self._snapshot(mesh)
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0, [0, 0])
+        np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+        np.testing.assert_array_equal(mesh.elements, snapshot[1])
+
+    def test_empty_mesh_and_empty_selection_are_no_ops(self):
+        empty = Mesh2D(
+            nodes=np.empty((0, 3)),
+            elements=np.empty((0, 4), dtype=np.int32),
+        )
+        self.assertIs(imprint_circle(empty, 0.0, 0.0, 1.0, 0.0), empty)
+
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+            elements=[[0, 1, 2, 2]],
+        )
+        snapshot = self._snapshot(mesh)
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0, indices=[])
+        np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+        np.testing.assert_array_equal(mesh.elements, snapshot[1])
+
+
+class ImprintCirclePerformanceTests(unittest.TestCase):
+    maximum_seconds = 5.0
+
+    def test_one_hundred_thousand_element_grid(self):
+        nx = 1000
+        ny = 100
+        x, y = np.meshgrid(
+            np.arange(nx + 1, dtype=np.float64),
+            np.arange(ny + 1, dtype=np.float64),
+        )
+        nodes = np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size)))
+        lower_left = np.arange(ny * (nx + 1), dtype=np.int32).reshape(
+            ny, nx + 1
+        )[:, :-1]
+        elements = np.column_stack(
+            (
+                lower_left.ravel(),
+                lower_left.ravel() + 1,
+                lower_left.ravel() + nx + 2,
+                lower_left.ravel() + nx + 1,
+            )
+        )
+        mesh = Mesh2D(nodes=nodes, elements=elements)
+
+        started = time.perf_counter()
+        imprint_circle(mesh, 500.0, 50.0, 30.0, 0.0)
+        elapsed = time.perf_counter() - started
+
+        self.assertGreater(mesh.element_count, 100_000)
+        self.assertLess(elapsed, self.maximum_seconds)
+
+    def test_one_hundred_thousand_elements_all_split(self):
+        count = 100_000
+        cell = np.array(
+            [
+                [0.8, -0.2, 0.0],
+                [1.2, -0.2, 1.0],
+                [1.2, 0.2, 2.0],
+                [0.8, 0.2, 3.0],
+            ]
+        )
+        nodes = np.tile(cell, (count, 1))
+        elements = np.arange(count * 4, dtype=np.int32).reshape(count, 4)
+        mesh = Mesh2D(nodes=nodes, elements=elements)
+
+        started = time.perf_counter()
+        imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0)
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(mesh.node_count, 600_000)
+        self.assertEqual(mesh.element_count, 200_000)
         self.assertLess(elapsed, self.maximum_seconds)
 
 
