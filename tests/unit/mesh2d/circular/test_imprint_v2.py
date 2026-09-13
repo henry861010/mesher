@@ -1,18 +1,36 @@
+import inspect
 import time
 import unittest
 
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.circular.imprint_v2.main import (
-    _find_intersect_element_and_sort,
-    _get_areas,
-    _intersect_nodes,
-    _tri_quad,
+from mesher.mesh2d.circular.imprint_v2.utils import (
+    get_circle_intersect,
+    get_inner_outer_areas,
+    get_intersect_nodes,
+    get_tri_quad,
 )
 
 
-class FindIntersectElementAndSortTests(unittest.TestCase):
+class FunctionSignatureTests(unittest.TestCase):
+    def test_all_functions_end_with_optional_indices_parameter(self):
+        functions = (
+            get_circle_intersect,
+            get_inner_outer_areas,
+            get_intersect_nodes,
+            get_tri_quad,
+        )
+
+        for function in functions:
+            with self.subTest(function=function.__name__):
+                parameters = inspect.signature(function).parameters.values()
+                parameter = tuple(parameters)[-1]
+                self.assertEqual(parameter.name, "indices")
+                self.assertIsNone(parameter.default)
+
+
+class GetCircleIntersectTests(unittest.TestCase):
     @staticmethod
     def _mesh_from_polygons(polygons):
         nodes = []
@@ -37,7 +55,7 @@ class FindIntersectElementAndSortTests(unittest.TestCase):
             [south, west_triangle, east, north]
         )
 
-        result = _find_intersect_element_and_sort(mesh, 0.0, 0.0, 1.0)
+        result = get_circle_intersect(mesh, 0.0, 0.0, 1.0)
 
         np.testing.assert_array_equal(result, [2, 3, 1, 0])
         self.assertEqual(result.dtype, np.dtype(np.int64))
@@ -47,7 +65,7 @@ class FindIntersectElementAndSortTests(unittest.TestCase):
         vertex_triangle = [[0.0, 1.0], [2.0, 2.0], [-2.0, 2.0]]
         mesh = self._mesh_from_polygons([vertex_triangle, tangent_quad])
 
-        result = _find_intersect_element_and_sort(mesh, 0.0, 0.0, 1.0)
+        result = get_circle_intersect(mesh, 0.0, 0.0, 1.0)
 
         np.testing.assert_array_equal(result, [1, 0])
 
@@ -69,7 +87,7 @@ class FindIntersectElementAndSortTests(unittest.TestCase):
             ]
         )
 
-        result = _find_intersect_element_and_sort(mesh, 0.0, 0.0, 1.0)
+        result = get_circle_intersect(mesh, 0.0, 0.0, 1.0)
 
         # The one-angle key is the shortest common prefix.  The two 60-degree
         # keys then tie by their original row indices, before the 90-degree key.
@@ -89,7 +107,7 @@ class FindIntersectElementAndSortTests(unittest.TestCase):
             ],
         )
 
-        result = _find_intersect_element_and_sort(mesh, 0.0, 0.0, 1.0)
+        result = get_circle_intersect(mesh, 0.0, 0.0, 1.0)
 
         # Both rows share the complete chord from 0 to 90 degrees.  Each row
         # remains present and their identical keys are resolved by row index.
@@ -101,9 +119,26 @@ class FindIntersectElementAndSortTests(unittest.TestCase):
         containing = [[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
         mesh = self._mesh_from_polygons([inside, outside, containing])
 
-        result = _find_intersect_element_and_sort(mesh, 0.0, 0.0, 1.0)
+        result = get_circle_intersect(mesh, 0.0, 0.0, 1.0)
 
         np.testing.assert_array_equal(result, np.empty(0, dtype=np.int64))
+
+    def test_only_processes_selected_elements_and_returns_global_indices(self):
+        east = [[0.5, -0.2], [1.5, -0.2], [1.5, 0.2], [0.5, 0.2]]
+        north = [[-0.2, 0.5], [0.2, 0.5], [0.2, 1.5], [-0.2, 1.5]]
+        west = [[-1.5, -0.2], [-0.5, -0.2], [-0.5, 0.2], [-1.5, 0.2]]
+        mesh = self._mesh_from_polygons([east, north, west])
+
+        result = get_circle_intersect(
+            mesh, 0.0, 0.0, 1.0, indices=[2, 0]
+        )
+
+        np.testing.assert_array_equal(result, [0, 2])
+
+        empty = get_circle_intersect(
+            mesh, 0.0, 0.0, 1.0, indices=[]
+        )
+        np.testing.assert_array_equal(empty, np.empty(0, dtype=np.int64))
 
     def test_handles_offset_center_seam_and_ignores_z(self):
         center = np.array([10.0, -4.0])
@@ -118,7 +153,7 @@ class FindIntersectElementAndSortTests(unittest.TestCase):
         )
         mesh.nodes[:, 2] = np.linspace(-1.0e9, 1.0e9, mesh.node_count)
 
-        result = _find_intersect_element_and_sort(
+        result = get_circle_intersect(
             mesh, center[0], center[1], 1.0
         )
 
@@ -129,15 +164,15 @@ class FindIntersectElementAndSortTests(unittest.TestCase):
             [[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]]]
         )
         with self.assertRaisesRegex(TypeError, "Mesh2D"):
-            _find_intersect_element_and_sort(object(), 0.0, 0.0, 1.0)
+            get_circle_intersect(object(), 0.0, 0.0, 1.0)
         with self.assertRaisesRegex(ValueError, "positive"):
-            _find_intersect_element_and_sort(mesh, 0.0, 0.0, 0.0)
+            get_circle_intersect(mesh, 0.0, 0.0, 0.0)
         with self.assertRaisesRegex(ValueError, "finite"):
-            _find_intersect_element_and_sort(mesh, np.nan, 0.0, 1.0)
+            get_circle_intersect(mesh, np.nan, 0.0, 1.0)
 
         mesh.nodes[0, 0] = np.inf
         with self.assertRaisesRegex(ValueError, "finite XY"):
-            _find_intersect_element_and_sort(mesh, 0.0, 0.0, 1.0)
+            get_circle_intersect(mesh, 0.0, 0.0, 1.0)
 
     def test_empty_mesh_returns_empty_int64_array(self):
         mesh = Mesh2D(
@@ -145,12 +180,12 @@ class FindIntersectElementAndSortTests(unittest.TestCase):
             elements=np.empty((0, 4), dtype=np.int32),
         )
 
-        result = _find_intersect_element_and_sort(mesh, 0.0, 0.0, 1.0)
+        result = get_circle_intersect(mesh, 0.0, 0.0, 1.0)
 
         np.testing.assert_array_equal(result, np.empty(0, dtype=np.int64))
 
 
-class FindIntersectElementAndSortPerformanceTests(unittest.TestCase):
+class GetCircleIntersectPerformanceTests(unittest.TestCase):
     maximum_seconds = 10.0
 
     def test_one_hundred_thousand_elements_with_effective_broad_phase(self):
@@ -175,7 +210,7 @@ class FindIntersectElementAndSortPerformanceTests(unittest.TestCase):
         mesh = Mesh2D(nodes=nodes, elements=elements)
 
         started = time.perf_counter()
-        result = _find_intersect_element_and_sort(mesh, 500.0, 50.0, 30.0)
+        result = get_circle_intersect(mesh, 500.0, 50.0, 30.0)
         elapsed = time.perf_counter() - started
 
         self.assertGreater(result.size, 0)
@@ -196,7 +231,7 @@ class FindIntersectElementAndSortPerformanceTests(unittest.TestCase):
         mesh = Mesh2D(nodes=nodes, elements=elements)
 
         started = time.perf_counter()
-        result = _find_intersect_element_and_sort(mesh, 0.0, 0.0, 2.2)
+        result = get_circle_intersect(mesh, 0.0, 0.0, 2.2)
         elapsed = time.perf_counter() - started
 
         np.testing.assert_array_equal(
@@ -205,7 +240,7 @@ class FindIntersectElementAndSortPerformanceTests(unittest.TestCase):
         self.assertLess(elapsed, self.maximum_seconds)
 
 
-class GetAreasTests(unittest.TestCase):
+class GetInnerOuterAreasTests(unittest.TestCase):
     @staticmethod
     def _mesh_from_polygons(polygons):
         nodes = []
@@ -238,7 +273,7 @@ class GetAreasTests(unittest.TestCase):
             [inside_triangle, outside_quad, partial_triangle, containing_quad]
         )
 
-        inner, outer = _get_areas(mesh, 0.0, 0.0, 1.0, [2, 0, 3, 1])
+        inner, outer = get_inner_outer_areas(mesh, 0.0, 0.0, 1.0, [2, 0, 3, 1])
 
         np.testing.assert_allclose(
             inner,
@@ -279,7 +314,7 @@ class GetAreasTests(unittest.TestCase):
         )
         mesh.nodes[:, 2] = np.linspace(-1.0e12, 1.0e12, mesh.node_count)
 
-        inner, outer = _get_areas(
+        inner, outer = get_inner_outer_areas(
             mesh, center[0], center[1], 1.0, np.array([0, 1])
         )
 
@@ -291,36 +326,52 @@ class GetAreasTests(unittest.TestCase):
             [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
         )
 
-        inner, outer = _get_areas(
+        inner, outer = get_inner_outer_areas(
             mesh, 0.0, 0.0, 1.0, np.empty(0, dtype=np.int32)
         )
 
         np.testing.assert_array_equal(inner, np.empty(0, dtype=np.float64))
         np.testing.assert_array_equal(outer, np.empty(0, dtype=np.float64))
 
+    def test_none_processes_all_elements_in_mesh_order(self):
+        mesh = self._mesh_from_polygons(
+            [
+                [[0.0, 0.0], [0.5, 0.0], [0.0, 0.5]],
+                [[2.0, 2.0], [3.0, 2.0], [3.0, 3.0], [2.0, 3.0]],
+            ]
+        )
+
+        default_inner, default_outer = get_inner_outer_areas(mesh, 0.0, 0.0, 1.0)
+        explicit_inner, explicit_outer = get_inner_outer_areas(
+            mesh, 0.0, 0.0, 1.0, indices=[0, 1]
+        )
+
+        np.testing.assert_array_equal(default_inner, explicit_inner)
+        np.testing.assert_array_equal(default_outer, explicit_outer)
+
     def test_validates_mesh_circle_and_indices(self):
         mesh = self._mesh_from_polygons(
             [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
         )
         with self.assertRaisesRegex(TypeError, "Mesh2D"):
-            _get_areas(object(), 0.0, 0.0, 1.0, [0])
+            get_inner_outer_areas(object(), 0.0, 0.0, 1.0, [0])
         with self.assertRaisesRegex(ValueError, "positive"):
-            _get_areas(mesh, 0.0, 0.0, 0.0, [0])
+            get_inner_outer_areas(mesh, 0.0, 0.0, 0.0, [0])
         with self.assertRaisesRegex(ValueError, "finite"):
-            _get_areas(mesh, np.nan, 0.0, 1.0, [0])
+            get_inner_outer_areas(mesh, np.nan, 0.0, 1.0, [0])
         with self.assertRaisesRegex(ValueError, "one-dimensional"):
-            _get_areas(mesh, 0.0, 0.0, 1.0, [[0]])
+            get_inner_outer_areas(mesh, 0.0, 0.0, 1.0, [[0]])
         with self.assertRaisesRegex(TypeError, "integers"):
-            _get_areas(mesh, 0.0, 0.0, 1.0, [0.0])
+            get_inner_outer_areas(mesh, 0.0, 0.0, 1.0, [0.0])
         with self.assertRaisesRegex(TypeError, "integers"):
-            _get_areas(mesh, 0.0, 0.0, 1.0, np.array([True]))
+            get_inner_outer_areas(mesh, 0.0, 0.0, 1.0, np.array([True]))
         with self.assertRaisesRegex(ValueError, "duplicates"):
-            _get_areas(mesh, 0.0, 0.0, 1.0, [0, 0])
+            get_inner_outer_areas(mesh, 0.0, 0.0, 1.0, [0, 0])
         with self.assertRaisesRegex(IndexError, "out of range"):
-            _get_areas(mesh, 0.0, 0.0, 1.0, [1])
+            get_inner_outer_areas(mesh, 0.0, 0.0, 1.0, [1])
 
 
-class GetAreasPerformanceTests(unittest.TestCase):
+class GetInnerOuterAreasPerformanceTests(unittest.TestCase):
     maximum_seconds = 5.0
 
     def test_one_hundred_thousand_selected_elements(self):
@@ -346,7 +397,7 @@ class GetAreasPerformanceTests(unittest.TestCase):
         indices = np.arange(mesh.element_count, dtype=np.int64)
 
         started = time.perf_counter()
-        inner, outer = _get_areas(mesh, 500.0, 50.0, 30.0, indices)
+        inner, outer = get_inner_outer_areas(mesh, 500.0, 50.0, 30.0, indices)
         elapsed = time.perf_counter() - started
 
         np.testing.assert_allclose(np.sum(inner), np.pi * 30.0**2)
@@ -354,7 +405,7 @@ class GetAreasPerformanceTests(unittest.TestCase):
         self.assertLess(elapsed, self.maximum_seconds)
 
 
-class IntersectNodesTests(unittest.TestCase):
+class GetIntersectNodesTests(unittest.TestCase):
     @staticmethod
     def _mesh_from_polygons(polygons):
         nodes = []
@@ -392,7 +443,7 @@ class IntersectNodesTests(unittest.TestCase):
             [no_intersection, two_intersections, four_intersections]
         )
 
-        counts, nodes = _intersect_nodes(mesh, 0.0, 0.0, 1.0)
+        counts, nodes = get_intersect_nodes(mesh, 0.0, 0.0, 1.0)
 
         x = np.sqrt(1.0 - 0.2**2)
         np.testing.assert_array_equal(counts, [0, 2, 4])
@@ -416,7 +467,7 @@ class IntersectNodesTests(unittest.TestCase):
             [[[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]]
         )
 
-        counts, nodes = _intersect_nodes(mesh, 0.0, 0.0, 1.1)
+        counts, nodes = get_intersect_nodes(mesh, 0.0, 0.0, 1.1)
 
         offset = np.sqrt(1.1**2 - 1.0)
         expected = [
@@ -442,7 +493,7 @@ class IntersectNodesTests(unittest.TestCase):
         vertex_triangle = [[1.0, 0.0], [2.0, 1.0], [2.0, -1.0]]
         mesh = self._mesh_from_polygons([tangent_quad, vertex_triangle])
 
-        counts, nodes = _intersect_nodes(mesh, 0.0, 0.0, 1.0)
+        counts, nodes = get_intersect_nodes(mesh, 0.0, 0.0, 1.0)
 
         np.testing.assert_array_equal(counts, [1, 1])
         np.testing.assert_allclose(nodes[0, 0], [1.0, 0.0], atol=1.0e-14)
@@ -461,7 +512,7 @@ class IntersectNodesTests(unittest.TestCase):
         mesh = self._mesh_from_polygons([polygon])
         mesh.nodes[:, 2] = np.linspace(-1.0e12, 1.0e12, mesh.node_count)
 
-        counts, nodes = _intersect_nodes(
+        counts, nodes = get_intersect_nodes(
             mesh, center[0], center[1], 1.0
         )
 
@@ -477,11 +528,52 @@ class IntersectNodesTests(unittest.TestCase):
             elements=np.empty((0, 4), dtype=np.int32),
         )
 
-        counts, nodes = _intersect_nodes(mesh, 0.0, 0.0, 1.0)
+        counts, nodes = get_intersect_nodes(mesh, 0.0, 0.0, 1.0)
 
         np.testing.assert_array_equal(counts, np.empty(0, dtype=np.int64))
         np.testing.assert_array_equal(
             nodes, np.empty((0, 8, 2), dtype=np.float64)
+        )
+
+    def test_returns_only_selected_elements_in_requested_order(self):
+        no_intersection = [
+            [-0.2, -0.2],
+            [0.2, -0.2],
+            [0.2, 0.2],
+            [-0.2, 0.2],
+        ]
+        two_intersections = [
+            [0.0, -0.2],
+            [2.0, -0.2],
+            [2.0, 0.2],
+            [0.0, 0.2],
+        ]
+        four_intersections = [
+            [-2.0, -0.2],
+            [2.0, -0.2],
+            [2.0, 0.2],
+            [-2.0, 0.2],
+        ]
+        mesh = self._mesh_from_polygons(
+            [no_intersection, two_intersections, four_intersections]
+        )
+
+        counts, nodes = get_intersect_nodes(
+            mesh, 0.0, 0.0, 1.0, indices=[2, 0]
+        )
+
+        np.testing.assert_array_equal(counts, [4, 0])
+        self.assertEqual(nodes.shape, (2, 8, 2))
+        np.testing.assert_array_equal(nodes[1], np.zeros((8, 2)))
+
+        empty_counts, empty_nodes = get_intersect_nodes(
+            mesh, 0.0, 0.0, 1.0, indices=[]
+        )
+        np.testing.assert_array_equal(
+            empty_counts, np.empty(0, dtype=np.int64)
+        )
+        np.testing.assert_array_equal(
+            empty_nodes, np.empty((0, 8, 2), dtype=np.float64)
         )
 
     def test_validates_mesh_circle_and_mutated_mesh_data(self):
@@ -489,18 +581,18 @@ class IntersectNodesTests(unittest.TestCase):
             [[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]]]
         )
         with self.assertRaisesRegex(TypeError, "Mesh2D"):
-            _intersect_nodes(object(), 0.0, 0.0, 1.0)
+            get_intersect_nodes(object(), 0.0, 0.0, 1.0)
         with self.assertRaisesRegex(ValueError, "positive"):
-            _intersect_nodes(mesh, 0.0, 0.0, 0.0)
+            get_intersect_nodes(mesh, 0.0, 0.0, 0.0)
         with self.assertRaisesRegex(ValueError, "finite"):
-            _intersect_nodes(mesh, np.nan, 0.0, 1.0)
+            get_intersect_nodes(mesh, np.nan, 0.0, 1.0)
 
         mesh.nodes[0, 0] = np.inf
         with self.assertRaisesRegex(ValueError, "finite XY"):
-            _intersect_nodes(mesh, 0.0, 0.0, 1.0)
+            get_intersect_nodes(mesh, 0.0, 0.0, 1.0)
 
 
-class TriQuadTests(unittest.TestCase):
+class GetTriQuadTests(unittest.TestCase):
     @staticmethod
     def _mesh(elements):
         elements = np.asarray(elements, dtype=np.int32).reshape(-1, 4)
@@ -520,7 +612,7 @@ class TriQuadTests(unittest.TestCase):
             ]
         )
 
-        triangle_indices, quadrilateral_indices = _tri_quad(mesh)
+        triangle_indices, quadrilateral_indices = get_tri_quad(mesh)
 
         np.testing.assert_array_equal(triangle_indices, [0, 2])
         np.testing.assert_array_equal(quadrilateral_indices, [1, 3])
@@ -536,7 +628,7 @@ class TriQuadTests(unittest.TestCase):
             with self.subTest(elements=elements):
                 mesh = self._mesh(elements)
 
-                triangle_indices, quadrilateral_indices = _tri_quad(mesh)
+                triangle_indices, quadrilateral_indices = get_tri_quad(mesh)
 
                 np.testing.assert_array_equal(
                     triangle_indices, expected_triangles
@@ -548,7 +640,7 @@ class TriQuadTests(unittest.TestCase):
     def test_empty_mesh_returns_empty_int64_arrays(self):
         mesh = self._mesh([])
 
-        triangle_indices, quadrilateral_indices = _tri_quad(mesh)
+        triangle_indices, quadrilateral_indices = get_tri_quad(mesh)
 
         np.testing.assert_array_equal(
             triangle_indices, np.empty(0, dtype=np.int64)
@@ -565,14 +657,31 @@ class TriQuadTests(unittest.TestCase):
             ]
         )
 
-        triangle_indices, quadrilateral_indices = _tri_quad(mesh)
+        triangle_indices, quadrilateral_indices = get_tri_quad(mesh)
 
         np.testing.assert_array_equal(triangle_indices, [0])
         np.testing.assert_array_equal(quadrilateral_indices, [1])
 
+    def test_only_classifies_selected_elements_in_requested_order(self):
+        mesh = self._mesh(
+            [
+                [0, 1, 2, 2],
+                [2, 3, 4, 5],
+                [5, 6, 7, 7],
+                [7, 8, 9, 10],
+            ]
+        )
+
+        triangle_indices, quadrilateral_indices = get_tri_quad(
+            mesh, indices=[3, 2, 0]
+        )
+
+        np.testing.assert_array_equal(triangle_indices, [2, 0])
+        np.testing.assert_array_equal(quadrilateral_indices, [3])
+
     def test_rejects_non_mesh_input(self):
         with self.assertRaisesRegex(TypeError, "Mesh2D"):
-            _tri_quad(object())
+            get_tri_quad(object())
 
 
 if __name__ == "__main__":
