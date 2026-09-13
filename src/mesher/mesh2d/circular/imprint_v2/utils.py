@@ -1,16 +1,20 @@
 """Vectorized utilities for querying and preparing circular 2D meshes.
 
-The module has three groups of helpers:
+The module has four groups of helpers:
 
 * ``_normalize_indices`` gives every public query the same element-selection
   rules.
 * The ``get_*`` functions inspect element topology or element/circle geometry
   without changing the mesh.
-* ``to_circle`` moves existing nodes onto a circle.  Its two private helpers
-  precompute guide/circle roots and resolve sparse node/guide constraints.
+* ``to_circle`` moves existing nodes onto a circle, then normalizes orientable
+  element connectivity counter-clockwise.  Its private helpers prepare and
+  commit that update.
+* ``remove_redundant_element`` equivalences nearby nodes, repairs recoverable
+  cells, removes unusable cells, and compacts the mesh.
 
 All geometric calculations use node X and Y coordinates.  A node's Z value is
-ignored by read-only queries and preserved by ``to_circle``.
+ignored by read-only queries, preserved by ``to_circle``, and inherited from
+the lowest-index representative during node equivalence.
 """
 
 import numpy as np
@@ -1413,6 +1417,89 @@ def _merge_close_circle_targets(
     return merged_xy
 
 
+def _counter_clockwise_elements(
+    nodes: NDArray[np.float64],
+    elements: NDArray[np.integer],
+) -> NDArray[np.integer]:
+    """Return connectivity with every orientable row wound counter-clockwise.
+
+    Signed areas are evaluated after translating each element to its first
+    node and scaling its local coordinates.  Scaling the original coordinates
+    first is used only when the translation itself overflows.  Degenerate or
+    otherwise indeterminate rows are deliberately left unchanged.
+    """
+    if elements.shape[0] == 0:
+        return elements
+
+    points = nodes[elements, :2]
+    with np.errstate(over="ignore", invalid="ignore"):
+        relative_points = points - points[:, :1]
+
+    finite_translation = np.all(np.isfinite(relative_points), axis=(1, 2))
+    finite_rows = np.flatnonzero(finite_translation)
+    if finite_rows.size:
+        local_scales = np.max(
+            np.abs(relative_points[finite_rows]),
+            axis=(1, 2),
+        )
+        nonzero_scale = local_scales > 0.0
+        scaled_rows = finite_rows[nonzero_scale]
+        relative_points[scaled_rows] /= local_scales[nonzero_scale, None, None]
+
+    overflow_rows = np.flatnonzero(~finite_translation)
+    if overflow_rows.size:
+        overflow_points = points[overflow_rows]
+        coordinate_scales = np.max(
+            np.abs(overflow_points),
+            axis=(1, 2),
+        )
+        scaled_points = overflow_points / coordinate_scales[:, None, None]
+        relative_points[overflow_rows] = (
+            scaled_points - scaled_points[:, :1]
+        )
+
+    following_points = np.roll(relative_points, -1, axis=1)
+    with np.errstate(over="ignore", invalid="ignore"):
+        signed_twice_areas = np.sum(
+            relative_points[..., 0] * following_points[..., 1]
+            - relative_points[..., 1] * following_points[..., 0],
+            axis=1,
+        )
+    clockwise = np.isfinite(signed_twice_areas) & (signed_twice_areas < 0.0)
+    if not np.any(clockwise):
+        return elements
+
+    normalized = elements.copy()
+    is_triangle = elements[:, 2] == elements[:, 3]
+    clockwise_triangles = clockwise & is_triangle
+    clockwise_quads = clockwise & ~is_triangle
+    normalized[clockwise_triangles] = elements[clockwise_triangles][
+        :, [0, 2, 1, 1]
+    ]
+    normalized[clockwise_quads] = elements[clockwise_quads][:, [0, 3, 2, 1]]
+    return normalized
+
+
+def _commit_circle_update(
+    mesh: Mesh2D,
+    proposed_nodes: NDArray[np.float64],
+    elements: NDArray[np.integer],
+) -> Mesh2D:
+    """Commit proposed nodes and globally normalized connectivity atomically."""
+    proposed_elements = _counter_clockwise_elements(
+        proposed_nodes,
+        elements,
+    )
+    if np.array_equal(proposed_nodes, mesh.nodes) and np.array_equal(
+        proposed_elements,
+        mesh.elements,
+    ):
+        return mesh
+
+    mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
+    return mesh
+
+
 def to_circle(
     mesh: Mesh2D,
     center_x: float,
@@ -1436,10 +1523,12 @@ def to_circle(
     remain fixed and take precedence over nearby unconstrained targets.
 
     When ``indices`` is provided it contains element-row indices, and only
-    nodes referenced by those elements are considered.  ``None`` considers
-    every mesh node, including unreferenced nodes.  Node Z coordinates and all
-    element connectivity are preserved.  Validation and target construction
-    finish before the mesh is mutated.
+    nodes referenced by those elements are considered for projection.  ``None``
+    considers every mesh node, including unreferenced nodes.  After every valid
+    call, all orientable elements in the mesh are normalized counter-clockwise,
+    including elements outside ``indices``.  A padded Tri3 remains in canonical
+    ``[n0, n1, n2, n2]`` form.  Node Z coordinates are preserved, and validation
+    and target construction finish before the mesh is mutated.
 
     Args:
         mesh: Mesh whose existing nodes may be moved in the XY plane.
@@ -1453,7 +1542,7 @@ def to_circle(
         indices: Optional unique one-dimensional element-row indices.
 
     Returns:
-        The same ``mesh`` instance after an atomic batch coordinate update.
+        The same ``mesh`` instance after an atomic mesh update.
 
     Raises:
         TypeError: If ``mesh`` or ``indices`` has an invalid type.
@@ -1462,7 +1551,7 @@ def to_circle(
         IndexError: If an element index is out of range.
 
     Notes:
-        The implementation is organized into five stages that can be followed
+        The implementation is organized into seven stages that can be followed
         directly in the code below:
 
         1. Validate all scalar, mesh, selection, and guide inputs.
@@ -1474,13 +1563,16 @@ def to_circle(
            constraints leave that node unchanged.
         5. Merge nearby movable targets in a clockwise circular sweep while
            preserving guide anchors.
-        6. Validate every proposed target, then perform one XY assignment.
+        6. Validate every proposed target.
+        7. Normalize all orientable element rows counter-clockwise and commit
+           the proposed nodes and connectivity together.
 
         Nodes exactly at the circle center cannot be projected radially and
         remain unchanged.  Per-node guide conflicts are normal outcomes, not
-        exceptions.  The merge changes coordinates only, so it can create
-        zero-length element edges.  No element-quality, topology, or inversion
-        check is performed.
+        exceptions.  The merge can create zero-length element edges.  Elements
+        with zero or indeterminate signed area are retained without reordering;
+        no element-quality, topology, deletion, or deduplication pass is
+        performed.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -1564,12 +1656,12 @@ def to_circle(
     else:
         element_indices = _normalize_indices(elements.shape[0], indices)
         if element_indices.size == 0:
-            return mesh
+            return _commit_circle_update(mesh, float_nodes, elements)
         selected_node_indices = np.unique(
             elements[element_indices].reshape(-1)
         ).astype(np.int64, copy=False)
     if selected_node_indices.size == 0:
-        return mesh
+        return _commit_circle_update(mesh, float_nodes, elements)
 
     selected_xy = float_nodes[selected_node_indices, :2]
     with np.errstate(over="ignore", invalid="ignore"):
@@ -1583,7 +1675,7 @@ def to_circle(
     candidate_selection = radial_residuals <= candidate_threshold
     candidate_positions = np.flatnonzero(candidate_selection)
     if candidate_positions.size == 0:
-        return mesh
+        return _commit_circle_update(mesh, float_nodes, elements)
 
     candidate_node_indices = selected_node_indices[candidate_positions]
     candidate_xy = selected_xy[candidate_positions]
@@ -1678,7 +1770,7 @@ def to_circle(
     radial_movable = (~constrained) & (candidate_distances > 0.0)
     movable = radial_movable | guided_movable
     if not np.any(movable):
-        return mesh
+        return _commit_circle_update(mesh, float_nodes, elements)
 
     target_xy = candidate_xy.copy()
     radial_positions = np.flatnonzero(radial_movable)
@@ -1717,8 +1809,9 @@ def to_circle(
     ):
         raise ValueError("a projected node is not on the target circle")
 
-    mesh.nodes[candidate_node_indices[movable], :2] = target_xy[movable]
-    return mesh
+    proposed_nodes = float_nodes.copy()
+    proposed_nodes[candidate_node_indices[movable], :2] = target_xy[movable]
+    return _commit_circle_update(mesh, proposed_nodes, elements)
 
 
 def imprint_circle(
@@ -2854,17 +2947,459 @@ def imprint_circle(
     return mesh
 
 
-def normalize_mesh(
+def remove_redundant_element(
     mesh: Mesh2D,
     tolerance: float,
 ) -> Mesh2D:
+    """Remove unusable elements and equivalence coincident mesh nodes.
+
+    Structurally valid, finite, positive-area elements first contribute nodes
+    to a global XY equivalence pass.  Equivalence is transitive, and the
+    lowest original node index supplies the complete XYZ coordinate for each
+    group.  After remapping, a Quad4 collapsed along one edge is retained as a
+    Tri3, while a simple concave Quad4 is split into two positive-area Tri3
+    elements.  Elements that cannot be repaired or whose XY area is less than
+    or equal to ``tolerance`` are discarded.
+
+    Unreferenced nodes are removed and connectivity is compacted.  The update
+    is committed atomically, and the same mesh object is returned.
+
+    Args:
+        mesh: Mesh to clean in place.
+        tolerance: Non-negative area cutoff and XY node-equivalence distance.
+
+    Returns:
+        The same :class:`Mesh2D` instance after cleanup.
+
+    Raises:
+        TypeError: If ``mesh`` is not a :class:`Mesh2D`.
+        ValueError: If ``tolerance`` or the mesh array shapes and dtypes are
+            invalid.
+    """
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
+
+    if isinstance(tolerance, (bool, np.bool_)):
+        raise ValueError("tolerance must be a finite non-negative number")
+    try:
+        tolerance = float(tolerance)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            "tolerance must be a finite non-negative number"
+        ) from error
+    if not np.isfinite(tolerance) or tolerance < 0.0:
+        raise ValueError("tolerance must be a finite non-negative number")
+
+    nodes = np.asarray(mesh.nodes)
+    elements = np.asarray(mesh.elements)
+    if nodes.ndim != 2 or nodes.shape[1] not in (2, 3):
+        raise ValueError("nodes must have shape (N, 2) or (N, 3)")
+    if (
+        not np.issubdtype(nodes.dtype, np.number)
+        or np.issubdtype(nodes.dtype, np.bool_)
+        or np.issubdtype(nodes.dtype, np.complexfloating)
+    ):
+        raise ValueError("nodes must have a real numeric dtype")
+    if elements.ndim != 2 or elements.shape[1] != 4:
+        raise ValueError("elements must have shape (M, 4)")
+    if (
+        not np.issubdtype(elements.dtype, np.integer)
+        or np.issubdtype(elements.dtype, np.bool_)
+    ):
+        raise ValueError("elements must have an integer dtype")
+
+    try:
+        working_nodes = nodes.astype(np.float64, copy=False)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("nodes must be representable as float64") from error
+    working_elements = elements.astype(np.int64, copy=False)
+
+    retained = _candidate_element_mask(
+        working_nodes,
+        working_elements,
+        tolerance,
+    )
+    candidate_elements = working_elements[retained]
+
+    if candidate_elements.size:
+        candidate_is_triangle = (
+            candidate_elements[:, 2] == candidate_elements[:, 3]
+        )
+        referenced_nodes = np.unique(candidate_elements)
+        old_to_representative = _equivalent_node_mapping(
+            working_nodes,
+            referenced_nodes,
+            tolerance,
+        )
+        remapped_elements = old_to_representative[candidate_elements]
+        proposed_elements = _repair_elements(
+            working_nodes,
+            remapped_elements,
+            candidate_is_triangle,
+            tolerance,
+        )
+    else:
+        proposed_elements = np.empty((0, 4), dtype=np.int64)
+
+    if proposed_elements.size:
+        referenced_nodes = np.unique(proposed_elements)
+        old_to_new = np.full(working_nodes.shape[0], -1, dtype=np.int64)
+        old_to_new[referenced_nodes] = np.arange(
+            referenced_nodes.size,
+            dtype=np.int64,
+        )
+        proposed_nodes = working_nodes[referenced_nodes]
+        proposed_elements = old_to_new[proposed_elements]
+    else:
+        proposed_nodes = np.empty(
+            (0, working_nodes.shape[1]),
+            dtype=np.float64,
+        )
+        proposed_elements = np.empty((0, 4), dtype=np.int64)
+
+    nodes_unchanged = np.array_equal(
+        proposed_nodes,
+        nodes,
+        equal_nan=True,
+    )
+    elements_unchanged = np.array_equal(proposed_elements, elements)
+    if nodes_unchanged and elements_unchanged:
+        return mesh
+
+    mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
+    return mesh
 
 
-def trim_element(
-    mesh: Mesh2D,
+def _candidate_element_mask(
+    nodes: NDArray[np.float64],
+    elements: NDArray[np.int64],
+    area_tolerance: float,
+) -> NDArray[np.bool_]:
+    """Return finite, structurally valid rows with positive sufficient area."""
+    element_count = elements.shape[0]
+    valid = np.zeros(element_count, dtype=np.bool_)
+    if element_count == 0:
+        return valid
+
+    node_count = nodes.shape[0]
+    in_bounds = np.all(
+        (elements >= 0) & (elements < node_count),
+        axis=1,
+    )
+    if not np.any(in_bounds):
+        return valid
+
+    is_triangle = elements[:, 2] == elements[:, 3]
+    triangle_connectivity = (
+        is_triangle
+        & (elements[:, 0] != elements[:, 1])
+        & (elements[:, 0] != elements[:, 2])
+        & (elements[:, 1] != elements[:, 2])
+    )
+    sorted_connectivity = np.sort(elements, axis=1)
+    quad_connectivity = (~is_triangle) & np.all(
+        np.diff(sorted_connectivity, axis=1) != 0,
+        axis=1,
+    )
+    candidates = np.flatnonzero(
+        in_bounds & (triangle_connectivity | quad_connectivity)
+    )
+    if candidates.size == 0:
+        return valid
+
+    coordinates = nodes[elements[candidates]]
+    finite = np.all(np.isfinite(coordinates), axis=(1, 2))
+    finite_rows = candidates[finite]
+    if finite_rows.size == 0:
+        return valid
+    points = coordinates[finite, :, :2]
+    with np.errstate(over="ignore", invalid="ignore"):
+        relative_points = points - points[:, :1]
+        relative_next = np.roll(relative_points, -1, axis=1)
+        signed_areas = 0.5 * np.sum(
+            relative_points[..., 0] * relative_next[..., 1]
+            - relative_points[..., 1] * relative_next[..., 0],
+            axis=1,
+        )
+    valid[finite_rows] = np.isfinite(signed_areas) & (
+        signed_areas > area_tolerance
+    )
+
+    return valid
+
+
+def _signed_xy_area(
+    nodes: NDArray[np.float64],
+    node_indices: list[int],
+) -> float:
+    """Return a translation-stable signed polygon area in the XY plane."""
+    points = nodes[np.asarray(node_indices, dtype=np.int64), :2]
+    with np.errstate(over="ignore", invalid="ignore"):
+        relative_points = points - points[:1]
+        relative_next = np.roll(relative_points, -1, axis=0)
+        return float(
+            0.5
+            * np.sum(
+                relative_points[:, 0] * relative_next[:, 1]
+                - relative_points[:, 1] * relative_next[:, 0]
+            )
+        )
+
+
+def _is_strictly_convex_quad(
+    nodes: NDArray[np.float64],
+    node_indices: list[int],
+) -> bool:
+    """Return whether a counter-clockwise Quad4 has four convex corners."""
+    points = nodes[np.asarray(node_indices, dtype=np.int64), :2]
+    with np.errstate(over="ignore", invalid="ignore"):
+        following = np.roll(points, -1, axis=0) - points
+        preceding = np.roll(points, 1, axis=0) - points
+        corner_cross = (
+            following[:, 0] * preceding[:, 1]
+            - following[:, 1] * preceding[:, 0]
+        )
+    return bool(np.all(np.isfinite(corner_cross)) and np.all(corner_cross > 0.0))
+
+
+def _repair_elements(
+    nodes: NDArray[np.float64],
+    elements: NDArray[np.int64],
+    is_triangle: NDArray[np.bool_],
+    area_tolerance: float,
+) -> NDArray[np.int64]:
+    """Repair collapsed or concave rows and discard unusable geometry."""
+    repaired: list[list[int]] = []
+    for element, triangle in zip(elements, is_triangle, strict=True):
+        perimeter = element[:3] if triangle else element
+        compact: list[int] = []
+        for node_index_value in perimeter:
+            node_index = int(node_index_value)
+            if not compact or node_index != compact[-1]:
+                compact.append(node_index)
+        if len(compact) > 1 and compact[0] == compact[-1]:
+            compact.pop()
+
+        # A repeated non-neighbouring node does not describe a simple polygon.
+        if len(compact) not in (3, 4) or len(set(compact)) != len(compact):
+            continue
+
+        area = _signed_xy_area(nodes, compact)
+        if not np.isfinite(area) or area <= area_tolerance:
+            continue
+
+        if len(compact) == 3:
+            repaired.append([compact[0], compact[1], compact[2], compact[2]])
+            continue
+
+        if _is_strictly_convex_quad(nodes, compact):
+            repaired.append(compact)
+            continue
+
+        diagonals = (
+            ((0, 1, 2), (0, 2, 3)),
+            ((0, 1, 3), (1, 2, 3)),
+        )
+        for first_positions, second_positions in diagonals:
+            first = [compact[position] for position in first_positions]
+            second = [compact[position] for position in second_positions]
+            if (
+                _signed_xy_area(nodes, first) > area_tolerance
+                and _signed_xy_area(nodes, second) > area_tolerance
+            ):
+                repaired.append([first[0], first[1], first[2], first[2]])
+                repaired.append(
+                    [second[0], second[1], second[2], second[2]]
+                )
+                break
+
+    if not repaired:
+        return np.empty((0, 4), dtype=np.int64)
+    return np.asarray(repaired, dtype=np.int64)
+
+
+def _equivalent_node_mapping(
+    nodes: NDArray[np.float64],
+    referenced_nodes: NDArray[np.int64],
     tolerance: float,
-):
-    print()
+) -> NDArray[np.int64]:
+    """Map referenced XY-equivalent nodes to their lowest-index member."""
+    old_to_representative = np.arange(nodes.shape[0], dtype=np.int64)
+    if referenced_nodes.size < 2:
+        return old_to_representative
+
+    parent = np.arange(nodes.shape[0], dtype=np.int64)
+
+    def find(node: int) -> int:
+        root = node
+        while parent[root] != root:
+            root = int(parent[root])
+        while parent[node] != node:
+            next_node = int(parent[node])
+            parent[node] = root
+            node = next_node
+        return root
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return
+        if left_root < right_root:
+            parent[right_root] = left_root
+        else:
+            parent[left_root] = right_root
+
+    xy = nodes[:, :2]
+    if tolerance == 0.0:
+        coordinate_owner: dict[tuple[float, float], int] = {}
+        for node_index_value in referenced_nodes:
+            node_index = int(node_index_value)
+            key = (float(xy[node_index, 0]), float(xy[node_index, 1]))
+            owner = coordinate_owner.setdefault(key, node_index)
+            union(owner, node_index)
+    else:
+        # Half-tolerance square cells have a diagonal below the equivalence
+        # distance, so all nodes in a normal cell form one connected group.
+        cell_width = tolerance * 0.5
+        tiny_cell_width = cell_width == 0.0
+        if tiny_cell_width:
+            cell_width = tolerance
+
+        cells: dict[tuple[int, int], list[int]] = {}
+        for node_index_value in referenced_nodes:
+            node_index = int(node_index_value)
+            key = (
+                _coordinate_bin(float(xy[node_index, 0]), cell_width),
+                _coordinate_bin(float(xy[node_index, 1]), cell_width),
+            )
+            cells.setdefault(key, []).append(node_index)
+
+        for node_indices in cells.values():
+            if tiny_cell_width:
+                _union_close_node_groups(
+                    xy,
+                    node_indices,
+                    node_indices,
+                    tolerance,
+                    union,
+                    same_group=True,
+                )
+            else:
+                anchor = node_indices[0]
+                for node_index in node_indices[1:]:
+                    union(anchor, node_index)
+
+        neighbor_radius = 1 if tiny_cell_width else 3
+        neighbor_offsets = tuple(
+            (offset_x, offset_y)
+            for offset_x in range(-neighbor_radius, neighbor_radius + 1)
+            for offset_y in range(-neighbor_radius, neighbor_radius + 1)
+            if offset_x != 0 or offset_y != 0
+        )
+        for key, node_indices in cells.items():
+            for offset_x, offset_y in neighbor_offsets:
+                neighbor_key = (key[0] + offset_x, key[1] + offset_y)
+                if neighbor_key <= key or neighbor_key not in cells:
+                    continue
+                neighbor_indices = cells[neighbor_key]
+                if tiny_cell_width:
+                    _union_close_node_groups(
+                        xy,
+                        node_indices,
+                        neighbor_indices,
+                        tolerance,
+                        union,
+                    )
+                elif _node_groups_touch(
+                    xy,
+                    node_indices,
+                    neighbor_indices,
+                    tolerance,
+                ):
+                    # Every cell is already internally connected, so one
+                    # touching cross-cell pair joins both complete groups.
+                    union(node_indices[0], neighbor_indices[0])
+
+    for node_index_value in referenced_nodes:
+        node_index = int(node_index_value)
+        old_to_representative[node_index] = find(node_index)
+    return old_to_representative
+
+
+def _coordinate_bin(value: float, width: float) -> int:
+    """Floor a finite float ratio without overflowing at extreme scales."""
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        quotient = np.float64(value) / np.float64(width)
+    if np.isfinite(quotient) and abs(quotient) <= 2.0**52:
+        return int(np.floor(quotient))
+
+    value_numerator, value_denominator = value.as_integer_ratio()
+    width_numerator, width_denominator = width.as_integer_ratio()
+    return (value_numerator * width_denominator) // (
+        value_denominator * width_numerator
+    )
+
+
+def _node_groups_touch(
+    xy: NDArray[np.float64],
+    left_indices: list[int],
+    right_indices: list[int],
+    tolerance: float,
+) -> bool:
+    """Return whether two spatial-cell groups contain an equivalent pair."""
+    left = xy[left_indices]
+    right = xy[right_indices]
+    left_minimum = np.min(left, axis=0)
+    left_maximum = np.max(left, axis=0)
+    right_minimum = np.min(right, axis=0)
+    right_maximum = np.max(right, axis=0)
+    with np.errstate(over="ignore", invalid="ignore"):
+        axis_separation = np.maximum(
+            np.maximum(
+                left_minimum - right_maximum,
+                right_minimum - left_maximum,
+            ),
+            0.0,
+        )
+    if np.hypot(axis_separation[0], axis_separation[1]) > tolerance:
+        return False
+
+    block_size = 512
+    for left_start in range(0, left.shape[0], block_size):
+        left_block = left[left_start : left_start + block_size]
+        for right_start in range(0, right.shape[0], block_size):
+            right_block = right[right_start : right_start + block_size]
+            with np.errstate(over="ignore", invalid="ignore"):
+                difference = left_block[:, None, :] - right_block[None, :, :]
+                distances = np.hypot(
+                    difference[..., 0],
+                    difference[..., 1],
+                )
+            if np.any(distances <= tolerance):
+                return True
+    return False
+
+
+def _union_close_node_groups(
+    xy: NDArray[np.float64],
+    left_indices: list[int],
+    right_indices: list[int],
+    tolerance: float,
+    union,
+    *,
+    same_group: bool = False,
+) -> None:
+    """Union exact close pairs for the subnormal cell-width fallback."""
+    for left_position, left_index in enumerate(left_indices):
+        right_start = left_position + 1 if same_group else 0
+        for right_index in right_indices[right_start:]:
+            with np.errstate(over="ignore", invalid="ignore"):
+                difference = xy[left_index] - xy[right_index]
+                distance = np.hypot(difference[0], difference[1])
+            if distance <= tolerance:
+                union(left_index, right_index)
+
 
 __all__ = [
     "get_circle_intersect",
@@ -2872,5 +3407,6 @@ __all__ = [
     "get_intersect_nodes",
     "get_tri_quad",
     "imprint_circle",
+    "remove_redundant_element",
     "to_circle",
 ]

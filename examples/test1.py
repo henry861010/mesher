@@ -71,17 +71,16 @@ def main():
         tolerance = 0.01,
     )
     
-    # mesh = imprint_circle(
-    #     mesh = mesh,
-    #     center_x = center_x,
-    #     center_y = center_y,
-    #     radius = radius,
-    #     tolerance = 1,
-    # )
+    mesh = imprint_circle(
+        mesh = mesh,
+        center_x = center_x,
+        center_y = center_y,
+        radius = radius,
+        tolerance = 1,
+    )
     
     view_mesh(
         mesh,
-        reference_circles=[[center_x, center_y, radius]],
     )
 
 

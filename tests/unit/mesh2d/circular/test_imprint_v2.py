@@ -13,6 +13,7 @@ from mesher.mesh2d.circular.imprint_v2.utils import (
     get_intersect_nodes,
     get_tri_quad,
     imprint_circle,
+    remove_redundant_element,
     to_circle,
 )
 from mesher.mesh2d.circular.utils.pattern_segments import _PatternGuideSet
@@ -716,6 +717,141 @@ class ToCircleTests(unittest.TestCase):
     def _snapshot(mesh):
         return mesh.nodes.copy(), mesh.elements.copy()
 
+    @staticmethod
+    def _signed_areas(mesh):
+        points = mesh.nodes[mesh.elements, :2]
+        relative_points = points - points[:, :1]
+        following_points = np.roll(relative_points, -1, axis=1)
+        return 0.5 * np.sum(
+            relative_points[..., 0] * following_points[..., 1]
+            - relative_points[..., 1] * following_points[..., 0],
+            axis=1,
+        )
+
+    def test_normalizes_all_mixed_elements_when_selection_is_empty(self):
+        nodes = [
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [3.0, 1.0],
+            [3.0, 0.0],
+            [4.0, 0.0],
+            [5.0, 0.0],
+            [4.0, 1.0],
+        ]
+        mesh = self._mesh(
+            nodes,
+            [
+                [0, 1, 2, 2],
+                [3, 4, 5, 6],
+                [7, 8, 9, 9],
+            ],
+        )
+        original_nodes = mesh.nodes.copy()
+
+        result = to_circle(
+            mesh,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            None,
+            indices=[],
+        )
+
+        self.assertIs(result, mesh)
+        np.testing.assert_array_equal(mesh.nodes, original_nodes)
+        np.testing.assert_array_equal(
+            mesh.elements,
+            [
+                [0, 2, 1, 1],
+                [3, 6, 5, 4],
+                [7, 8, 9, 9],
+            ],
+        )
+        self.assertTrue(np.all(self._signed_areas(mesh) > 0.0))
+
+    def test_normalizes_clockwise_element_when_no_node_is_a_candidate(self):
+        mesh = self._mesh(
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+            [[0, 1, 2, 2]],
+        )
+
+        to_circle(mesh, 0.0, 0.0, 10.0, 0.0, 0.0, None)
+
+        np.testing.assert_array_equal(mesh.elements, [[0, 2, 1, 1]])
+
+    def test_normalizes_with_projected_coordinates_after_an_inversion(self):
+        mesh = self._mesh(
+            [[0.995, 0.0], [0.999, 0.2], [0.999, -0.2]],
+            [[0, 2, 1, 1]],
+        )
+        self.assertGreater(self._signed_areas(mesh)[0], 0.0)
+
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.006, 0.0, None)
+
+        np.testing.assert_allclose(mesh.nodes[0, :2], [1.0, 0.0])
+        np.testing.assert_array_equal(mesh.elements, [[0, 1, 2, 2]])
+        self.assertGreater(self._signed_areas(mesh)[0], 0.0)
+
+    def test_preserves_zero_area_elements_without_reordering(self):
+        mesh = self._mesh(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [2.0, 0.0],
+                [3.0, 0.0],
+                [4.0, 0.0],
+                [5.0, 0.0],
+                [6.0, 0.0],
+            ],
+            [[0, 2, 1, 1], [3, 5, 4, 6]],
+        )
+        original_elements = mesh.elements.copy()
+
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.0, 0.0, None, indices=[])
+
+        np.testing.assert_array_equal(mesh.elements, original_elements)
+        np.testing.assert_array_equal(self._signed_areas(mesh), [0.0, 0.0])
+
+    def test_normalizes_orientation_when_local_translation_overflows(self):
+        large = np.finfo(np.float64).max * 0.75
+        mesh = self._mesh(
+            [[-large, 0.0], [large, 0.0], [0.0, -large]],
+            [[0, 1, 2, 2]],
+        )
+
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.0, 0.0, None, indices=[])
+
+        np.testing.assert_array_equal(mesh.elements, [[0, 2, 1, 1]])
+
+    def test_orientation_normalization_is_idempotent(self):
+        mesh = self._mesh(
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+            [[0, 1, 2, 2]],
+        )
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.0, 0.0, None, indices=[])
+        nodes = mesh.nodes
+        elements = mesh.elements
+
+        result = to_circle(
+            mesh,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            None,
+            indices=[],
+        )
+
+        self.assertIs(result, mesh)
+        self.assertIs(mesh.nodes, nodes)
+        self.assertIs(mesh.elements, elements)
+
     def test_moves_inside_and_outside_nodes_radially_and_preserves_z(self):
         mesh = self._mesh(
             [
@@ -727,8 +863,6 @@ class ToCircleTests(unittest.TestCase):
             ],
             [[0, 1, 2, 3]],
         )
-        original_elements = mesh.elements.copy()
-
         result = to_circle(
             mesh,
             0.0,
@@ -752,7 +886,7 @@ class ToCircleTests(unittest.TestCase):
             atol=1.0e-15,
         )
         np.testing.assert_array_equal(mesh.nodes[:, 2], [7, 8, 9, 10, 11])
-        np.testing.assert_array_equal(mesh.elements, original_elements)
+        np.testing.assert_array_equal(mesh.elements, [[0, 3, 2, 1]])
 
     def test_element_indices_limit_unique_referenced_nodes(self):
         mesh = self._mesh(
@@ -941,17 +1075,15 @@ class ToCircleTests(unittest.TestCase):
             [[0, 1, 2, 3]],
         )
         original_nodes = mesh.nodes.copy()
-        original_elements = mesh.elements.copy()
-
         result = to_circle(mesh, 0.0, 0.0, 1.0, 0.05, 0.0, None)
 
         self.assertIs(result, mesh)
         np.testing.assert_array_equal(mesh.nodes[1, :2], mesh.nodes[0, :2])
         np.testing.assert_allclose(mesh.nodes[2, :2], original_nodes[2, :2])
         np.testing.assert_array_equal(mesh.nodes[:, 2], original_nodes[:, 2])
-        np.testing.assert_array_equal(mesh.elements, original_elements)
+        np.testing.assert_array_equal(mesh.elements, [[0, 3, 2, 1]])
         self.assertEqual(mesh.nodes.shape, original_nodes.shape)
-        self.assertEqual(mesh.elements.shape, original_elements.shape)
+        self.assertEqual(mesh.elements.shape, (1, 4))
 
         once = mesh.nodes.copy()
         to_circle(mesh, 0.0, 0.0, 1.0, 0.05, 0.0, None)
@@ -1087,8 +1219,6 @@ class ToCircleTests(unittest.TestCase):
             coordinates(-100.0, 100.0, 1.0),
             coordinates(-100.0, 100.0, 2.0),
         )
-        original_elements = mesh.elements.copy()
-
         to_circle(mesh, 0.0, 0.0, 57.0, 1.0, 1.0, [])
 
         radii = np.hypot(mesh.nodes[:, 0], mesh.nodes[:, 1])
@@ -1098,7 +1228,7 @@ class ToCircleTests(unittest.TestCase):
         ]
         self.assertEqual(circle_nodes.shape[0], 150)
         self.assertEqual(np.unique(circle_nodes, axis=0).shape[0], 126)
-        np.testing.assert_array_equal(mesh.elements, original_elements)
+        self.assertTrue(np.all(self._signed_areas(mesh) >= 0.0))
 
     def test_invalid_inputs_raise_before_mutation(self):
         invalid_calls = (
@@ -1488,6 +1618,331 @@ class ImprintCircleTests(unittest.TestCase):
         imprint_circle(mesh, 0.0, 0.0, 1.0, 0.0, indices=[])
         np.testing.assert_array_equal(mesh.nodes, snapshot[0])
         np.testing.assert_array_equal(mesh.elements, snapshot[1])
+
+
+class RemoveRedundantElementTests(unittest.TestCase):
+    @staticmethod
+    def _snapshot(mesh):
+        return mesh.nodes.copy(), mesh.elements.copy()
+
+    @staticmethod
+    def _edge_use_counts(mesh):
+        counts = {}
+        for element in mesh.elements:
+            perimeter = element[:3] if element[2] == element[3] else element
+            for start, end in zip(perimeter, np.roll(perimeter, -1)):
+                endpoints = (
+                    tuple(mesh.nodes[int(start), :2]),
+                    tuple(mesh.nodes[int(end), :2]),
+                )
+                key = tuple(sorted(endpoints))
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def test_has_the_requested_public_signature(self):
+        self.assertEqual(
+            tuple(inspect.signature(remove_redundant_element).parameters),
+            ("mesh", "tolerance"),
+        )
+
+    def test_repairs_concave_and_removes_unusable_elements(self):
+        nodes = [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 2.0],
+            [3.0, 0.0],
+            [3.1, 0.0],
+            [3.0, 0.1],
+            [4.0, 0.0],
+            [4.0, 1.0],
+            [5.0, 0.0],
+            [6.0, 0.0],
+            [8.0, 0.0],
+            [6.5, 0.2],
+            [6.0, 1.0],
+            [9.0, 0.0],
+            [10.0, 1.0],
+            [9.0, 1.0],
+            [10.0, 0.0],
+        ]
+        elements = [
+            [0, 1, 2, 3],       # valid Quad4
+            [4, 5, 6, 6],       # area below tolerance
+            [7, 8, 9, 9],       # clockwise Tri3
+            [10, 11, 12, 13],   # concave Quad4
+            [14, 15, 16, 17],   # folded Quad4
+            [0, 1, 1, 2],       # invalid repeated-node Quad4
+        ]
+        mesh = Mesh2D(nodes=nodes, elements=elements)
+
+        result = remove_redundant_element(mesh, 0.01)
+
+        self.assertIs(result, mesh)
+        np.testing.assert_array_equal(
+            mesh.nodes,
+            np.column_stack(
+                (
+                    np.asarray(nodes)[[0, 1, 2, 3, 10, 11, 12, 13]],
+                    np.zeros(8),
+                )
+            ),
+        )
+        np.testing.assert_array_equal(
+            mesh.elements,
+            [[0, 1, 2, 3], [4, 5, 6, 6], [4, 6, 7, 7]],
+        )
+
+    def test_area_equal_to_tolerance_is_removed(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            elements=[[0, 1, 2, 2]],
+        )
+
+        remove_redundant_element(mesh, 0.5)
+
+        self.assertEqual(mesh.nodes.shape, (0, 3))
+        self.assertEqual(mesh.elements.shape, (0, 4))
+
+    def test_equivalences_nodes_globally_in_xy_and_preserves_representative(self):
+        nodes = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 3.0],
+            [1.0, 1.0, 4.0],
+            [0.0, 1.0, 0.0],
+            [1.01, 0.0, 30.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [1.01, 1.0, 40.0],
+        ]
+        mesh = Mesh2D(
+            nodes=nodes,
+            elements=[[0, 1, 2, 3], [4, 5, 6, 7]],
+        )
+
+        remove_redundant_element(mesh, 0.02)
+
+        np.testing.assert_array_equal(
+            mesh.nodes,
+            np.asarray(nodes)[[0, 1, 2, 3, 5, 6]],
+        )
+        np.testing.assert_array_equal(
+            mesh.elements,
+            [[0, 1, 2, 3], [1, 4, 5, 2]],
+        )
+
+    def test_equivalence_is_transitive_and_keeps_duplicate_elements(self):
+        nodes = []
+        elements = []
+        for offset in (0.0, 0.1, 0.2):
+            start = len(nodes)
+            nodes.extend(
+                [
+                    [offset, 0.0],
+                    [2.0 + offset, 0.0],
+                    [offset, 2.0],
+                ]
+            )
+            elements.append([start, start + 1, start + 2, start + 2])
+        mesh = Mesh2D(nodes=nodes, elements=elements)
+
+        remove_redundant_element(mesh, 0.11)
+
+        np.testing.assert_array_equal(
+            mesh.nodes,
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+        )
+        np.testing.assert_array_equal(
+            mesh.elements,
+            np.tile([0, 1, 2, 2], (3, 1)),
+        )
+
+    def test_removes_element_degenerated_by_equivalence(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [0.05, 0.0], [0.0, 100.0]],
+            elements=[[0, 1, 2, 2]],
+        )
+
+        remove_redundant_element(mesh, 0.1)
+
+        self.assertEqual(mesh.nodes.shape, (0, 3))
+        self.assertEqual(mesh.elements.shape, (0, 4))
+
+    def test_converts_quad_collapsed_by_equivalence_to_triangle(self):
+        mesh = Mesh2D(
+            nodes=[
+                [0.0, 0.0],
+                [0.05, 0.0],
+                [1.0, 1.0],
+                [0.0, 1.0],
+            ],
+            elements=[[0, 1, 2, 3]],
+        )
+
+        remove_redundant_element(mesh, 0.1)
+
+        np.testing.assert_array_equal(
+            mesh.nodes,
+            [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+        )
+        np.testing.assert_array_equal(mesh.elements, [[0, 1, 2, 2]])
+
+    def test_repairs_seeded_circle_without_creating_internal_boundaries(self):
+        generator = random.Random(1)
+
+        def coordinates(begin, end, minimum):
+            result = [begin]
+            current = begin
+            while True:
+                current += generator.uniform(minimum, minimum * 2.0)
+                if current > end:
+                    return result
+                result.append(current)
+
+        mesh = generate_rectilinear_mesh(
+            5.0,
+            coordinates(-100.0, 100.0, 1.0),
+            coordinates(-100.0, 100.0, 2.0),
+        )
+        original_edge_uses = self._edge_use_counts(mesh)
+        original_boundary = {
+            edge for edge, count in original_edge_uses.items() if count == 1
+        }
+
+        to_circle(mesh, 0.0, 0.0, 57.0, 1.0, 1.0, [])
+        remove_redundant_element(mesh, 0.01)
+
+        repaired_edge_uses = self._edge_use_counts(mesh)
+        repaired_boundary = {
+            edge for edge, count in repaired_edge_uses.items() if count == 1
+        }
+        self.assertEqual(repaired_boundary, original_boundary)
+        self.assertLessEqual(max(repaired_edge_uses.values()), 2)
+        self.assertEqual(mesh.element_count, 8977)
+
+    def test_removes_elements_with_nonfinite_xyz_coordinates(self):
+        mesh = Mesh2D(
+            nodes=[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, np.nan],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            elements=[[0, 1, 2, 2], [3, 4, 5, 5]],
+        )
+
+        remove_redundant_element(mesh, 0.0)
+
+        np.testing.assert_array_equal(
+            mesh.nodes,
+            [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 1.0, 0.0]],
+        )
+        np.testing.assert_array_equal(mesh.elements, [[0, 1, 2, 2]])
+
+    def test_area_is_stable_at_large_coordinate_offset(self):
+        offset = 1.0e12
+        mesh = Mesh2D(
+            nodes=[
+                [offset, offset],
+                [offset + 1.0, offset],
+                [offset + 1.0, offset + 1.0],
+                [offset, offset + 1.0],
+            ],
+            elements=[[0, 1, 2, 3]],
+        )
+
+        remove_redundant_element(mesh, 0.1)
+
+        self.assertEqual(mesh.element_count, 1)
+
+    def test_removes_corrupted_out_of_bounds_element(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            elements=[[0, 1, 2, 2]],
+        )
+        mesh.elements[0, 0] = 99
+
+        remove_redundant_element(mesh, 0.0)
+
+        self.assertEqual(mesh.nodes.shape, (0, 3))
+        self.assertEqual(mesh.elements.shape, (0, 4))
+
+    def test_removes_orphan_nodes_from_an_empty_mesh(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [1.0, 1.0]],
+            elements=np.empty((0, 4), dtype=np.int32),
+        )
+
+        result = remove_redundant_element(mesh, 0.0)
+
+        self.assertIs(result, mesh)
+        self.assertEqual(mesh.nodes.shape, (0, 3))
+        self.assertEqual(mesh.elements.shape, (0, 4))
+
+    def test_no_op_preserves_owned_arrays(self):
+        mesh = Mesh2D(
+            nodes=[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            elements=[[0, 1, 2, 2]],
+        )
+        node_array = mesh.nodes
+        element_array = mesh.elements
+
+        result = remove_redundant_element(mesh, 0.0)
+
+        self.assertIs(result, mesh)
+        self.assertIs(mesh.nodes, node_array)
+        self.assertIs(mesh.elements, element_array)
+
+    def test_invalid_inputs_raise_before_mutation(self):
+        with self.assertRaisesRegex(TypeError, "Mesh2D"):
+            remove_redundant_element(object(), 0.1)
+
+        for tolerance in (-1.0, np.nan, np.inf, True, "invalid"):
+            mesh = Mesh2D(
+                nodes=[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                elements=[[0, 1, 2, 2]],
+            )
+            original = self._snapshot(mesh)
+            with self.subTest(tolerance=tolerance):
+                with self.assertRaisesRegex(ValueError, "tolerance"):
+                    remove_redundant_element(mesh, tolerance)
+                np.testing.assert_array_equal(mesh.nodes, original[0])
+                np.testing.assert_array_equal(mesh.elements, original[1])
+
+
+class RemoveRedundantElementPerformanceTests(unittest.TestCase):
+    maximum_seconds = 10.0
+
+    def test_one_hundred_thousand_element_grid(self):
+        nx = 1000
+        ny = 100
+        x, y = np.meshgrid(
+            np.arange(nx + 1, dtype=np.float64),
+            np.arange(ny + 1, dtype=np.float64),
+        )
+        nodes = np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size)))
+        lower_left = np.arange(ny * (nx + 1), dtype=np.int32).reshape(
+            ny, nx + 1
+        )[:, :-1]
+        elements = np.column_stack(
+            (
+                lower_left.ravel(),
+                lower_left.ravel() + 1,
+                lower_left.ravel() + nx + 2,
+                lower_left.ravel() + nx + 1,
+            )
+        )
+        mesh = Mesh2D(nodes=nodes, elements=elements)
+
+        started = time.perf_counter()
+        remove_redundant_element(mesh, 0.01)
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(mesh.element_count, 100_000)
+        self.assertEqual(mesh.node_count, nodes.shape[0])
+        self.assertLess(elapsed, self.maximum_seconds)
 
 
 class ImprintCirclePerformanceTests(unittest.TestCase):
