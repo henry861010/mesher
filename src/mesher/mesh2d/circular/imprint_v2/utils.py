@@ -1,16 +1,57 @@
-"""Fast element/circle-boundary intersection utilities."""
+"""Vectorized utilities for querying and preparing circular 2D meshes.
+
+The module has three groups of helpers:
+
+* ``_normalize_indices`` gives every public query the same element-selection
+  rules.
+* The ``get_*`` functions inspect element topology or element/circle geometry
+  without changing the mesh.
+* ``to_circle`` moves existing nodes onto a circle.  Its two private helpers
+  precompute guide/circle roots and resolve sparse node/guide constraints.
+
+All geometric calculations use node X and Y coordinates.  A node's Z value is
+ignored by read-only queries and preserved by ``to_circle``.
+"""
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from ...model import Mesh2D
+from ..utils.pattern_segments import _PatternGuideSet, _coerce_pattern_guides
+
+
+_GUIDE_PAIR_BATCH_SIZE = 262_144
 
 
 def _normalize_indices(
     element_count: int,
     indices: ArrayLike | None = None,
 ) -> NDArray[np.int64]:
-    """Return a validated element selection, defaulting to every element."""
+    """Normalize an optional element-row selection to a one-dimensional array.
+
+    This is the shared selection contract for the public functions in this
+    module.  Explicit selections preserve the caller's order.  Duplicates are
+    rejected because several result arrays are row-aligned with the selection
+    and a repeated element would make downstream ownership ambiguous.
+
+    Args:
+        element_count: Total number of rows in ``mesh.elements``.  Valid
+            explicit indices are in the half-open range
+            ``[0, element_count)``.
+        indices: Optional one-dimensional integer sequence of element-row
+            indices.  ``None`` selects every row in ascending order.  An empty
+            sequence selects no rows.
+
+    Returns:
+        An int64 array containing the normalized element-row indices.  The
+        array has shape ``(K,)``, where ``K`` is the selection size.
+
+    Raises:
+        TypeError: If an explicit selection contains non-integers or booleans.
+        ValueError: If ``indices`` is not one-dimensional or has duplicates.
+        IndexError: If an index is negative or greater than or equal to
+            ``element_count``.
+    """
     if indices is None:
         return np.arange(element_count, dtype=np.int64)
 
@@ -69,6 +110,13 @@ def get_circle_intersect(
             integers.
         ValueError: If the circle, mutable mesh data, or indices are invalid.
         IndexError: If an element index is out of range.
+
+    Notes:
+        The implementation first rejects elements whose axis-aligned bounding
+        boxes cannot touch the circle.  It then solves at most two roots for
+        each of the four connectivity edges in one NumPy batch.  Shared-vertex
+        roots are deduplicated by angle before the final lexicographic sort.
+        The mesh is never mutated.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -373,6 +421,12 @@ def get_inner_outer_areas(
         ValueError: If the circle or indices shape is invalid, or indices
             contain duplicates.
         IndexError: If an element index is out of range.
+
+    Notes:
+        Each edge is solved independently in normalized coordinates to avoid
+        overflow.  Its intersection parameters split the edge into sub-edges.
+        A midpoint test chooses whether a sub-edge contributes triangle area
+        or circular-sector area.  The mesh is never mutated.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -562,6 +616,10 @@ def get_tri_quad(
             integers.
         ValueError: If indices are not one-dimensional or contain duplicates.
         IndexError: If an element index is out of range.
+
+    Notes:
+        This function classifies connectivity only; it does not validate
+        element geometry or node coordinates and never mutates the mesh.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -614,6 +672,13 @@ def get_intersect_nodes(
             integers.
         ValueError: If the circle, mutable mesh data, or indices are invalid.
         IndexError: If an element index is out of range.
+
+    Notes:
+        The result stays aligned with the caller's element selection even
+        though an axis-aligned bounding-box broad phase skips the expensive
+        solve for irrelevant elements.  Candidate edges are solved together,
+        sorted by polar angle, and deduplicated before being copied into the
+        fixed-width output.  The mesh is never mutated.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -887,18 +952,656 @@ def get_intersect_nodes(
     intersection_nodes[candidate_positions] = calculated_nodes
     return intersection_counts, intersection_nodes
 
+
+def _prepare_guide_circle_roots(
+    pattern_guides: _PatternGuideSet,
+    center: NDArray[np.float64],
+    radius: float,
+    numerical_tolerance: float,
+) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    """Precompute finite-segment/circle roots for every pattern guide.
+
+    A prepared guide stores one fixed axis and one varying axis.  Consequently
+    a circle intersection can be represented by only its varying-axis value;
+    the corresponding fixed coordinate is already available in
+    ``pattern_guides.fixed_values``.  Both infinite-line roots are calculated
+    in one vectorized operation, then marked valid only if they lie within the
+    finite segment bounds.  A tangent occupies the first slot only.
+
+    Args:
+        pattern_guides: Validated horizontal and vertical finite segments.
+            All per-guide metadata arrays have length ``L``.
+        center: Float64 circle center with shape ``(2,)``.
+        radius: Strictly positive circle radius.
+        numerical_tolerance: Non-negative scale-aware tolerance used only for
+            round-off at tangencies and finite segment endpoints.
+
+    Returns:
+        ``(root_values, valid_roots)``.  Both arrays have shape ``(L, 2)``.
+        ``root_values[i, j]`` is a coordinate on guide ``i``'s varying axis;
+        ``valid_roots[i, j]`` says whether that root is a usable intersection
+        with the finite segment.  Values in invalid slots must not be used.
+
+    Notes:
+        This helper assumes its inputs were normalized by ``to_circle`` and
+        does not mutate the guide set or mesh.
+    """
+    guide_count = len(pattern_guides)
+    root_values = np.zeros((guide_count, 2), dtype=np.float64)
+    valid_roots = np.zeros((guide_count, 2), dtype=np.bool_)
+    if guide_count == 0:
+        return root_values, valid_roots
+
+    fixed_centers = center[pattern_guides.fixed_axes]
+    varying_centers = center[pattern_guides.varying_axes]
+    with np.errstate(over="ignore", invalid="ignore"):
+        fixed_distances = np.abs(
+            pattern_guides.fixed_values - fixed_centers
+        )
+
+    fixed_tolerances = np.maximum(
+        pattern_guides.fixed_tolerances,
+        numerical_tolerance,
+    )
+    line_intersects = (
+        np.isfinite(fixed_distances)
+        & (fixed_distances <= radius + fixed_tolerances)
+    )
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        normalized_distances = np.minimum(fixed_distances / radius, 1.0)
+        root_offsets = radius * np.sqrt(
+            np.maximum(
+                0.0,
+                (1.0 - normalized_distances)
+                * (1.0 + normalized_distances),
+            )
+        )
+        root_values[:, 0] = varying_centers - root_offsets
+        root_values[:, 1] = varying_centers + root_offsets
+
+    bound_tolerances = np.maximum(
+        pattern_guides.bound_tolerances,
+        numerical_tolerance,
+    )
+    valid_roots[:] = (
+        line_intersects[:, None]
+        & np.isfinite(root_values)
+        & (
+            root_values
+            >= pattern_guides.lower_bounds[:, None]
+            - bound_tolerances[:, None]
+        )
+        & (
+            root_values
+            <= pattern_guides.upper_bounds[:, None]
+            + bound_tolerances[:, None]
+        )
+    )
+
+    # A tangent is one geometric root, not an ambiguous choice between two
+    # numerically identical roots.
+    duplicate_roots = (
+        2.0 * root_offsets
+        <= np.maximum(fixed_tolerances, bound_tolerances)
+    )
+    valid_roots[duplicate_roots, 1] = False
+    return root_values, valid_roots
+
+
+def _accumulate_guide_constraints(
+    candidate_xy: NDArray[np.float64],
+    pattern_guides: _PatternGuideSet,
+    guide_positions: NDArray[np.intp],
+    effective_guide_tolerances: NDArray[np.float64],
+    root_values: NDArray[np.float64],
+    valid_roots: NDArray[np.bool_],
+    root_choice_tolerances: NDArray[np.float64],
+    constrained: NDArray[np.bool_],
+    blocked: NDArray[np.bool_],
+    target_minimums: NDArray[np.float64],
+    target_maximums: NDArray[np.float64],
+    reference_targets: NDArray[np.float64],
+) -> None:
+    """Resolve sparse candidate/guide matches for one fixed-axis orientation.
+
+    The function receives either all vertical guides or all horizontal guides.
+    It sorts them by fixed coordinate and uses ``searchsorted`` to build only
+    plausible node/guide pairs.  Those pairs are processed in bounded batches:
+    exact point-to-segment distance decides guide membership, valid circle
+    roots are selected by proximity, and per-node target summaries are updated
+    in place.  There is no Python loop over individual nodes or guides.
+
+    Args:
+        candidate_xy: XY coordinates of the circle-band candidates, shape
+            ``(C, 2)``.  Row positions are the keys used by every accumulator.
+        pattern_guides: Prepared metadata for all ``L`` pattern segments.
+        guide_positions: Positions of guides that share one fixed axis.  The
+            array has shape ``(G,)`` and may be unsorted.
+        effective_guide_tolerances: Per-guide Euclidean hit tolerances with
+            shape ``(L,)``.  Each value is the larger of the caller's guide
+            tolerance and the guide's numerical tolerance.
+        root_values: Precomputed varying-axis circle roots with shape
+            ``(L, 2)``.
+        valid_roots: Boolean mask with shape ``(L, 2)`` identifying roots that
+            lie on their finite segments.
+        root_choice_tolerances: Per-guide numerical thresholds, shape ``(L,)``,
+            for detecting an equal-distance choice between two roots.
+        constrained: Boolean output accumulator with shape ``(C,)``.  A row is
+            set when at least one guide passes within its hit tolerance.
+        blocked: Boolean output accumulator with shape ``(C,)``.  A row is set
+            when any matching guide has no usable or uniquely nearest root.
+        target_minimums: Float64 output accumulator with shape ``(C, 2)``.
+            Component-wise minima across every usable target are written here.
+        target_maximums: Float64 output accumulator with shape ``(C, 2)``.
+            Component-wise maxima across every usable target are written here.
+        reference_targets: Float64 output accumulator with shape ``(C, 2)``.
+            The first usable target for each candidate is retained as the
+            deterministic coordinate used if all constraints agree.
+
+    Returns:
+        ``None``.  The five accumulator arrays are modified in place.  The
+        caller later compares target minima and maxima to detect conflicts
+        across this and the other guide orientation.
+
+    Notes:
+        ``_GUIDE_PAIR_BATCH_SIZE`` bounds temporary pair arrays.  A candidate
+        matched by conflicting guides is not rejected here unless a root is
+        missing or ambiguous; geometric disagreement is resolved by
+        ``to_circle`` after both orientations have been accumulated.
+    """
+    if candidate_xy.shape[0] == 0 or guide_positions.size == 0:
+        return
+
+    fixed_axis = int(pattern_guides.fixed_axes[guide_positions[0]])
+    varying_axis = 1 - fixed_axis
+    order = guide_positions[
+        np.argsort(
+            pattern_guides.fixed_values[guide_positions],
+            kind="stable",
+        )
+    ]
+    sorted_fixed_values = pattern_guides.fixed_values[order]
+    maximum_lookup_tolerance = float(
+        np.max(effective_guide_tolerances[order])
+    )
+
+    candidate_fixed_values = candidate_xy[:, fixed_axis]
+    with np.errstate(over="ignore", invalid="ignore"):
+        lookup_lower = candidate_fixed_values - maximum_lookup_tolerance
+        lookup_upper = candidate_fixed_values + maximum_lookup_tolerance
+    lower_positions = np.searchsorted(
+        sorted_fixed_values,
+        lookup_lower,
+        side="left",
+    )
+    upper_positions = np.searchsorted(
+        sorted_fixed_values,
+        lookup_upper,
+        side="right",
+    )
+    pair_counts = (upper_positions - lower_positions).astype(
+        np.int64,
+        copy=False,
+    )
+    pair_prefix = np.empty(candidate_xy.shape[0] + 1, dtype=np.int64)
+    pair_prefix[0] = 0
+    np.cumsum(pair_counts, out=pair_prefix[1:])
+
+    node_start = 0
+    candidate_count = candidate_xy.shape[0]
+    while node_start < candidate_count:
+        maximum_pair_end = (
+            int(pair_prefix[node_start]) + _GUIDE_PAIR_BATCH_SIZE
+        )
+        node_end = int(
+            np.searchsorted(
+                pair_prefix,
+                maximum_pair_end,
+                side="right",
+            )
+            - 1
+        )
+        node_end = min(candidate_count, max(node_start + 1, node_end))
+
+        block_counts = pair_counts[node_start:node_end]
+        pair_count = int(np.sum(block_counts, dtype=np.int64))
+        if pair_count == 0:
+            node_start = node_end
+            continue
+
+        node_positions = np.repeat(
+            np.arange(node_start, node_end, dtype=np.intp),
+            block_counts,
+        )
+        block_pair_starts = np.cumsum(
+            block_counts,
+            dtype=np.int64,
+        ) - block_counts
+        offsets_within_node = (
+            np.arange(pair_count, dtype=np.int64)
+            - np.repeat(block_pair_starts, block_counts)
+        )
+        sorted_guide_positions = (
+            np.repeat(lower_positions[node_start:node_end], block_counts)
+            + offsets_within_node
+        )
+        paired_guides = order[sorted_guide_positions]
+
+        paired_points = candidate_xy[node_positions]
+        fixed_differences = np.abs(
+            paired_points[:, fixed_axis]
+            - pattern_guides.fixed_values[paired_guides]
+        )
+        varying_values = paired_points[:, varying_axis]
+        varying_distances = np.maximum(
+            pattern_guides.lower_bounds[paired_guides] - varying_values,
+            0.0,
+        )
+        varying_distances = np.maximum(
+            varying_distances,
+            varying_values - pattern_guides.upper_bounds[paired_guides],
+        )
+        point_segment_distances = np.hypot(
+            fixed_differences,
+            varying_distances,
+        )
+        guide_hits = (
+            point_segment_distances
+            <= effective_guide_tolerances[paired_guides]
+        )
+        if not np.any(guide_hits):
+            node_start = node_end
+            continue
+
+        hit_nodes = node_positions[guide_hits]
+        hit_guides = paired_guides[guide_hits]
+        hit_varying_values = varying_values[guide_hits]
+        constrained[hit_nodes] = True
+
+        hit_root_values = root_values[hit_guides]
+        hit_root_validity = valid_roots[hit_guides]
+        root_distances = np.abs(
+            hit_root_values - hit_varying_values[:, None]
+        )
+        root_distances[~hit_root_validity] = np.inf
+        nearest_root_positions = np.argmin(root_distances, axis=1)
+        nearest_root_distances = np.take_along_axis(
+            root_distances,
+            nearest_root_positions[:, None],
+            axis=1,
+        )[:, 0]
+        has_root = np.isfinite(nearest_root_distances)
+        root_distance_differences = np.full(
+            hit_nodes.size,
+            np.inf,
+            dtype=np.float64,
+        )
+        both_roots_valid = np.all(hit_root_validity, axis=1)
+        np.subtract(
+            root_distances[:, 0],
+            root_distances[:, 1],
+            out=root_distance_differences,
+            where=both_roots_valid,
+        )
+        ambiguous_root = (
+            both_roots_valid
+            & (
+                np.abs(root_distance_differences)
+                <= root_choice_tolerances[hit_guides]
+            )
+        )
+        invalid_constraints = ~has_root | ambiguous_root
+        blocked[hit_nodes[invalid_constraints]] = True
+
+        usable = ~invalid_constraints
+        if not np.any(usable):
+            node_start = node_end
+            continue
+
+        usable_nodes = hit_nodes[usable]
+        usable_guides = hit_guides[usable]
+        usable_root_positions = nearest_root_positions[usable]
+        usable_targets = np.empty(
+            (usable_nodes.size, 2),
+            dtype=np.float64,
+        )
+        usable_targets[:, fixed_axis] = pattern_guides.fixed_values[
+            usable_guides
+        ]
+        usable_targets[:, varying_axis] = root_values[
+            usable_guides,
+            usable_root_positions,
+        ]
+
+        for axis in (0, 1):
+            np.minimum.at(
+                target_minimums[:, axis],
+                usable_nodes,
+                usable_targets[:, axis],
+            )
+            np.maximum.at(
+                target_maximums[:, axis],
+                usable_nodes,
+                usable_targets[:, axis],
+            )
+
+        unique_nodes, first_positions = np.unique(
+            usable_nodes,
+            return_index=True,
+        )
+        unset = ~np.isfinite(reference_targets[unique_nodes, 0])
+        reference_targets[unique_nodes[unset]] = usable_targets[
+            first_positions[unset]
+        ]
+        node_start = node_end
+
+
+def to_circle(
+    mesh: Mesh2D,
+    center_x: float,
+    center_y: float,
+    radius: float,
+    tolerance: float,
+    guide_tolerance: float,
+    guide_segments,
+    indices: ArrayLike | None = None,
+) -> Mesh2D:
+    """Move nodes near a circle onto its boundary, honoring pattern guides.
+
+    ``tolerance`` selects nodes by radial distance from the circle, while
+    ``guide_tolerance`` independently selects nodes close to a finite pattern
+    segment.  Unconstrained nodes move radially.  A constrained node moves to
+    the nearest finite-segment/circle intersection only when every segment
+    touching it agrees on the same target; otherwise that node is left alone.
+
+    When ``indices`` is provided it contains element-row indices, and only
+    nodes referenced by those elements are considered.  ``None`` considers
+    every mesh node, including unreferenced nodes.  Node Z coordinates and all
+    element connectivity are preserved.  Validation and target construction
+    finish before the mesh is mutated.
+
+    Args:
+        mesh: Mesh whose existing nodes may be moved in the XY plane.
+        center_x: Circle-center X coordinate.
+        center_y: Circle-center Y coordinate.
+        radius: Strictly positive circle radius.
+        tolerance: Non-negative radial distance from the circle to process.
+        guide_tolerance: Non-negative Euclidean point-to-segment tolerance.
+        guide_segments: Finite horizontal or vertical pattern segments with
+            shape ``(L, 2, 2)``, a prepared guide set, or ``None``.
+        indices: Optional unique one-dimensional element-row indices.
+
+    Returns:
+        The same ``mesh`` instance after an atomic batch coordinate update.
+
+    Raises:
+        TypeError: If ``mesh`` or ``indices`` has an invalid type.
+        ValueError: If mesh data, circle values, tolerances, or guides are
+            invalid.
+        IndexError: If an element index is out of range.
+
+    Notes:
+        The implementation is organized into five stages that can be followed
+        directly in the code below:
+
+        1. Validate all scalar, mesh, selection, and guide inputs.
+        2. Convert element selection to unique nodes and keep only nodes in the
+           inclusive radial tolerance band.
+        3. Precompute guide/circle roots and accumulate sparse guide matches.
+        4. Radially project free nodes; accept a constrained target only when
+           every touching guide agrees.  Missing, ambiguous, or conflicting
+           constraints leave that node unchanged.
+        5. Validate every proposed target, then perform one XY assignment.
+
+        Nodes exactly at the circle center cannot be projected radially and
+        remain unchanged.  Per-node guide conflicts are normal outcomes, not
+        exceptions.  No element-quality or inversion check is performed.
+    """
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
+
+    try:
+        circle_values = np.asarray(
+            [
+                float(center_x),
+                float(center_y),
+                float(radius),
+                float(tolerance),
+                float(guide_tolerance),
+            ],
+            dtype=np.float64,
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            "center_x, center_y, radius, tolerance, and guide_tolerance "
+            "must be real numbers"
+        ) from error
+    if not np.all(np.isfinite(circle_values)):
+        raise ValueError(
+            "center_x, center_y, radius, tolerance, and guide_tolerance "
+            "must be finite"
+        )
+    circle_radius = float(circle_values[2])
+    radial_tolerance = float(circle_values[3])
+    guide_tolerance = float(circle_values[4])
+    if circle_radius <= 0.0:
+        raise ValueError("radius must be positive")
+    if radial_tolerance < 0.0:
+        raise ValueError("tolerance must be non-negative")
+    if guide_tolerance < 0.0:
+        raise ValueError("guide_tolerance must be non-negative")
+
+    nodes = np.asarray(mesh.nodes)
+    elements = np.asarray(mesh.elements)
+    if nodes.ndim != 2 or nodes.shape[1] not in (2, 3):
+        raise ValueError("nodes must have shape (N, 2) or (N, 3)")
+    if (
+        not np.issubdtype(nodes.dtype, np.number)
+        or np.issubdtype(nodes.dtype, np.bool_)
+        or np.issubdtype(nodes.dtype, np.complexfloating)
+    ):
+        raise ValueError("nodes must have a real numeric dtype")
+    if elements.ndim != 2 or elements.shape[1] != 4:
+        raise ValueError("elements must have shape (M, 4)")
+    if (
+        not np.issubdtype(elements.dtype, np.integer)
+        or np.issubdtype(elements.dtype, np.bool_)
+    ):
+        raise ValueError("elements must have an integer dtype")
+    try:
+        float_nodes = nodes.astype(np.float64, copy=False)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("nodes must be representable as float64") from error
+    if not np.all(np.isfinite(float_nodes)):
+        raise ValueError("nodes must contain finite coordinates")
+    if elements.size and (
+        np.any(elements < 0) or np.any(elements >= nodes.shape[0])
+    ):
+        raise ValueError("elements contain an out-of-range node index")
+
+    center = circle_values[:2]
+    coordinate_scale = max(
+        1.0,
+        float(np.max(np.abs(center))),
+        circle_radius,
+    )
+    numerical_tolerance = (
+        128.0 * np.finfo(np.float64).eps * coordinate_scale
+    )
+    pattern_guides = _coerce_pattern_guides(
+        guide_segments,
+        coordinate_scale=coordinate_scale,
+        minimum_tolerance=numerical_tolerance,
+    )
+
+    if indices is None:
+        selected_node_indices = np.arange(nodes.shape[0], dtype=np.int64)
+    else:
+        element_indices = _normalize_indices(elements.shape[0], indices)
+        if element_indices.size == 0:
+            return mesh
+        selected_node_indices = np.unique(
+            elements[element_indices].reshape(-1)
+        ).astype(np.int64, copy=False)
+    if selected_node_indices.size == 0:
+        return mesh
+
+    selected_xy = float_nodes[selected_node_indices, :2]
+    with np.errstate(over="ignore", invalid="ignore"):
+        selected_offsets = selected_xy - center
+        selected_distances = np.hypot(
+            selected_offsets[:, 0],
+            selected_offsets[:, 1],
+        )
+        radial_residuals = np.abs(selected_distances - circle_radius)
+        candidate_threshold = radial_tolerance + numerical_tolerance
+    candidate_selection = radial_residuals <= candidate_threshold
+    candidate_positions = np.flatnonzero(candidate_selection)
+    if candidate_positions.size == 0:
+        return mesh
+
+    candidate_node_indices = selected_node_indices[candidate_positions]
+    candidate_xy = selected_xy[candidate_positions]
+    candidate_offsets = selected_offsets[candidate_positions]
+    candidate_distances = selected_distances[candidate_positions]
+    candidate_count = candidate_positions.size
+
+    constrained = np.zeros(candidate_count, dtype=np.bool_)
+    blocked = np.zeros(candidate_count, dtype=np.bool_)
+    target_minimums = np.full(
+        (candidate_count, 2),
+        np.inf,
+        dtype=np.float64,
+    )
+    target_maximums = np.full(
+        (candidate_count, 2),
+        -np.inf,
+        dtype=np.float64,
+    )
+    reference_targets = np.full(
+        (candidate_count, 2),
+        np.nan,
+        dtype=np.float64,
+    )
+
+    if len(pattern_guides):
+        root_values, valid_roots = _prepare_guide_circle_roots(
+            pattern_guides,
+            center,
+            circle_radius,
+            numerical_tolerance,
+        )
+        guide_numerical_tolerances = np.maximum.reduce(
+            (
+                pattern_guides.fixed_tolerances,
+                pattern_guides.bound_tolerances,
+                np.full(len(pattern_guides), numerical_tolerance),
+            )
+        )
+        effective_guide_tolerances = np.maximum(
+            guide_tolerance,
+            guide_numerical_tolerances,
+        )
+        root_choice_tolerances = guide_numerical_tolerances
+
+        for fixed_axis in (0, 1):
+            orientation_guides = np.flatnonzero(
+                pattern_guides.fixed_axes == fixed_axis
+            ).astype(np.intp, copy=False)
+            _accumulate_guide_constraints(
+                candidate_xy,
+                pattern_guides,
+                orientation_guides,
+                effective_guide_tolerances,
+                root_values,
+                valid_roots,
+                root_choice_tolerances,
+                constrained,
+                blocked,
+                target_minimums,
+                target_maximums,
+                reference_targets,
+            )
+
+    has_constraint_target = np.isfinite(reference_targets[:, 0])
+    target_spreads = np.zeros(candidate_count, dtype=np.float64)
+    target_spreads[has_constraint_target] = np.hypot(
+        target_maximums[has_constraint_target, 0]
+        - target_minimums[has_constraint_target, 0],
+        target_maximums[has_constraint_target, 1]
+        - target_minimums[has_constraint_target, 1],
+    )
+    target_scales = np.full(candidate_count, coordinate_scale)
+    if np.any(has_constraint_target):
+        target_scales[has_constraint_target] = np.maximum(
+            target_scales[has_constraint_target],
+            np.max(
+                np.abs(reference_targets[has_constraint_target]),
+                axis=1,
+            ),
+        )
+    agreement_tolerances = (
+        256.0 * np.finfo(np.float64).eps * target_scales
+    )
+    conflicting = target_spreads > agreement_tolerances
+    guided_movable = (
+        constrained
+        & ~blocked
+        & has_constraint_target
+        & ~conflicting
+    )
+    radial_movable = (~constrained) & (candidate_distances > 0.0)
+    movable = radial_movable | guided_movable
+    if not np.any(movable):
+        return mesh
+
+    target_xy = candidate_xy.copy()
+    radial_positions = np.flatnonzero(radial_movable)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        target_xy[radial_positions] = (
+            center
+            + circle_radius
+            * candidate_offsets[radial_positions]
+            / candidate_distances[radial_positions, None]
+        )
+    target_xy[guided_movable] = reference_targets[guided_movable]
+
+    if not np.all(np.isfinite(target_xy[movable])):
+        raise ValueError("projected circle coordinates exceed float64 range")
+    projected_offsets = target_xy[movable] - center
+    projected_distances = np.hypot(
+        projected_offsets[:, 0],
+        projected_offsets[:, 1],
+    )
+    validation_tolerance = max(
+        4.0 * numerical_tolerance,
+        circle_radius * 1.0e-12,
+    )
+    if np.any(
+        np.abs(projected_distances - circle_radius)
+        > validation_tolerance
+    ):
+        raise ValueError("a projected node is not on the target circle")
+
+    mesh.nodes[candidate_node_indices[movable], :2] = target_xy[movable]
+    return mesh
+
+
 def imprint_circle(
     mesh: Mesh2D,
     center_x: float,
     center_y: float,
     radius: float,
     tolerance: float,
+    guide_tolerance: float,
+    guide_segments,
     indices: ArrayLike | None = None,
-): 
-
+) -> Mesh2D:
+    
 __all__ = [
     "get_circle_intersect",
     "get_inner_outer_areas",
     "get_intersect_nodes",
     "get_tri_quad",
+    "to_circle",
 ]

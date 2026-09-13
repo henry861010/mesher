@@ -10,7 +10,9 @@ from mesher.mesh2d.circular.imprint_v2.utils import (
     get_inner_outer_areas,
     get_intersect_nodes,
     get_tri_quad,
+    to_circle,
 )
+from mesher.mesh2d.circular.utils.pattern_segments import _PatternGuideSet
 
 
 class FunctionSignatureTests(unittest.TestCase):
@@ -20,6 +22,7 @@ class FunctionSignatureTests(unittest.TestCase):
             get_inner_outer_areas,
             get_intersect_nodes,
             get_tri_quad,
+            to_circle,
         )
 
         for function in functions:
@@ -682,6 +685,332 @@ class GetTriQuadTests(unittest.TestCase):
     def test_rejects_non_mesh_input(self):
         with self.assertRaisesRegex(TypeError, "Mesh2D"):
             get_tri_quad(object())
+
+
+class ToCircleTests(unittest.TestCase):
+    @staticmethod
+    def _mesh(nodes, elements=None):
+        nodes = np.asarray(nodes, dtype=np.float64)
+        if elements is None:
+            elements = np.empty((0, 4), dtype=np.int32)
+        return Mesh2D(nodes=nodes, elements=elements)
+
+    @staticmethod
+    def _snapshot(mesh):
+        return mesh.nodes.copy(), mesh.elements.copy()
+
+    def test_moves_inside_and_outside_nodes_radially_and_preserves_z(self):
+        mesh = self._mesh(
+            [
+                [0.9, 0.0, 7.0],
+                [0.0, 1.1, 8.0],
+                [-1.0, 0.0, 9.0],
+                [2.0, 2.0, 10.0],
+                [0.0, 0.0, 11.0],
+            ],
+            [[0, 1, 2, 3]],
+        )
+        original_elements = mesh.elements.copy()
+
+        result = to_circle(
+            mesh,
+            0.0,
+            0.0,
+            1.0,
+            0.1,
+            0.0,
+            None,
+        )
+
+        self.assertIs(result, mesh)
+        np.testing.assert_allclose(
+            mesh.nodes[:, :2],
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [-1.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 0.0],
+            ],
+            atol=1.0e-15,
+        )
+        np.testing.assert_array_equal(mesh.nodes[:, 2], [7, 8, 9, 10, 11])
+        np.testing.assert_array_equal(mesh.elements, original_elements)
+
+    def test_element_indices_limit_unique_referenced_nodes(self):
+        mesh = self._mesh(
+            [
+                [0.9, 0.0],
+                [0.0, 0.9],
+                [-0.9, 0.0],
+                [0.0, -0.9],
+                [1.1, 0.0],
+                [0.0, 1.1],
+                [-1.1, 0.0],
+            ],
+            [
+                [0, 1, 2, 3],
+                [3, 4, 5, 6],
+            ],
+        )
+
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.11, 0.0, None, indices=[0])
+
+        np.testing.assert_allclose(
+            mesh.nodes[:, :2],
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [-1.0, 0.0],
+                [0.0, -1.0],
+                [1.1, 0.0],
+                [0.0, 1.1],
+                [-1.1, 0.0],
+            ],
+        )
+
+        snapshot = self._snapshot(mesh)
+        to_circle(mesh, 0.0, 0.0, 1.0, 1.0, 1.0, None, indices=[])
+        np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+        np.testing.assert_array_equal(mesh.elements, snapshot[1])
+
+    def test_vertical_horizontal_and_reversed_guides_choose_nearest_roots(self):
+        root = np.sqrt(0.75)
+        mesh = self._mesh(
+            [
+                [0.5, 0.8],
+                [0.5, -0.8],
+                [0.8, 0.5],
+                [-0.8, 0.5],
+            ]
+        )
+        guides = [
+            [[0.5, 1.0], [0.5, -1.0]],
+            [[-1.0, 0.5], [1.0, 0.5]],
+        ]
+
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.1, 0.0, guides)
+
+        np.testing.assert_allclose(
+            mesh.nodes[:, :2],
+            [
+                [0.5, root],
+                [0.5, -root],
+                [root, 0.5],
+                [-root, 0.5],
+            ],
+        )
+
+    def test_guide_tolerance_uses_true_distance_and_is_independent(self):
+        source = np.array([[0.52, 0.79]], dtype=np.float64)
+        segment = [[[0.5, 0.8], [0.5, 1.0]]]
+        radial = self._mesh(source)
+        guided = self._mesh(source)
+
+        to_circle(radial, 0.0, 0.0, 1.0, 0.1, 0.021, segment)
+        to_circle(guided, 0.0, 0.0, 1.0, 0.1, 0.023, segment)
+
+        expected_radial = source[0] / np.linalg.norm(source[0])
+        np.testing.assert_allclose(radial.nodes[0, :2], expected_radial)
+        np.testing.assert_allclose(
+            guided.nodes[0, :2],
+            [0.5, np.sqrt(0.75)],
+        )
+
+    def test_finite_guide_that_does_not_reach_circle_blocks_the_node(self):
+        mesh = self._mesh([[0.5, 0.8]])
+        original = mesh.nodes.copy()
+
+        to_circle(
+            mesh,
+            0.0,
+            0.0,
+            1.0,
+            0.1,
+            0.0,
+            [[[0.5, 0.75], [0.5, 0.82]]],
+        )
+
+        np.testing.assert_array_equal(mesh.nodes, original)
+
+    def test_compatible_duplicates_move_and_conflicting_guides_do_not(self):
+        compatible = self._mesh([[0.5, 0.8]])
+        conflict = self._mesh([[0.5, 0.8]])
+        duplicate_guides = [
+            [[0.5, -1.0], [0.5, 1.0]],
+            [[0.5, 1.0], [0.5, -1.0]],
+        ]
+
+        to_circle(
+            compatible,
+            0.0,
+            0.0,
+            1.0,
+            0.1,
+            0.0,
+            duplicate_guides,
+        )
+        to_circle(
+            conflict,
+            0.0,
+            0.0,
+            1.0,
+            0.1,
+            0.0,
+            duplicate_guides + [[[-1.0, 0.8], [1.0, 0.8]]],
+        )
+
+        np.testing.assert_allclose(
+            compatible.nodes[0, :2],
+            [0.5, np.sqrt(0.75)],
+        )
+        np.testing.assert_array_equal(conflict.nodes[0, :2], [0.5, 0.8])
+
+    def test_crossing_guides_can_agree_at_a_circle_anchor(self):
+        anchor_y = np.sqrt(0.75)
+        mesh = self._mesh([[0.49, anchor_y - 0.006]])
+
+        to_circle(
+            mesh,
+            0.0,
+            0.0,
+            1.0,
+            0.02,
+            0.011,
+            [
+                [[0.5, 0.0], [0.5, 1.0]],
+                [[0.0, anchor_y], [1.0, anchor_y]],
+            ],
+        )
+
+        np.testing.assert_allclose(mesh.nodes[0, :2], [0.5, anchor_y])
+
+    def test_ambiguous_roots_and_center_node_remain_unchanged(self):
+        mesh = self._mesh([[0.5, 0.0], [0.0, 0.0]])
+        original = mesh.nodes.copy()
+
+        to_circle(
+            mesh,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            [[[0.5, -1.0], [0.5, 1.0]]],
+        )
+
+        np.testing.assert_array_equal(mesh.nodes, original)
+
+    def test_accepts_prepared_guides_and_is_idempotent(self):
+        mesh = self._mesh([[0.5, 0.8]])
+        guides = _PatternGuideSet.from_values(
+            [[[0.5, -1.0], [0.5, 1.0]]],
+            coordinate_scale=1.0,
+        )
+
+        to_circle(mesh, 0.0, 0.0, 1.0, 0.1, 0.0, guides)
+        once = mesh.nodes.copy()
+        result = to_circle(mesh, 0.0, 0.0, 1.0, 0.1, 0.0, guides)
+
+        self.assertIs(result, mesh)
+        np.testing.assert_array_equal(mesh.nodes, once)
+
+    def test_invalid_inputs_raise_before_mutation(self):
+        invalid_calls = (
+            ((0.0, 0.0, 0.0, 0.1, 0.1, None), ValueError),
+            ((0.0, 0.0, 1.0, -0.1, 0.1, None), ValueError),
+            ((0.0, 0.0, 1.0, 0.1, -0.1, None), ValueError),
+            ((np.nan, 0.0, 1.0, 0.1, 0.1, None), ValueError),
+            (
+                (
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.1,
+                    0.1,
+                    [[[0.0, 0.0], [1.0, 1.0]]],
+                ),
+                ValueError,
+            ),
+        )
+        for arguments, error_type in invalid_calls:
+            with self.subTest(arguments=arguments):
+                mesh = self._mesh(
+                    [[0.9, 0.0], [0.0, 0.9], [-0.9, 0.0], [0.0, -0.9]],
+                    [[0, 1, 2, 3]],
+                )
+                snapshot = self._snapshot(mesh)
+
+                with self.assertRaises(error_type):
+                    to_circle(mesh, *arguments)
+
+                np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+                np.testing.assert_array_equal(mesh.elements, snapshot[1])
+
+        mesh = self._mesh(
+            [[0.9, 0.0], [0.0, 0.9], [-0.9, 0.0], [0.0, -0.9]],
+            [[0, 1, 2, 3]],
+        )
+        snapshot = self._snapshot(mesh)
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            to_circle(mesh, 0.0, 0.0, 1.0, 0.1, 0.1, None, [0, 0])
+        np.testing.assert_array_equal(mesh.nodes, snapshot[0])
+        np.testing.assert_array_equal(mesh.elements, snapshot[1])
+
+        mesh.nodes[0, 0] = np.inf
+        with self.assertRaisesRegex(ValueError, "finite coordinates"):
+            to_circle(mesh, 0.0, 0.0, 1.0, 0.1, 0.1, None)
+
+
+class ToCirclePerformanceTests(unittest.TestCase):
+    maximum_seconds = 5.0
+
+    def test_one_hundred_thousand_nodes_and_two_thousand_guides(self):
+        count = 100_000
+        angles = np.linspace(0.0, 2.0 * np.pi, count, endpoint=False)
+        radii = 1.0 + 1.0e-4 * np.sin(37.0 * angles)
+        nodes = np.column_stack(
+            (
+                radii * np.cos(angles),
+                radii * np.sin(angles),
+                np.zeros(count),
+            )
+        )
+        elements = np.tile(
+            np.array([[0, 1, 2, 3]], dtype=np.int32),
+            (count, 1),
+        )
+        fixed_values = np.linspace(-0.999, 0.999, 1000)
+        vertical = np.stack(
+            (
+                np.column_stack((fixed_values, np.full(1000, -1.1))),
+                np.column_stack((fixed_values, np.full(1000, 1.1))),
+            ),
+            axis=1,
+        )
+        horizontal = np.stack(
+            (
+                np.column_stack((np.full(1000, -1.1), fixed_values)),
+                np.column_stack((np.full(1000, 1.1), fixed_values)),
+            ),
+            axis=1,
+        )
+        mesh = Mesh2D(nodes=nodes, elements=elements)
+
+        started = time.perf_counter()
+        result = to_circle(
+            mesh,
+            0.0,
+            0.0,
+            1.0,
+            0.001,
+            1.0e-5,
+            np.concatenate((vertical, horizontal)),
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertIs(result, mesh)
+        self.assertLess(elapsed, self.maximum_seconds)
 
 
 if __name__ == "__main__":
