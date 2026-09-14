@@ -165,13 +165,13 @@ def view_mesh(
         Zero-based node indices to highlight in yellow.
     reference_circles:
         One circle ``[x, y, radius]`` or a sequence of circles to draw as
-        black reference lines.
+        bold blue reference lines.
     reference_boxes:
         One box ``[[bottom_left_x, bottom_left_y], [top_right_x, top_right_y]]``
-        or a sequence of boxes to draw as black reference lines.
+        or a sequence of boxes to draw as bold blue reference lines.
     reference_lines:
         One line ``[[x1, y1], [x2, y2]]`` or a sequence of lines to draw as
-        black reference lines.
+        bold blue reference lines.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -234,8 +234,8 @@ def view_mesh(
     if reference_segments.size:
         plotter.add_lines(
             reference_segments,
-            color="black",
-            width=2,
+            color="blue",
+            width=4,
             connected=False,
         )
 

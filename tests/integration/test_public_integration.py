@@ -220,8 +220,8 @@ class PublicIntegrationTests(unittest.TestCase):
             reference_segments[-2:],
             np.array([[-3.0, 1.0, 0.0], [5.0, 2.0, 0.0]]),
         )
-        self.assertEqual(plotter.add_lines.call_args.kwargs["color"], "black")
-        self.assertEqual(plotter.add_lines.call_args.kwargs["width"], 2)
+        self.assertEqual(plotter.add_lines.call_args.kwargs["color"], "blue")
+        self.assertEqual(plotter.add_lines.call_args.kwargs["width"], 4)
         self.assertFalse(plotter.add_lines.call_args.kwargs["connected"])
 
     def test_view_mesh_accepts_multiple_reference_shapes(self):
