@@ -105,7 +105,7 @@ def main():
         center_x = center_x,
         center_y = center_y,
         radius = radius,
-        tolerance = 1,
+        tolerance = 0.01,
     )
     
     view_mesh(
