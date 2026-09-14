@@ -14,12 +14,11 @@ import numpy as np
 from process_flow_kernel import validate_geometry_semantic_keys
 
 from ..mesh2d.circular.extend import extend_circular_mesh
-from ..mesh2d.circular.imprint import imprint_circle
+from ..mesh2d.circular.imprint_v2 import imprint_circle
 from ..mesh2d.generators import generate_rectilinear_mesh
 from ..mesh3d.extrusion import Dragger
 from ..mesh3d.model import Mesh3D
 from .circle_planning import (
-    CIRCLE_MINIMUM_QUAD_SCALED_JACOBIAN,
     _CircleExtension,
     _CirclePattern,
     _add_circle_support_lines,
@@ -47,6 +46,11 @@ from .translation.standard_v1 import StandardV1Translator, _geometry_to_face
 
 JsonObject = dict[str, Any]
 ProgressCallback = Callable[[JsonObject], None]
+
+_CIRCLE_PROJECTION_TOLERANCE_RATIO = 0.2
+_CIRCLE_GUIDE_TOLERANCE_RATIO = 0.2
+_CIRCLE_MERGE_TOLERANCE_RATIO = 0.002
+_CIRCLE_MINIMUM_AREA_RATIO = 0.0004
 
 
 @dataclass(frozen=True)
@@ -186,8 +190,7 @@ def build_mesh_from_structure(
         mesh_2d,
         list(circle_plan.imprint_patterns),
         guide_segments=pattern_segments,
-        band_width=circle_band_width,
-        target_edge_size=planar_element_size,
+        element_size=planar_element_size,
         progress=progress,
         completed_offset=0,
         total_operations=feature_total,
@@ -247,8 +250,7 @@ def _imprint_circle_patterns(
     guide_segments: list[
         tuple[tuple[float, float], tuple[float, float]]
     ],
-    band_width: float,
-    target_edge_size: float,
+    element_size: float,
     progress: ProgressCallback | None = None,
     completed_offset: int = 0,
     total_operations: int = 0,
@@ -269,12 +271,19 @@ def _imprint_circle_patterns(
                 mesh_2d,
                 center=pattern.center,
                 radius=pattern.radius,
-                band_width=band_width,
-                guide_segments=guide_segments,
-                target_edge_size=target_edge_size,
-                min_quad_scaled_jacobian=(
-                    CIRCLE_MINIMUM_QUAD_SCALED_JACOBIAN
+                projection_tolerance=(
+                    _CIRCLE_PROJECTION_TOLERANCE_RATIO * element_size
                 ),
+                guide_tolerance=(
+                    _CIRCLE_GUIDE_TOLERANCE_RATIO * element_size
+                ),
+                merge_tolerance=(
+                    _CIRCLE_MERGE_TOLERANCE_RATIO * element_size
+                ),
+                minimum_area=(
+                    _CIRCLE_MINIMUM_AREA_RATIO * element_size**2
+                ),
+                guide_segments=guide_segments,
             )
         except (TypeError, ValueError) as exc:
             raise ValueError(

@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 import numpy as np
 from mesher import Mesh3D
-from mesher.mesh2d.circular import extend_circular_mesh, imprint_circle
+from mesher.mesh2d.circular import extend_circular_mesh
+from mesher.mesh2d.circular.imprint_v2 import imprint_circle
 
 from mesher.process_flow import build_mesh_from_structure
 
@@ -762,7 +763,7 @@ class BuilderIntegrationTests(unittest.TestCase):
     def test_builds_disjoint_cylinders_in_one_mesh(self):
         mesh = build_mesh_from_structure(_multi_circle_structure(), element_size=1.0)
 
-        self.assertEqual(mesh.element_count, 66)
+        self.assertEqual(mesh.element_count, 76)
         self.assertEqual(mesh.comps, {"EMPTY": 0, "Si": 1})
         self.assertTrue(np.all(mesh.element_comps == 1))
 
@@ -779,7 +780,7 @@ class BuilderIntegrationTests(unittest.TestCase):
                 bottom_nodes[:, 0] - center_x,
                 bottom_nodes[:, 1],
             )
-            self.assertEqual(np.count_nonzero(np.isclose(radii, 2.0)), 19)
+            self.assertEqual(np.count_nonzero(np.isclose(radii, 2.0)), 18)
 
         padded_wedges = mesh.elements[:, 2] == mesh.elements[:, 3]
         self.assertGreater(np.count_nonzero(padded_wedges), 0)
@@ -796,7 +797,7 @@ class BuilderIntegrationTests(unittest.TestCase):
 
         bottom_nodes = mesh.nodes[np.isclose(mesh.nodes[:, 2], 0.0)]
         radii = np.hypot(bottom_nodes[:, 0], bottom_nodes[:, 1])
-        self.assertEqual(np.count_nonzero(np.isclose(radii, 0.5)), 19)
+        self.assertEqual(np.count_nonzero(np.isclose(radii, 0.5)), 16)
         self.assertTrue(np.all(radii <= 0.5 + 1.0e-10))
 
     def test_imprints_a_repeated_xy_circle_only_once_across_z(self):
@@ -812,6 +813,18 @@ class BuilderIntegrationTests(unittest.TestCase):
             mesh = build_mesh_from_structure(structure, element_size=1.0)
 
         self.assertEqual(mocked_imprint.call_count, 1)
+        self.assertEqual(
+            mocked_imprint.call_args.kwargs,
+            {
+                "center": (0.0, 0.0),
+                "radius": 3.0,
+                "projection_tolerance": 0.2,
+                "guide_tolerance": 0.2,
+                "merge_tolerance": 0.002,
+                "minimum_area": 0.0004,
+                "guide_segments": [],
+            },
+        )
         self.assertGreater(mesh.element_count, 0)
 
     def test_extends_a_clean_outer_concentric_circle_chain(self):

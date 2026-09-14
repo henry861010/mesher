@@ -21,7 +21,6 @@ JsonObject = dict[str, Any]
 
 CIRCLE_CLEARANCE_TOLERANCE = 1e-6
 CIRCLE_CENTER_TOLERANCE = 1e-6
-CIRCLE_MINIMUM_QUAD_SCALED_JACOBIAN = 0.3
 
 
 @dataclass(frozen=True, order=True)
