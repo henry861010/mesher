@@ -1,12 +1,8 @@
 import random
 
+from mesher.mesh2d.circular.imprint_v2 import imprint_circle
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.visualization import view_mesh
-from mesher.mesh2d.circular.imprint_v2.utils import (
-    _imprint_circle,
-    _remove_redundant_element,
-    _to_circle,
-)
 
 random.seed(1)
 
@@ -68,8 +64,7 @@ def generate_random_float_list(
     return sorted(set(result))
 
 def main():
-    center_x = 0
-    center_y = 0
+    center = [0, 0]
     radius = 57
 
     target_edge_size = 5
@@ -78,43 +73,31 @@ def main():
         [[10, 30], [10, 40]],
         [[10, 40], [40, 40]],
         [[40, 40], [40, 30]],
-        [[40, 30], [10, 30]]
+        [[40, 30], [10, 30]],
     ]
 
-    x_coordinates = generate_random_float_list(-100, 100, 1, refs=[10,40])
-    y_coordinates = generate_random_float_list(-100, 100, 2, refs=[30,40])
+    x_coordinates = generate_random_float_list(-100, 100, 1, refs=[10, 40])
+    y_coordinates = generate_random_float_list(-100, 100, 2, refs=[30, 40])
     mesh = generate_rectilinear_mesh(
         target_edge_size,
         x_coordinates,
         y_coordinates,
     )
-    
-    mesh = _to_circle(
-        mesh = mesh,
-        center_x = center_x,
-        center_y = center_y,
-        radius = radius,
-        tolerance = 1,
-        guide_tolerance = 1,
-        guide_segments=reference_lines
+
+    mesh = imprint_circle(
+        mesh,
+        center=center,
+        radius=radius,
+        projection_tolerance=1,
+        guide_tolerance=1,
+        merge_tolerance=0.01,
+        minimum_area=0.01,
+        guide_segments=reference_lines,
     )
-    
-    mesh = _remove_redundant_element(
-        mesh = mesh,
-        tolerance = 0.01,
-    )
-    
-    mesh = _imprint_circle(
-        mesh = mesh,
-        center_x = center_x,
-        center_y = center_y,
-        radius = radius,
-        tolerance = 0.01,
-    )
-    
+
     view_mesh(
         mesh,
-        reference_lines=reference_lines
+        reference_lines=reference_lines,
     )
 
 

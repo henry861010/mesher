@@ -20,6 +20,43 @@ from ..utils.pattern_segments import _PatternGuideSet, _coerce_pattern_guides
 _GUIDE_PAIR_BATCH_SIZE = 262_144
 
 
+def _normalize_circle(
+    center: ArrayLike,
+    radius: float,
+) -> tuple[NDArray[np.float64], float]:
+    """Return a validated two-coordinate center and positive radius."""
+    try:
+        center_coordinates = np.asarray(center, dtype=np.float64)
+        circle_radius = float(radius)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            "center and radius must contain real numbers"
+        ) from error
+
+    if center_coordinates.shape != (2,):
+        raise ValueError("center must contain exactly two coordinates")
+    if not np.all(np.isfinite(center_coordinates)):
+        raise ValueError("center must contain finite coordinates")
+    if not np.isfinite(circle_radius) or circle_radius <= 0.0:
+        raise ValueError("radius must be finite and positive")
+    return center_coordinates, circle_radius
+
+
+def _normalize_nonnegative(value: float, name: str) -> float:
+    """Return a finite non-negative float for a named distance or area."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a finite non-negative number")
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            f"{name} must be a finite non-negative number"
+        ) from error
+    if not np.isfinite(normalized) or normalized < 0.0:
+        raise ValueError(f"{name} must be a finite non-negative number")
+    return normalized
+
+
 def _normalize_indices(
     element_count: int,
     indices: ArrayLike | None = None,
@@ -617,25 +654,25 @@ def _commit_circle_update(
 
 def _to_circle(
     mesh: Mesh2D,
-    center_x: float,
-    center_y: float,
+    center: ArrayLike,
     radius: float,
-    tolerance: float,
+    projection_tolerance: float,
     guide_tolerance: float,
     guide_segments,
     indices: ArrayLike | None = None,
 ) -> Mesh2D:
     """Move nodes near a circle onto its boundary, honoring pattern guides.
 
-    ``tolerance`` selects nodes by radial distance from the circle, while
-    ``guide_tolerance`` independently selects nodes close to a finite pattern
-    segment.  Unconstrained nodes move radially.  A constrained node moves to
-    the nearest finite-segment/circle intersection only when every segment
-    touching it agrees on the same target; otherwise that node is left alone.
-    After projection, movable circle targets are swept clockwise from the
-    positive X axis.  A target strictly closer than ``tolerance`` to the
-    current representative receives the same XY coordinate.  Guide targets
-    remain fixed and take precedence over nearby unconstrained targets.
+    ``projection_tolerance`` selects nodes by radial distance from the circle,
+    while ``guide_tolerance`` independently selects nodes close to a finite
+    pattern segment.  Unconstrained nodes move radially.  A constrained node
+    moves to the nearest finite-segment/circle intersection only when every
+    segment touching it agrees on the same target; otherwise that node is left
+    alone.  After projection, movable circle targets are swept clockwise from
+    the positive X axis.  A target strictly closer than
+    ``projection_tolerance`` to the current representative receives the same
+    XY coordinate.  Guide targets remain fixed and take precedence over nearby
+    unconstrained targets.
 
     When ``indices`` is provided it contains element-row indices, and only
     nodes referenced by those elements are considered for projection.  ``None``
@@ -647,10 +684,10 @@ def _to_circle(
 
     Args:
         mesh: Mesh whose existing nodes may be moved in the XY plane.
-        center_x: Circle-center X coordinate.
-        center_y: Circle-center Y coordinate.
+        center: Two finite coordinates for the circle center.
         radius: Strictly positive circle radius.
-        tolerance: Non-negative radial distance from the circle to process.
+        projection_tolerance: Non-negative radial distance from the circle to
+            process and merge distance between projected circle targets.
         guide_tolerance: Non-negative Euclidean point-to-segment tolerance.
         guide_segments: Finite horizontal or vertical pattern segments with
             shape ``(L, 2, 2)``, a prepared guide set, or ``None``.
@@ -692,36 +729,15 @@ def _to_circle(
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
 
-    try:
-        circle_values = np.asarray(
-            [
-                float(center_x),
-                float(center_y),
-                float(radius),
-                float(tolerance),
-                float(guide_tolerance),
-            ],
-            dtype=np.float64,
-        )
-    except (TypeError, ValueError, OverflowError) as error:
-        raise ValueError(
-            "center_x, center_y, radius, tolerance, and guide_tolerance "
-            "must be real numbers"
-        ) from error
-    if not np.all(np.isfinite(circle_values)):
-        raise ValueError(
-            "center_x, center_y, radius, tolerance, and guide_tolerance "
-            "must be finite"
-        )
-    circle_radius = float(circle_values[2])
-    radial_tolerance = float(circle_values[3])
-    guide_tolerance = float(circle_values[4])
-    if circle_radius <= 0.0:
-        raise ValueError("radius must be positive")
-    if radial_tolerance < 0.0:
-        raise ValueError("tolerance must be non-negative")
-    if guide_tolerance < 0.0:
-        raise ValueError("guide_tolerance must be non-negative")
+    center, circle_radius = _normalize_circle(center, radius)
+    radial_tolerance = _normalize_nonnegative(
+        projection_tolerance,
+        "projection_tolerance",
+    )
+    guide_tolerance = _normalize_nonnegative(
+        guide_tolerance,
+        "guide_tolerance",
+    )
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -751,7 +767,6 @@ def _to_circle(
     ):
         raise ValueError("elements contain an out-of-range node index")
 
-    center = circle_values[:2]
     coordinate_scale = max(
         1.0,
         float(np.max(np.abs(center))),
@@ -931,10 +946,9 @@ def _to_circle(
 
 def _imprint_circle(
     mesh: Mesh2D,
-    center_x: float,
-    center_y: float,
+    center: ArrayLike,
     radius: float,
-    tolerance: float,
+    merge_tolerance: float,
     indices: ArrayLike | None = None,
 ) -> Mesh2D:
     """Split selected elements where a circle properly crosses two edges.
@@ -945,11 +959,11 @@ def _imprint_circle(
     crossed edges).  Tangencies, same-edge double intersections, and elements
     with any other number of proper crossings are left unchanged.
 
-    ``tolerance`` is a geometric merge distance.  An intersection within that
-    distance of an edge endpoint reuses the endpoint after projecting its XY
-    coordinate radially onto the circle.  Intersections within that distance
-    of one another are treated as a single contact.  Newly inserted nodes on
-    a shared selected edge are deduplicated; their Z coordinate is linearly
+    ``merge_tolerance`` is a geometric merge distance.  An intersection within
+    that distance of an edge endpoint reuses the endpoint after projecting its
+    XY coordinate radially onto the circle.  Intersections within that distance
+    of one another are treated as a single contact.  Newly inserted nodes on a
+    shared selected edge are deduplicated; their Z coordinate is linearly
     interpolated along the source edge.
 
     When ``indices`` is provided, only those element rows may have their
@@ -962,10 +976,9 @@ def _imprint_circle(
 
     Args:
         mesh: Mesh to update in place.
-        center_x: Circle-center X coordinate.
-        center_y: Circle-center Y coordinate.
+        center: Two finite coordinates for the circle center.
         radius: Strictly positive circle radius.
-        tolerance: Non-negative endpoint/intersection merge distance.
+        merge_tolerance: Non-negative endpoint/intersection merge distance.
         indices: Optional unique one-dimensional element-row selection.
 
     Returns:
@@ -973,39 +986,18 @@ def _imprint_circle(
 
     Raises:
         TypeError: If ``mesh`` or ``indices`` has an invalid type.
-        ValueError: If mesh data, circle values, tolerance, or selected
+        ValueError: If mesh data, circle values, merge tolerance, or selected
             element geometry are invalid.
         IndexError: If an element index is out of range.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
 
-    try:
-        circle_values = np.asarray(
-            [
-                float(center_x),
-                float(center_y),
-                float(radius),
-                float(tolerance),
-            ],
-            dtype=np.float64,
-        )
-    except (TypeError, ValueError, OverflowError) as error:
-        raise ValueError(
-            "center_x, center_y, radius, and tolerance must be real numbers"
-        ) from error
-    if not np.all(np.isfinite(circle_values)):
-        raise ValueError(
-            "center_x, center_y, radius, and tolerance must be finite"
-        )
-
-    center = circle_values[:2]
-    circle_radius = float(circle_values[2])
-    merge_tolerance = float(circle_values[3])
-    if circle_radius <= 0.0:
-        raise ValueError("radius must be positive")
-    if merge_tolerance < 0.0:
-        raise ValueError("tolerance must be non-negative")
+    center, circle_radius = _normalize_circle(center, radius)
+    merge_tolerance = _normalize_nonnegative(
+        merge_tolerance,
+        "merge_tolerance",
+    )
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -2064,7 +2056,8 @@ def _imprint_circle(
 
 def _remove_redundant_element(
     mesh: Mesh2D,
-    tolerance: float,
+    merge_tolerance: float,
+    minimum_area: float,
 ) -> Mesh2D:
     """Remove unusable elements and equivalence coincident mesh nodes.
 
@@ -2074,36 +2067,33 @@ def _remove_redundant_element(
     group.  After remapping, a Quad4 collapsed along one edge is retained as a
     Tri3, while a simple concave Quad4 is split into two positive-area Tri3
     elements.  Elements that cannot be repaired or whose XY area is less than
-    or equal to ``tolerance`` are discarded.
+    or equal to ``minimum_area`` are discarded.
 
     Unreferenced nodes are removed and connectivity is compacted.  The update
     is committed atomically, and the same mesh object is returned.
 
     Args:
         mesh: Mesh to clean in place.
-        tolerance: Non-negative area cutoff and XY node-equivalence distance.
+        merge_tolerance: Non-negative XY node-equivalence distance.
+        minimum_area: Non-negative area cutoff for retained and repaired
+            elements.
 
     Returns:
         The same :class:`Mesh2D` instance after cleanup.
 
     Raises:
         TypeError: If ``mesh`` is not a :class:`Mesh2D`.
-        ValueError: If ``tolerance`` or the mesh array shapes and dtypes are
+        ValueError: If a tolerance or the mesh array shapes and dtypes are
             invalid.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
 
-    if isinstance(tolerance, (bool, np.bool_)):
-        raise ValueError("tolerance must be a finite non-negative number")
-    try:
-        tolerance = float(tolerance)
-    except (TypeError, ValueError, OverflowError) as error:
-        raise ValueError(
-            "tolerance must be a finite non-negative number"
-        ) from error
-    if not np.isfinite(tolerance) or tolerance < 0.0:
-        raise ValueError("tolerance must be a finite non-negative number")
+    merge_tolerance = _normalize_nonnegative(
+        merge_tolerance,
+        "merge_tolerance",
+    )
+    minimum_area = _normalize_nonnegative(minimum_area, "minimum_area")
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -2132,7 +2122,7 @@ def _remove_redundant_element(
     retained = _candidate_element_mask(
         working_nodes,
         working_elements,
-        tolerance,
+        minimum_area,
     )
     candidate_elements = working_elements[retained]
 
@@ -2144,14 +2134,14 @@ def _remove_redundant_element(
         old_to_representative = _equivalent_node_mapping(
             working_nodes,
             referenced_nodes,
-            tolerance,
+            merge_tolerance,
         )
         remapped_elements = old_to_representative[candidate_elements]
         proposed_elements = _repair_elements(
             working_nodes,
             remapped_elements,
             candidate_is_triangle,
-            tolerance,
+            minimum_area,
         )
     else:
         proposed_elements = np.empty((0, 4), dtype=np.int64)

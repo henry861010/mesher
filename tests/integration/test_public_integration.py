@@ -11,6 +11,10 @@ from mesher.mesh2d.circular.extend import (
 from mesher.mesh2d.circular.imprint import (
     imprint_circle as imprint_circle_implementation,
 )
+from mesher.mesh2d.circular.imprint_v2 import imprint_circle as imprint_circle_v2
+from mesher.mesh2d.circular.imprint_v2.mesher import (
+    imprint_circle as imprint_circle_v2_implementation,
+)
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.visualization import build_faces, view_mesh
 
@@ -23,6 +27,7 @@ class PublicIntegrationTests(unittest.TestCase):
             "mesher.mesh2d.generators.rectilinear",
         )
         self.assertIs(imprint_circle, imprint_circle_implementation)
+        self.assertIs(imprint_circle_v2, imprint_circle_v2_implementation)
         self.assertIs(
             extend_circular_mesh,
             extend_circular_mesh_implementation,
