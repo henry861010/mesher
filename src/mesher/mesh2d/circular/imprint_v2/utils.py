@@ -1,12 +1,12 @@
 """Utilities for imprinting circular 2D meshes.
 
-``to_circle`` moves existing nodes onto a circle and normalizes orientable
-element connectivity counter-clockwise. ``imprint_circle`` splits elements
-crossed by the circle, while ``remove_redundant_element`` equivalences nearby
+``_to_circle`` moves existing nodes onto a circle and normalizes orientable
+element connectivity counter-clockwise. ``_imprint_circle`` splits elements
+crossed by the circle, while ``_remove_redundant_element`` equivalences nearby
 nodes, repairs recoverable cells, removes unusable cells, and compacts the mesh.
 
 All geometric calculations use node X and Y coordinates. A node's Z value is
-preserved by ``to_circle`` and inherited from the lowest-index representative
+preserved by ``_to_circle`` and inherited from the lowest-index representative
 during node equivalence.
 """
 
@@ -102,7 +102,7 @@ def _prepare_guide_circle_roots(
         with the finite segment.  Values in invalid slots must not be used.
 
     Notes:
-        This helper assumes its inputs were normalized by ``to_circle`` and
+        This helper assumes its inputs were normalized by ``_to_circle`` and
         does not mutate the guide set or mesh.
     """
     guide_count = len(pattern_guides)
@@ -226,7 +226,7 @@ def _accumulate_guide_constraints(
         ``_GUIDE_PAIR_BATCH_SIZE`` bounds temporary pair arrays.  A candidate
         matched by conflicting guides is not rejected here unless a root is
         missing or ambiguous; geometric disagreement is resolved by
-        ``to_circle`` after both orientations have been accumulated.
+        ``_to_circle`` after both orientations have been accumulated.
     """
     if candidate_xy.shape[0] == 0 or guide_positions.size == 0:
         return
@@ -615,7 +615,7 @@ def _commit_circle_update(
     return mesh
 
 
-def to_circle(
+def _to_circle(
     mesh: Mesh2D,
     center_x: float,
     center_y: float,
@@ -929,7 +929,7 @@ def to_circle(
     return _commit_circle_update(mesh, proposed_nodes, elements)
 
 
-def imprint_circle(
+def _imprint_circle(
     mesh: Mesh2D,
     center_x: float,
     center_y: float,
@@ -2062,7 +2062,7 @@ def imprint_circle(
     return mesh
 
 
-def remove_redundant_element(
+def _remove_redundant_element(
     mesh: Mesh2D,
     tolerance: float,
 ) -> Mesh2D:
@@ -2517,7 +2517,7 @@ def _union_close_node_groups(
 
 
 __all__ = [
-    "imprint_circle",
-    "remove_redundant_element",
-    "to_circle",
+    "_imprint_circle",
+    "_remove_redundant_element",
+    "_to_circle",
 ]

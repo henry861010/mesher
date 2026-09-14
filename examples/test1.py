@@ -2,7 +2,11 @@ import random
 
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.visualization import view_mesh
-from mesher.mesh2d.circular.imprint_v2.utils import to_circle, imprint_circle, remove_redundant_element
+from mesher.mesh2d.circular.imprint_v2.utils import (
+    _imprint_circle,
+    _remove_redundant_element,
+    _to_circle,
+)
 
 random.seed(1)
 
@@ -85,7 +89,7 @@ def main():
         y_coordinates,
     )
     
-    mesh = to_circle(
+    mesh = _to_circle(
         mesh = mesh,
         center_x = center_x,
         center_y = center_y,
@@ -95,12 +99,12 @@ def main():
         guide_segments=reference_lines
     )
     
-    mesh = remove_redundant_element(
+    mesh = _remove_redundant_element(
         mesh = mesh,
         tolerance = 0.01,
     )
     
-    mesh = imprint_circle(
+    mesh = _imprint_circle(
         mesh = mesh,
         center_x = center_x,
         center_y = center_y,
