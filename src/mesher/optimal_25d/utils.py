@@ -4,7 +4,8 @@ class Point:
     def __init__(self, x, y):
         self.x = x
         self.y = y
-        self.ref_lines = []
+        self.line_vertical = None
+        self.line_horizon = None
         
     def __getitem__(self, index):
         if index == 0:
@@ -21,10 +22,21 @@ class Point:
         raise ValueError("index out of bound")
         
     def set_line(self, line:'Line'):
-        self.ref_lines.append(line)
-        
-    def get_lines(self):
-        return self.ref_lines
+        if line.axis == 0:
+            if self.line_vertical is None:
+                self.line_vertical = line
+            else:
+                raise ValueError("Point can only have one vertical line")
+        else:
+            if self.line_horizon is None:
+                self.line_horizon = line
+            else:
+                raise ValueError("Point can only have one horizon line")
+            
+    def get_group(self):
+        group_h = self.line_horizon.get_group()
+        group_v = self.line_vertical.get_group()
+        return (group_h, group_v)
 
 class Line:
     def __init__(self, p1:Point, p2:Point):
@@ -101,7 +113,10 @@ class Line:
         return in_top_zone or in_bottom_zone
             
     def set_group(self, group:'LineGroup'):
-        self.group = group
+        if self.group is None:
+            self.group = group
+        else:
+            raise ValueError("Line can only have one group")
         
     def get_group(self):
         return self.group
@@ -109,15 +124,15 @@ class Line:
 class LineGroup:
     def __init__(self, size:float, angle:float=45, line:Line=None):
         self.lines = []
-        self.size = size
-        self.angle = angle
+        self._size = size
+        self._angle = angle
         
         if line is not None:
             self.lines.append(line)
         
     def is_group_alloable(self, line:Line):
         for line_g in self.lines:
-            if not line_g.is_group_alloable(line, size=self.size, angle=self.angle):
+            if not line_g.is_group_alloable(line, size=self._size, angle=self._angle):
                 return False
         return True
     
@@ -177,10 +192,13 @@ for index, line in enumerate(lines_horizon):
             groups_horizon.append(group)
             
 # rule2: different node with same groups in both x and y
-for point in points:
-    ref_lines = point.get_lines()
-    if len(ref_lines) > 1:
+for i in range(len(points)):
+    for j in range(i, len(points)):
+        g_h_i, g_v_i = points[i].get_group()
+        g_h_j, g_v_j = points[j].get_group()
         
+        if (g_h_i is g_h_j) and (g_v_i is g_v_j):
+            print()
      
             
 print(len(groups_vertical))
