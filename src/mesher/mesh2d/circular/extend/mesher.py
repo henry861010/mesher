@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...model import Mesh2D
-from ..utils.projection import _to_circle
+from ..utils.geometry import _minimum_scaled_jacobian
 from ..utils.topology import _clear_node, _get_boundary
 
 
@@ -117,8 +117,8 @@ def _copy_and_validate_mesh(mesh):
         raise ValueError("elements contain an out-of-range node index")
 
     return Mesh2D(
-        nodes=np.array(nodes, copy=True),
-        elements=np.array(elements, copy=True),
+        nodes=nodes,
+        elements=elements,
     )
 
 
@@ -279,7 +279,7 @@ def _layer_count(mesh, ring_size, request):
     maximum_new_nodes = min(
         int(np.iinfo(np.intp).max),
         10_000_000,
-        int(np.iinfo(np.int64).max) - existing_nodes,
+        int(np.iinfo(np.int32).max) - existing_nodes,
     )
     if count > maximum_new_nodes // ring_size:
         raise ValueError("element_size requires too many circular nodes")
@@ -296,44 +296,160 @@ def _layer_count(mesh, ring_size, request):
     return count
 
 
-def _append_circular_layers(mesh, inner_boundary, request):
-    """Append equally spaced concentric Quad4 strips through outer_radius."""
+def _generated_geometry_tolerance(request):
+    """Return a floating-point tolerance for generated layer validation."""
+    coordinate_scale = max(
+        1.0,
+        request.outer_radius,
+        *np.abs(request.center).tolist(),
+    )
+    return 64.0 * np.finfo(np.float64).eps * coordinate_scale
+
+
+def _layer_radii(layer_count, request):
+    """Return strictly increasing radii ending exactly at outer_radius."""
+    fractions = np.arange(1, layer_count + 1, dtype=np.float64)
+    fractions /= layer_count
+    radii = request.inner_radius + (
+        request.outer_radius - request.inner_radius
+    ) * fractions
+    radii[-1] = request.outer_radius
+    if not np.all(np.isfinite(radii)) or np.any(
+        np.diff(np.concatenate(([request.inner_radius], radii))) <= 0.0
+    ):
+        raise ValueError(
+            "element_size produces indistinguishable circular layer radii"
+        )
+    return radii
+
+
+def _build_layer_nodes(mesh, inner_boundary, request, radii):
+    """Build every concentric target ring in one vectorized allocation."""
+    nodes = np.asarray(mesh.nodes)
+    boundary = inner_boundary.node_indices
+    source_nodes = nodes[boundary]
+    offsets = source_nodes[:, :2] - request.center
+    distances = np.hypot(offsets[:, 0], offsets[:, 1])
+    if np.any(distances <= 0.0) or not np.all(np.isfinite(distances)):
+        raise ValueError(
+            "a circular boundary node cannot coincide with the circle center"
+        )
+    unit_directions = offsets / distances[:, None]
+
+    layer_nodes = np.empty(
+        (radii.size, boundary.size, nodes.shape[1]),
+        dtype=np.float64,
+    )
+    with np.errstate(over="ignore", invalid="ignore"):
+        layer_nodes[:, :, 0] = (
+            request.center[0]
+            + radii[:, None] * unit_directions[None, :, 0]
+        )
+        layer_nodes[:, :, 1] = (
+            request.center[1]
+            + radii[:, None] * unit_directions[None, :, 1]
+        )
+    if nodes.shape[1] == 3:
+        layer_nodes[:, :, 2] = source_nodes[None, :, 2]
+    if not np.all(np.isfinite(layer_nodes)):
+        raise ValueError("generated circular coordinates exceed float64 range")
+    return layer_nodes
+
+
+def _build_layer_elements(mesh, inner_boundary, layer_count):
+    """Build every concentric Quad4 strip in one vectorized allocation."""
+    boundary = inner_boundary.node_indices
+    ring_size = boundary.size
+    node_start = np.asarray(mesh.nodes).shape[0]
+    new_node_count = layer_count * ring_size
+    ring_indices = np.empty((layer_count + 1, ring_size), dtype=np.int64)
+    ring_indices[0] = boundary
+    ring_indices[1:] = np.arange(
+        node_start,
+        node_start + new_node_count,
+        dtype=np.int64,
+    ).reshape(layer_count, ring_size)
+
+    if inner_boundary.closed:
+        start_positions = np.arange(ring_size, dtype=np.intp)
+        end_positions = np.roll(start_positions, -1)
+    else:
+        start_positions = np.arange(ring_size - 1, dtype=np.intp)
+        end_positions = start_positions + 1
+
+    source_rings = ring_indices[:-1]
+    target_rings = ring_indices[1:]
+    # Boundary loops follow the exposed element edge direction. Reverse each
+    # source edge so the appended quad pairs it oppositely and remains CCW.
+    layer_elements = np.stack(
+        (
+            source_rings[:, end_positions],
+            source_rings[:, start_positions],
+            target_rings[:, start_positions],
+            target_rings[:, end_positions],
+        ),
+        axis=-1,
+    )
+    return layer_elements.reshape(-1, 4)
+
+
+def _validate_generated_layers(nodes, elements, request):
+    """Require finite, non-degenerate, counter-clockwise generated quads."""
+    # Boundary angles were already proven strictly ordered. Every target ring
+    # reuses those directions at a larger radius, so non-neighbouring ring and
+    # radial edges cannot cross; vectorized local Jacobians are sufficient.
+    tolerance = _generated_geometry_tolerance(request)
+    chunk_size = 262_144
+    minimum_quality = np.inf
+    for start in range(0, elements.shape[0], chunk_size):
+        quality = _minimum_scaled_jacobian(
+            nodes[:, :2],
+            elements[start : start + chunk_size],
+            tolerance,
+        )
+        if quality is None:
+            raise ValueError(
+                "generated circular layers contain an invalid quadrilateral"
+            )
+        minimum_quality = min(minimum_quality, quality)
+    if not np.isfinite(minimum_quality) or minimum_quality <= 0.0:
+        raise ValueError(
+            "generated circular layers contain an invalid quadrilateral"
+        )
+
+
+def _build_circular_layers(mesh, inner_boundary, request):
+    """Build all concentric nodes and Quad4 strips without mutating mesh."""
     layer_count = _layer_count(
         mesh,
         inner_boundary.node_indices.size,
         request,
     )
-    thickness = request.outer_radius - request.inner_radius
-    boundary = inner_boundary.node_indices
-    previous_radius = request.inner_radius
+    radii = _layer_radii(layer_count, request)
+    layer_nodes = _build_layer_nodes(
+        mesh,
+        inner_boundary,
+        request,
+        radii,
+    )
+    layer_elements = _build_layer_elements(
+        mesh,
+        inner_boundary,
+        layer_count,
+    )
 
-    for layer in range(1, layer_count + 1):
-        target_radius = (
-            request.outer_radius
-            if layer == layer_count
-            else request.inner_radius + thickness * layer / layer_count
-        )
-        if not np.isfinite(target_radius) or target_radius <= previous_radius:
-            raise ValueError(
-                "element_size produces indistinguishable circular layer radii"
-            )
-
-        node_start = np.asarray(mesh.nodes).shape[0]
-        _to_circle(
-            mesh,
-            request.center[0],
-            request.center[1],
-            target_radius,
-            boundary,
-            closed=inner_boundary.closed,
-        )
-        node_stop = np.asarray(mesh.nodes).shape[0]
-        if node_stop - node_start != boundary.size:
-            raise RuntimeError(
-                "a circular layer created an unexpected number of nodes"
-            )
-        boundary = np.arange(node_start, node_stop, dtype=np.int64)
-        previous_radius = target_radius
+    nodes = np.asarray(mesh.nodes)
+    elements = np.asarray(mesh.elements)
+    combined_nodes = np.concatenate(
+        (nodes, layer_nodes.reshape(-1, nodes.shape[1])),
+        axis=0,
+    )
+    combined_elements = np.concatenate(
+        (elements, layer_elements.astype(elements.dtype, copy=False)),
+        axis=0,
+    )
+    _validate_generated_layers(combined_nodes, layer_elements, request)
+    return combined_nodes, combined_elements
 
 
 def extend_circular_mesh(
@@ -350,10 +466,11 @@ def extend_circular_mesh(
 
     Existing elements outside ``inner_radius`` are discarded. The remaining
     mesh must expose exactly one complete node loop or continuous open arc on
-    ``inner_radius``. That boundary is projected outward repeatedly with a
-    constant node count and angular coverage until the final layer reaches
-    ``outer_radius``. ``element_size`` limits radial layer spacing only; it
-    does not limit circumferential edge length.
+    ``inner_radius``. That boundary's angular positions are projected outward
+    through every concentric layer in one batch, with a constant node count
+    and angular coverage until the final layer reaches ``outer_radius``.
+    ``element_size`` limits radial layer spacing only; it does not limit
+    circumferential edge length.
 
     Args:
         mesh: Mesh2D to update transactionally in place.
@@ -396,9 +513,13 @@ def extend_circular_mesh(
         request,
         tolerance,
     )
-    _append_circular_layers(working_mesh, inner_boundary, request)
+    nodes, elements = _build_circular_layers(
+        working_mesh,
+        inner_boundary,
+        request,
+    )
 
-    mesh.replace_data(nodes=working_mesh.nodes, elements=working_mesh.elements)
+    mesh.replace_data(nodes=nodes, elements=elements)
     return mesh
 
 

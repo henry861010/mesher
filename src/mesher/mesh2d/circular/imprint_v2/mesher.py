@@ -71,6 +71,7 @@ def imprint_circle(
         "merge_tolerance",
     )
     minimum_area = _normalize_nonnegative(minimum_area, "minimum_area")
+    minimum_area = min(1, minimum_area)
 
     working_mesh = Mesh2D(nodes=mesh.nodes, elements=mesh.elements)
     _to_circle(

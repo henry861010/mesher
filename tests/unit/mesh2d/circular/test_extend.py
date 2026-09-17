@@ -1,3 +1,4 @@
+import time
 import unittest
 from unittest.mock import patch
 
@@ -190,7 +191,14 @@ class ExtendCircularMeshTests(unittest.TestCase):
             angles=angles,
             dimensions=3,
         )
+        source_xy = mesh.nodes[1:, :2].copy()
         source_z = mesh.nodes[1:, 2].copy()
+        source_offsets = source_xy - np.array([4.0, -3.0])
+        source_directions = source_offsets / np.linalg.norm(
+            source_offsets,
+            axis=1,
+            keepdims=True,
+        )
 
         extend_circular_mesh(
             mesh,
@@ -207,6 +215,12 @@ class ExtendCircularMeshTests(unittest.TestCase):
             np.testing.assert_allclose(
                 np.hypot(offsets[:, 0], offsets[:, 1]),
                 radius,
+                atol=1.0e-12,
+            )
+            np.testing.assert_allclose(
+                layer[:, :2],
+                np.array([4.0, -3.0]) + radius * source_directions,
+                rtol=0.0,
                 atol=1.0e-12,
             )
             np.testing.assert_array_equal(layer[:, 2], source_z)
@@ -539,25 +553,16 @@ class ExtendCircularMeshTests(unittest.TestCase):
 
         self.assert_mesh_unchanged(mesh, snapshot)
 
-    def test_failure_on_a_later_layer_leaves_original_mesh_unchanged(self):
+    def test_generated_layer_validation_failure_leaves_mesh_unchanged(self):
         mesh = _fan_mesh()
         snapshot = self._snapshot(mesh)
-        original_to_circle = extend_module._to_circle
-        call_count = 0
-
-        def fail_on_second_layer(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
-                raise ValueError("second layer failed")
-            return original_to_circle(*args, **kwargs)
 
         with patch.object(
             extend_module,
-            "_to_circle",
-            side_effect=fail_on_second_layer,
+            "_validate_generated_layers",
+            side_effect=ValueError("generated layer validation failed"),
         ):
-            with self.assertRaisesRegex(ValueError, "second layer"):
+            with self.assertRaisesRegex(ValueError, "validation failed"):
                 extend_circular_mesh(
                     mesh,
                     element_size=0.5,
@@ -567,7 +572,6 @@ class ExtendCircularMeshTests(unittest.TestCase):
                     outer_radius=2.0,
                 )
 
-        self.assertEqual(call_count, 2)
         self.assert_mesh_unchanged(mesh, snapshot)
 
     def test_unrepresentably_small_element_size_is_rejected_atomically(self):
@@ -585,6 +589,69 @@ class ExtendCircularMeshTests(unittest.TestCase):
             )
 
         self.assert_mesh_unchanged(mesh, snapshot)
+
+
+class ExtendCircularMeshPerformanceTests(unittest.TestCase):
+    maximum_seconds = 5.0
+
+    def test_one_hundred_thousand_nodes_across_many_layers(self):
+        ring_size = 1_000
+        layer_count = 100
+        base_angles = np.linspace(
+            0.0,
+            2.0 * np.pi,
+            ring_size,
+            endpoint=False,
+        )
+        angles = base_angles + (0.15 / ring_size) * np.sin(
+            7.0 * base_angles
+        )
+        mesh = _fan_mesh(angles=angles)
+
+        started = time.perf_counter()
+        result = extend_circular_mesh(
+            mesh,
+            element_size=1.0,
+            center_x=0.0,
+            center_y=0.0,
+            inner_radius=1.0,
+            outer_radius=101.0,
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertIs(result, mesh)
+        self.assertEqual(mesh.node_count, 1 + ring_size * (layer_count + 1))
+        self.assertEqual(
+            mesh.element_count,
+            ring_size * (layer_count + 1),
+        )
+        self.assertLess(elapsed, self.maximum_seconds)
+
+    def test_one_hundred_thousand_nodes_on_one_ring(self):
+        ring_size = 100_000
+        angles = np.linspace(
+            0.0,
+            2.0 * np.pi,
+            ring_size,
+            endpoint=False,
+        )
+        mesh = _fan_mesh(angles=angles)
+
+        started = time.perf_counter()
+        result = extend_circular_mesh(
+            mesh,
+            element_size=1.0,
+            center_x=0.0,
+            center_y=0.0,
+            inner_radius=1.0,
+            outer_radius=2.0,
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertIs(result, mesh)
+        self.assertEqual(mesh.node_count, 1 + 2 * ring_size)
+        self.assertEqual(mesh.element_count, 2 * ring_size)
+        self.assertLess(elapsed, self.maximum_seconds)
 
 
 if __name__ == "__main__":
