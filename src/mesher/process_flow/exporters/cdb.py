@@ -21,9 +21,11 @@ def write_cdb_text(
     path = Path(output_path)
     total_records = (
         mesh.node_count
-        + mesh.element_count
-        + len(mesh.element_comps)
+        + 6 * mesh.element_count
         + mesh.component_count
+        + len(mesh.types)
+        + len(mesh.reals)
+        + len(mesh.sections)
     )
     completed_records = 0
     report_interval = max(1, total_records // 100)
@@ -49,6 +51,9 @@ def write_cdb_text(
         handle.write(f"node_count={mesh.node_count}\n")
         handle.write(f"element_count={mesh.element_count}\n")
         handle.write(f"component_count={mesh.component_count}\n")
+        handle.write(f"type_count={len(mesh.types)}\n")
+        handle.write(f"real_count={len(mesh.reals)}\n")
+        handle.write(f"section_count={len(mesh.sections)}\n")
 
         handle.write("\n*NODES,index,x,y,z\n")
         report("Writing CDB nodes.", force=True)
@@ -59,13 +64,73 @@ def write_cdb_text(
             completed_records += 1
             report("Writing CDB nodes.")
 
-        handle.write("\n*ELEMENTS,index,n0,n1,n2,n3,n4,n5,n6,n7\n")
+        element_columns = ",".join(f"n{index}" for index in range(20))
+        handle.write(f"\n*ELEMENTS,index,{element_columns}\n")
         report("Writing CDB elements.", force=True)
         for element_index, element in enumerate(mesh.elements):
             node_ids = ",".join(str(int(node_id)) for node_id in element)
             handle.write(f"{element_index},{node_ids}\n")
             completed_records += 1
             report("Writing CDB elements.")
+
+        handle.write("\n*ELEMENT_NODE_NUM,index,node_num\n")
+        report("Writing CDB element node counts.", force=True)
+        for element_index, node_num in enumerate(mesh.element_node_num):
+            handle.write(f"{element_index},{int(node_num)}\n")
+            completed_records += 1
+            report("Writing CDB element node counts.")
+
+        handle.write("\n*ELEMENT_TYPE,index,type_id\n")
+        report("Writing CDB element types.", force=True)
+        for element_index, type_id in enumerate(mesh.element_types):
+            handle.write(f"{element_index},{int(type_id)}\n")
+            completed_records += 1
+            report("Writing CDB element types.")
+
+        handle.write("\n*TYPES,type_id,ansys_element_type\n")
+        report("Writing CDB type table.", force=True)
+        for type_id, ansys_element_type in sorted(mesh.types.items()):
+            handle.write(f"{int(type_id)},{int(ansys_element_type)}\n")
+            completed_records += 1
+            report("Writing CDB type table.")
+
+        handle.write("\n*ELEMENT_REAL,index,real_id\n")
+        report("Writing CDB element real ids.", force=True)
+        for element_index, real_id in enumerate(mesh.element_reals):
+            handle.write(f"{element_index},{int(real_id)}\n")
+            completed_records += 1
+            report("Writing CDB element real ids.")
+
+        handle.write("\n*REALS,real_id,values_json\n")
+        report("Writing CDB real table.", force=True)
+        for real_id, values in sorted(mesh.reals.items()):
+            encoded_values = json.dumps(
+                values,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            handle.write(f"{int(real_id)},{encoded_values}\n")
+            completed_records += 1
+            report("Writing CDB real table.")
+
+        handle.write("\n*ELEMENT_SECTION,index,section_id\n")
+        report("Writing CDB element section ids.", force=True)
+        for element_index, section_id in enumerate(mesh.element_sections):
+            handle.write(f"{element_index},{int(section_id)}\n")
+            completed_records += 1
+            report("Writing CDB element section ids.")
+
+        handle.write("\n*SECTIONS,section_id,values_json\n")
+        report("Writing CDB section table.", force=True)
+        for section_id, values in sorted(mesh.sections.items()):
+            encoded_values = json.dumps(
+                values,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            handle.write(f"{int(section_id)},{encoded_values}\n")
+            completed_records += 1
+            report("Writing CDB section table.")
 
         handle.write("\n*ELEMENT_COMP,index,component_id\n")
         report("Writing CDB element components.", force=True)
@@ -92,6 +157,9 @@ def write_cdb_text(
         "nodeCount": mesh.node_count,
         "elementCount": mesh.element_count,
         "componentCount": mesh.component_count,
+        "typeCount": len(mesh.types),
+        "realCount": len(mesh.reals),
+        "sectionCount": len(mesh.sections),
     }
 
 

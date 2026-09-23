@@ -13,9 +13,16 @@ class AtomicWorkerOutputTests(unittest.TestCase):
     def test_failed_export_preserves_existing_output_and_removes_temporary_file(self):
         mesh = Mesh3D(
             nodes=np.empty((0, 3)),
-            elements=np.empty((0, 8), dtype=np.int32),
+            elements=np.empty((0, 20), dtype=np.int32),
             element_comps=np.empty(0, dtype=np.int32),
             comps={"EMPTY": 0},
+            element_types=np.empty(0, dtype=np.int32),
+            types={1: 185},
+            element_reals=np.empty(0, dtype=np.int32),
+            reals={},
+            element_sections=np.empty(0, dtype=np.int32),
+            sections={},
+            element_node_num=np.empty(0, dtype=np.int32),
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:

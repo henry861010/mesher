@@ -60,6 +60,17 @@ def _multi_circle_structure():
     }
 
 
+def _mesh_control(*, element_size=1.0, symmetry="full", controls=None):
+    return {
+        "schemaVersion": "1.0.0",
+        "unitSystem": "um",
+        "mesher": "process_flow_2_5d",
+        "globalElementSize": element_size,
+        "symmetry": symmetry,
+        "controls": [] if controls is None else controls,
+    }
+
+
 class WorkerIntegrationTests(unittest.TestCase):
     def _run_worker(
         self,
@@ -67,6 +78,7 @@ class WorkerIntegrationTests(unittest.TestCase):
         output_path: Path,
         *,
         symmetry: str | None = None,
+        controls=None,
     ):
         env = os.environ.copy()
         source_dir = Path(__file__).resolve().parents[3] / "src"
@@ -75,16 +87,24 @@ class WorkerIntegrationTests(unittest.TestCase):
             part for part in (str(source_dir), existing_pythonpath) if part
         )
         env.setdefault("MPLCONFIGDIR", tempfile.gettempdir())
+        mesh_control_path = input_path.with_name("mesh_control.json")
+        mesh_control_path.write_text(
+            json.dumps(
+                _mesh_control(
+                    symmetry="full" if symmetry is None else symmetry,
+                    controls=controls,
+                )
+            ),
+            encoding="utf-8",
+        )
         command = [
             sys.executable,
             "-m",
             "mesher.process_flow.worker",
             str(input_path),
-            "1.0",
+            str(mesh_control_path),
             str(output_path),
         ]
-        if symmetry is not None:
-            command.append(symmetry)
         return subprocess.run(
             command,
             check=False,
@@ -109,6 +129,9 @@ class WorkerIntegrationTests(unittest.TestCase):
                     "nodeCount": 8,
                     "elementCount": 1,
                     "componentCount": 2,
+                    "typeCount": 1,
+                    "realCount": 0,
+                    "sectionCount": 0,
                 },
             )
             self.assertIn("node_count=8", output_path.read_text(encoding="utf-8"))
@@ -122,8 +145,8 @@ class WorkerIntegrationTests(unittest.TestCase):
             result = self._run_worker(input_path, output_path)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout)["elementCount"], 66)
-            self.assertIn("element_count=66", output_path.read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(result.stdout)["elementCount"], 76)
+            self.assertIn("element_count=76", output_path.read_text(encoding="utf-8"))
 
     def test_worker_accepts_an_optional_quarter_model(self):
         structure = _box_structure()
@@ -171,6 +194,26 @@ class WorkerIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("symmetry must be one of", result.stderr)
             self.assertFalse(output_path.exists())
+
+    def test_worker_reports_unapplied_mesh_controls_as_a_warning(self):
+        controls = [
+            {
+                "method": "Z_POINT",
+                "z": {"mode": "absolute", "value": 0.5},
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "geometry.json"
+            output_path = Path(temp_dir) / "mesh.cdb"
+            input_path.write_text(json.dumps(_box_structure()), encoding="utf-8")
+
+            result = self._run_worker(input_path, output_path, controls=controls)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            metadata = json.loads(result.stdout)
+            self.assertEqual(len(metadata["warnings"]), 1)
+            self.assertIn("not applied", metadata["warnings"][0])
+            self.assertTrue(output_path.exists())
 
     def test_worker_does_not_write_partial_output_for_incompatible_circles(self):
         structure = _multi_circle_structure()

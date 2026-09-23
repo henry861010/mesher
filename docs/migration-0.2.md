@@ -27,6 +27,10 @@ package.
 - `Mesh3D` retains the original `element_comps` and `comps` field names; the
   temporary `element_component_ids` and `component_ids_by_name` names are not
   supported.
+- `Mesh3D.elements` now uses fixed-width `(m, 20)` connectivity. Constructors
+  must also provide `element_types`, `types`, `element_reals`, `reals`,
+  `element_sections`, `sections`, and `element_node_num`; unused connectivity
+  slots repeat the final effective node id.
 - `model_type` is now `symmetry`.
 - `Full_Model`, `Quarter_Model`, `Half_Model_X`, and `Half_Model_Y` become
   `full`, `upper_right_quarter`, `upper_half`, and `right_half` respectively.

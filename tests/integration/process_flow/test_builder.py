@@ -7,7 +7,35 @@ from mesher import Mesh3D
 from mesher.mesh2d.circular import extend_circular_mesh
 from mesher.mesh2d.circular.imprint_v2 import imprint_circle
 
-from mesher.process_flow import build_mesh_from_structure
+from mesher.process_flow import (
+    build_mesh_from_structure as _build_mesh_from_structure,
+    validate_mesh_control,
+)
+
+
+def _mesh_control(element_size=1.0, symmetry="full", controls=None):
+    return {
+        "schemaVersion": "1.0.0",
+        "unitSystem": "um",
+        "mesher": "process_flow_2_5d",
+        "globalElementSize": element_size,
+        "symmetry": symmetry,
+        "controls": [] if controls is None else controls,
+    }
+
+
+def build_mesh_from_structure(
+    structure,
+    *,
+    element_size,
+    symmetry="full",
+    progress=None,
+):
+    return _build_mesh_from_structure(
+        structure,
+        _mesh_control(element_size, symmetry),
+        progress=progress,
+    )
 
 
 def _box_structure():
@@ -124,6 +152,79 @@ def _append_polygon(structure, *, points, material):
 
 
 class BuilderIntegrationTests(unittest.TestCase):
+    def test_public_mesh_control_validator_owns_the_contract(self):
+        validate_mesh_control(_mesh_control(1.0))
+
+        invalid = _mesh_control(1.0)
+        invalid["controls"] = [
+            {
+                "method": "Z_POINT",
+                "elementSize": 0.25,
+                "z": {"mode": "absolute", "value": 0.5},
+            }
+        ]
+        with self.assertRaisesRegex(ValueError, "unsupported field.*elementSize"):
+            validate_mesh_control(invalid)
+
+    def test_public_builder_validates_but_does_not_apply_mesh_controls(self):
+        baseline = _build_mesh_from_structure(
+            _box_structure(),
+            _mesh_control(1.0),
+        )
+        mesh = _build_mesh_from_structure(
+            _box_structure(),
+            _mesh_control(
+                1.0,
+                controls=[
+                    {
+                        "method": method,
+                        "reference": {"kind": "root"},
+                        "elementSize": 0.25,
+                        "startZ": {
+                            "mode": "relative",
+                            "anchor": "z_min",
+                            "offset": 0,
+                        },
+                        "endZ": {"mode": "absolute", "value": 1},
+                    }
+                    for method in (
+                        "Z_SECTION_AVG",
+                        "Z_SECTION_TOP",
+                        "Z_SECTION_BOT",
+                        "Z_SECTION_CENTER",
+                    )
+                ]
+                + [
+                    {
+                        "method": "Z_POINT",
+                        "z": {"mode": "absolute", "value": 0.5},
+                    }
+                ],
+            ),
+        )
+
+        np.testing.assert_array_equal(mesh.nodes, baseline.nodes)
+        np.testing.assert_array_equal(mesh.elements, baseline.elements)
+        np.testing.assert_array_equal(mesh.element_comps, baseline.element_comps)
+        self.assertEqual(mesh.comps, baseline.comps)
+
+    def test_public_builder_rejects_relative_z_without_reference(self):
+        mesh_control = _mesh_control(
+            controls=[
+                {
+                    "method": "Z_POINT",
+                    "z": {
+                        "mode": "relative",
+                        "anchor": "z_min",
+                        "offset": 0,
+                    },
+                }
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "relative Z locations require reference"):
+            _build_mesh_from_structure(_box_structure(), mesh_control)
+
     def test_rejects_unknown_semantic_keys(self):
         structure = _box_structure()
         structure["root"]["key"] = "mesh-root"
@@ -210,6 +311,14 @@ class BuilderIntegrationTests(unittest.TestCase):
         self.assertEqual(mesh.component_count, 2)
         self.assertEqual(mesh.comps, {"EMPTY": 0, "Si": 1})
         np.testing.assert_array_equal(mesh.element_comps, [1, 1, 1, 1])
+        self.assertEqual(mesh.elements.shape, (4, 20))
+        np.testing.assert_array_equal(mesh.element_types, [1, 1, 1, 1])
+        self.assertEqual(mesh.types, {1: 185})
+        np.testing.assert_array_equal(mesh.element_reals, [0, 0, 0, 0])
+        self.assertEqual(mesh.reals, {})
+        np.testing.assert_array_equal(mesh.element_sections, [0, 0, 0, 0])
+        self.assertEqual(mesh.sections, {})
+        np.testing.assert_array_equal(mesh.element_node_num, [8, 8, 8, 8])
         np.testing.assert_array_equal(
             mesh.nodes,
             [
@@ -234,13 +343,17 @@ class BuilderIntegrationTests(unittest.TestCase):
             ],
         )
         np.testing.assert_array_equal(
-            mesh.elements,
+            mesh.elements[:, :8],
             [
                 [0, 3, 4, 1, 9, 12, 13, 10],
                 [1, 4, 5, 2, 10, 13, 14, 11],
                 [3, 6, 7, 4, 12, 15, 16, 13],
                 [4, 7, 8, 5, 13, 16, 17, 14],
             ],
+        )
+        np.testing.assert_array_equal(
+            mesh.elements[:, 8:],
+            np.repeat(mesh.elements[:, 7, None], 12, axis=1),
         )
 
     def test_progress_callback_reports_features_inside_building_2d_mesh(self):

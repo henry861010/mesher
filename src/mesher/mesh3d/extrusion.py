@@ -1,9 +1,10 @@
 """2.5D extrusion engine for mixed quadrilateral/triangle process meshes.
 
 This module assigns materials to a 2D mesh and extrudes the selected elements
-along the z axis into fixed-width 8-node connectivity. Quad4 elements become
-hexahedra; padded Tri3 rows become wedge-like degenerate solids by repeating
-the third node on the bottom and top faces.
+along the z axis into fixed-width 20-slot ANSYS connectivity. Quad4 elements
+become SOLID185 hexahedra; padded Tri3 rows become wedge-like degenerate solids
+by repeating the third node on the bottom and top faces. Unused slots repeat
+the eighth connectivity id.
 
 Design notes:
     * A face is selected only when all four element corners are inside the
@@ -25,7 +26,9 @@ from .model import Mesh3D
 ELEMENT_2D_LEN = 4
 NODE_2D_LEN = 2
 
-ELEMENT_LEN = 8
+ELEMENT_LEN = 20
+SOLID185_NODE_NUM = 8
+SOLID185_TYPE_ID = 1
 NODE_LEN = 3
 
 START_NORMAL = 3
@@ -45,8 +48,15 @@ class Dragger:
     Attributes:
         comps (dict[str, int]): Material/component name to numeric component id.
         elements (numpy.ndarray): 3D element connectivity. Valid rows are
-            ``elements[:element_num]`` and each row contains 8 node indices.
+            ``elements[:element_num]`` and each row contains 20 node indices.
         element_comps (numpy.ndarray): Component ids for valid 3D elements.
+        element_types (numpy.ndarray): ANSYS type ids for valid 3D elements.
+        types (dict[int, int]): Type id to ANSYS element number definitions.
+        element_reals (numpy.ndarray): Real-constant ids for valid elements.
+        reals (dict[int, list]): Real-constant definitions.
+        element_sections (numpy.ndarray): Section ids for valid elements.
+        sections (dict[int, list]): Section definitions.
+        element_node_num (numpy.ndarray): Effective connectivity slot counts.
         nodes (numpy.ndarray): 3D node coordinates. Valid rows are
             ``nodes[:node_num]`` and each row is ``[x, y, z]``.
         element_2D (numpy.ndarray): Source 2D connectivity. Tri3 rows use
@@ -68,6 +78,13 @@ class Dragger:
         self.element_num = 0
         self.elements = np.empty((0, ELEMENT_LEN), dtype=np.int32)
         self.element_comps = np.empty((0), dtype=np.int32)
+        self.element_types = np.empty((0), dtype=np.int32)
+        self.types = {SOLID185_TYPE_ID: 185}
+        self.element_reals = np.empty((0), dtype=np.int32)
+        self.reals = {}
+        self.element_sections = np.empty((0), dtype=np.int32)
+        self.sections = {}
+        self.element_node_num = np.empty((0), dtype=np.int32)
         
         ### nodes
         self.node_num = 0
@@ -146,7 +163,8 @@ class Dragger:
             size (int): Number of new element rows that will be appended.
 
         Notes:
-            This method grows connectivity and component arrays together.
+            This method grows connectivity and per-element metadata arrays
+            together.
             ``element_num`` still controls how many rows are valid.
         """
         required = self.element_num + size
@@ -155,8 +173,22 @@ class Dragger:
             new_capacity = max(required, int(current_capacity * 1.5))
             extra = new_capacity - current_capacity
             
-            self.elements = np.vstack([self.elements, np.empty((extra, 8), dtype=np.int32)])
+            self.elements = np.vstack(
+                [self.elements, np.empty((extra, ELEMENT_LEN), dtype=np.int32)]
+            )
             self.element_comps = np.concatenate([self.element_comps, np.empty(extra, dtype=np.int32)])
+            self.element_types = np.concatenate(
+                [self.element_types, np.empty(extra, dtype=np.int32)]
+            )
+            self.element_reals = np.concatenate(
+                [self.element_reals, np.empty(extra, dtype=np.int32)]
+            )
+            self.element_sections = np.concatenate(
+                [self.element_sections, np.empty(extra, dtype=np.int32)]
+            )
+            self.element_node_num = np.concatenate(
+                [self.element_node_num, np.empty(extra, dtype=np.int32)]
+            )
         
     ### core
     def _cal_volumes(self):
@@ -510,15 +542,28 @@ class Dragger:
         # cols per element are the (E,4) indices into node2D_idx
         bottom = layer_nodes[:-1][:, elem2D_nodes_local]
         top    = layer_nodes[1:][:,  elem2D_nodes_local]
-        elems  = np.concatenate([bottom, top], axis=2).reshape(drag_num * E, 8)
+        elems = np.concatenate([bottom, top], axis=2).reshape(
+            drag_num * E,
+            SOLID185_NODE_NUM,
+        )
 
         ### assign nodes to each element
-        self.elements[elem_start : elem_start + drag_num * E] = elems.astype(np.int32, copy=False)
+        element_slice = slice(elem_start, elem_start + drag_num * E)
+        target_elements = self.elements[element_slice]
+        target_elements[:, :SOLID185_NODE_NUM] = elems.astype(
+            np.int32,
+            copy=False,
+        )
+        target_elements[:, SOLID185_NODE_NUM:] = elems[:, -1, None]
         
         ### assign comps to each element
         layer_comps = self.element_2D_comp[elem2D_idx]
-        dest = self.element_comps[elem_start : elem_start + drag_num * E].reshape(drag_num, E)
+        dest = self.element_comps[element_slice].reshape(drag_num, E)
         dest[:] = layer_comps
+        self.element_types[element_slice] = SOLID185_TYPE_ID
+        self.element_reals[element_slice] = 0
+        self.element_sections[element_slice] = 0
+        self.element_node_num[element_slice] = SOLID185_NODE_NUM
         
         self.element_num += drag_num * E
 
@@ -604,6 +649,13 @@ class Dragger:
             elements=self.elements[: self.element_num],
             element_comps=self.element_comps[: self.element_num],
             comps=self.comps,
+            element_types=self.element_types[: self.element_num],
+            types=self.types,
+            element_reals=self.element_reals[: self.element_num],
+            reals=self.reals,
+            element_sections=self.element_sections[: self.element_num],
+            sections=self.sections,
+            element_node_num=self.element_node_num[: self.element_num],
         )
 
 

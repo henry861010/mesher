@@ -16,29 +16,35 @@ from .exporters import write_cdb_text
 from .pipeline import build_mesh_from_structure
 
 PROGRESS_PREFIX = "PROCESS_FLOW_PROGRESS "
+MESH_CONTROLS_IGNORED_WARNING = (
+    "Mesh controls were sent to the mesher but are not applied by this version; "
+    "the CDB uses globalElementSize and symmetry only."
+)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) not in {3, 4}:
+    if len(args) != 3:
         print(
             "Usage: python -m mesher.process_flow.worker "
-            "<geometry-structure-json> <element-size> <output-cdb> "
-            "[symmetry]",
+            "<geometry-structure-json> <mesh-control-json> <output-cdb>",
             file=sys.stderr,
         )
         return 2
 
-    input_path, element_size, output_path = args[:3]
-    symmetry = args[3] if len(args) == 4 else "full"
+    geometry_input_path, mesh_control_input_path, output_path = args
     try:
-        geometry_structure = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        geometry_structure = json.loads(
+            Path(geometry_input_path).read_text(encoding="utf-8")
+        )
+        mesh_control = json.loads(
+            Path(mesh_control_input_path).read_text(encoding="utf-8")
+        )
         # Keep stdout machine-readable if a downstream callback emits diagnostics.
         with redirect_stdout(sys.stderr):
             mesh = build_mesh_from_structure(
                 geometry_structure,
-                element_size=float(element_size),
-                symmetry=symmetry,
+                mesh_control,
                 progress=_emit_progress,
             )
         timer = _start_stage(
@@ -47,9 +53,11 @@ def main(argv: list[str] | None = None) -> int:
             current=0,
             total=(
                 mesh.node_count
-                + mesh.element_count
-                + len(mesh.element_comps)
+                + 6 * mesh.element_count
                 + mesh.component_count
+                + len(mesh.types)
+                + len(mesh.reals)
+                + len(mesh.sections)
             ),
             unit="records",
         )
@@ -58,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
             mesh=mesh,
             progress=_emit_progress,
         )
+        if mesh_control.get("controls"):
+            metadata["warnings"] = [MESH_CONTROLS_IGNORED_WARNING]
         output_bytes = Path(output_path).stat().st_size
         _complete_stage(
             "writing_output",

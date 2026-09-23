@@ -13,6 +13,7 @@ from typing import Any, Callable
 import numpy as np
 from process_flow_kernel import validate_geometry_semantic_keys
 
+from ..contracts.process_flow_2_5d import mesh_control_settings
 from ..mesh2d.circular.extend import extend_circular_mesh
 from ..mesh2d.circular.imprint_v2 import imprint_circle
 from ..mesh2d.generators import generate_rectilinear_mesh
@@ -61,9 +62,8 @@ class _StageTimer:
 
 def build_mesh_from_structure(
     geometry_structure: JsonObject,
+    mesh_control: JsonObject,
     *,
-    element_size: float,
-    symmetry: SymmetryMode | str = SymmetryMode.FULL,
     progress: ProgressCallback | None = None,
 ) -> Mesh3D:
     """Build a full or symmetry-reduced 2.5D mesh from a geometry structure.
@@ -75,7 +75,7 @@ def build_mesh_from_structure(
     ``upper_right_quarter`` retains the upper-right quarter.
     """
     stage = _start_stage(progress, "validating", "Checking geometry input.")
-    normalized_element_size = _positive_finite_number(element_size, "elementSize")
+    normalized_element_size, symmetry, _ = mesh_control_settings(mesh_control)
     normalized_symmetry = _normalize_symmetry(symmetry)
     validate_geometry_semantic_keys(geometry_structure)
     root = _root_container(geometry_structure)
@@ -378,7 +378,6 @@ def _clockwise_elements(elements: Any) -> np.ndarray:
     clockwise[~triangle_mask] = source[~triangle_mask][:, [0, 3, 2, 1]]
     clockwise[triangle_mask] = source[triangle_mask][:, [0, 2, 1, 1]]
     return clockwise
-
 
 
 def _root_container(geometry_structure: JsonObject) -> JsonObject:

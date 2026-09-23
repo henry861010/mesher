@@ -59,6 +59,31 @@ class PackageBoundaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "")
 
+    def test_mesh_control_contract_import_does_not_load_meshing_runtime(self):
+        repository_root = Path(__file__).resolve().parents[2]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository_root / "src")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "from mesher.contracts.process_flow_2_5d import "
+                    "validate_mesh_control; "
+                    "runtime = {'matplotlib', 'pyvista', 'PySide6', "
+                    "'process_flow_kernel'}; "
+                    "print(','.join(sorted(runtime.intersection(sys.modules))))"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

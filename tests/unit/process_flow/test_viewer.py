@@ -9,6 +9,33 @@ from mesher import Mesh3D
 from mesher.mesh3d.visualization import MeshViewer
 
 
+def _mesh3d(*, nodes, elements, element_node_num, comps=None, element_comps=None):
+    source = np.asarray(elements, dtype=np.int32)
+    padded = np.empty((len(source), 20), dtype=np.int32)
+    for index, node_num in enumerate(element_node_num):
+        padded[index, :node_num] = source[index, :node_num]
+        if node_num < 20:
+            padded[index, node_num:] = source[index, node_num - 1]
+    count = len(padded)
+    return Mesh3D(
+        nodes=nodes,
+        elements=padded,
+        element_comps=(
+            np.ones(count, dtype=np.int32)
+            if element_comps is None
+            else element_comps
+        ),
+        comps={"EMPTY": 0, "body": 1} if comps is None else comps,
+        element_types=np.ones(count, dtype=np.int32),
+        types={1: 185},
+        element_reals=np.zeros(count, dtype=np.int32),
+        reals={},
+        element_sections=np.zeros(count, dtype=np.int32),
+        sections={},
+        element_node_num=element_node_num,
+    )
+
+
 class FakeActor:
     def __init__(self):
         self.visible = True
@@ -79,7 +106,7 @@ class FakePlotter:
 
 class MeshViewerSelectionTests(unittest.TestCase):
     def setUp(self):
-        self.mesh = Mesh3D(
+        self.mesh = _mesh3d(
             nodes=np.array(
                 [
                     [1.0, 2.0, 3.0],
@@ -87,7 +114,8 @@ class MeshViewerSelectionTests(unittest.TestCase):
                 ],
                 dtype=np.float32,
             ),
-            elements=np.empty((0, 8), dtype=np.int32),
+            elements=np.empty((0, 20), dtype=np.int32),
+            element_node_num=np.empty((0,), dtype=np.int32),
             element_comps=np.empty((0,), dtype=np.int32),
             comps={"EMPTY": 0},
         )
@@ -205,7 +233,7 @@ class MeshViewerSelectionTests(unittest.TestCase):
 
 class MeshViewerDataTests(unittest.TestCase):
     def test_builds_grid_and_component_names_from_mesh_3d(self):
-        mesh = Mesh3D(
+        mesh = _mesh3d(
             nodes=np.array(
                 [
                     [0.0, 0.0, 0.0],
@@ -219,6 +247,7 @@ class MeshViewerDataTests(unittest.TestCase):
                 ]
             ),
             elements=np.array([[0, 1, 2, 3, 4, 5, 6, 7]]),
+            element_node_num=[8],
             element_comps=np.array([1]),
             comps={"EMPTY": 0, "body": 1},
         )
@@ -236,7 +265,7 @@ class MeshViewerDataTests(unittest.TestCase):
         )
 
     def test_builds_wedge_cells_from_padded_connectivity(self):
-        mesh = Mesh3D(
+        mesh = _mesh3d(
             nodes=np.array(
                 [
                     [0.0, 0.0, 0.0],
@@ -248,6 +277,7 @@ class MeshViewerDataTests(unittest.TestCase):
                 ]
             ),
             elements=np.array([[0, 1, 2, 2, 3, 4, 5, 5]]),
+            element_node_num=[8],
             element_comps=[1],
             comps={"EMPTY": 0, "body": 1},
         )
@@ -256,6 +286,40 @@ class MeshViewerDataTests(unittest.TestCase):
 
         self.assertEqual(grid.n_cells, 1)
         self.assertEqual(grid.celltypes[0], pv.CellType.WEDGE)
+
+    def test_builds_quadratic_hexahedron_from_20_node_connectivity(self):
+        mesh = _mesh3d(
+            nodes=np.arange(60, dtype=np.float64).reshape(20, 3),
+            elements=np.arange(20, dtype=np.int32).reshape(1, 20),
+            element_node_num=[20],
+        )
+
+        grid = MeshViewer(mesh)._build_grid()
+
+        self.assertEqual(grid.n_cells, 1)
+        self.assertEqual(grid.celltypes[0], pv.CellType.QUADRATIC_HEXAHEDRON)
+
+    def test_rejects_unsupported_element_node_count(self):
+        mesh = _mesh3d(
+            nodes=np.arange(12, dtype=np.float64).reshape(4, 3),
+            elements=np.arange(4, dtype=np.int32).reshape(1, 4),
+            element_node_num=[4],
+        )
+
+        with self.assertRaisesRegex(ValueError, "values 8 and 20"):
+            MeshViewer(mesh)._build_grid()
+
+    def test_component_node_ids_use_only_effective_connectivity(self):
+        mesh = _mesh3d(
+            nodes=np.arange(24, dtype=np.float64).reshape(8, 3),
+            elements=np.arange(8, dtype=np.int32).reshape(1, 8),
+            element_node_num=[8],
+        )
+
+        np.testing.assert_array_equal(
+            MeshViewer(mesh)._element_node_ids([0]),
+            np.arange(8, dtype=np.int32),
+        )
 
 
 if __name__ == "__main__":

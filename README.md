@@ -47,10 +47,12 @@ connectivity with shape `(m, 4)`. XY input is accepted and normalized with a
 zero Z coordinate. Tri3 rows use `[n0, n1, n2, n2]`; `element_types` exposes
 the inferred Tri3/Quad4 topology.
 
-`Mesh3D` owns `(n, 3)` nodes, fixed-width `(m, 8)` connectivity,
-`element_comps`, and `comps`. Wedge-like connectivity remains padded to eight
-slots by repeating the third bottom and top nodes so the repository CDB format
-stays stable.
+`Mesh3D` owns `(n, 3)` nodes and fixed-width `(m, 20)` ANSYS connectivity.
+`element_node_num` identifies the effective leading slots in each row; every
+remaining slot repeats the last effective node id. Per-element `int32` arrays
+store component, element-type, real-constant, and section ids, while `comps`,
+`types`, `reals`, and `sections` hold their definition tables. The process-flow
+extruder currently emits SOLID185 connectivity with eight effective slots.
 
 ## 2D generation and circular features
 
@@ -104,12 +106,25 @@ planar element, and adjacent layers reuse their shared top/bottom nodes.
 Install the `process-flow` extra, then build from a Standard V1 structure:
 
 ```python
-from mesher.process_flow import SymmetryMode, build_mesh_from_structure
+from mesher.process_flow import (
+    SymmetryMode,
+    build_mesh_from_structure,
+    validate_mesh_control,
+)
+
+mesh_control = {
+    "schemaVersion": "1.0.0",
+    "unitSystem": "um",
+    "mesher": "process_flow_2_5d",
+    "globalElementSize": 100.0,
+    "symmetry": SymmetryMode.UPPER_RIGHT_QUARTER,
+    "controls": [],
+}
+validate_mesh_control(mesh_control)
 
 mesh = build_mesh_from_structure(
     structure,
-    element_size=100.0,
-    symmetry=SymmetryMode.UPPER_RIGHT_QUARTER,
+    mesh_control,
     progress=optional_event_callback,
 )
 ```
@@ -120,12 +135,13 @@ Supported symmetry values are `full`, `upper_half`, `right_half`, and
 Run the worker through its console script or module path:
 
 ```bash
-mesher-process-flow geometry.json 100 output.cdb upper_right_quarter
-python -m mesher.process_flow.worker geometry.json 100 output.cdb full
+mesher-process-flow geometry.json mesh_control.json output.cdb
+python -m mesher.process_flow.worker geometry.json mesh_control.json output.cdb
 ```
 
 Success writes JSON metadata as the final stdout line. Progress events retain
-the `PROCESS_FLOW_PROGRESS ` stderr prefix.
+the `PROCESS_FLOW_PROGRESS ` stderr prefix. Mesh-control entries are validated
+but not yet applied; non-empty `controls` produce a warning in the metadata.
 
 ## Optional tools
 

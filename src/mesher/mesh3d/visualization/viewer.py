@@ -19,15 +19,31 @@ class MeshViewer:
     def _build_grid(self):
         cells = []
         celltypes = np.empty(self.mesh.element_count, dtype=np.uint8)
-        for index, element in enumerate(self.mesh.elements):
-            is_wedge = element[2] == element[3] and element[6] == element[7]
-            if is_wedge:
-                wedge = element[[0, 1, 2, 4, 5, 6]]
-                cells.append(np.concatenate(([6], wedge)))
-                celltypes[index] = pv.CellType.WEDGE
+        for index, (element, node_num) in enumerate(
+            zip(self.mesh.elements, self.mesh.element_node_num)
+        ):
+            node_num = int(node_num)
+            effective_nodes = element[:node_num]
+            if node_num == 8:
+                is_wedge = (
+                    effective_nodes[2] == effective_nodes[3]
+                    and effective_nodes[6] == effective_nodes[7]
+                )
+                if is_wedge:
+                    wedge = effective_nodes[[0, 1, 2, 4, 5, 6]]
+                    cells.append(np.concatenate(([6], wedge)))
+                    celltypes[index] = pv.CellType.WEDGE
+                else:
+                    cells.append(np.concatenate(([8], effective_nodes)))
+                    celltypes[index] = pv.CellType.HEXAHEDRON
+            elif node_num == 20:
+                cells.append(np.concatenate(([20], effective_nodes)))
+                celltypes[index] = pv.CellType.QUADRATIC_HEXAHEDRON
             else:
-                cells.append(np.concatenate(([8], element)))
-                celltypes[index] = pv.CellType.HEXAHEDRON
+                raise ValueError(
+                    "MeshViewer supports element_node_num values 8 and 20; "
+                    f"element {index} has {node_num}."
+                )
         packed_cells = (
             np.concatenate(cells).astype(np.int32, copy=False)
             if cells
@@ -39,6 +55,15 @@ class MeshViewer:
         ### Attach component ids as cell data for coloring
         grid.cell_data['comp'] = self.mesh.element_comps.astype(np.int32)
         return grid
+
+    def _element_node_ids(self, element_indices):
+        node_ids = [
+            self.mesh.elements[index, : self.mesh.element_node_num[index]]
+            for index in np.asarray(element_indices, dtype=np.int64)
+        ]
+        if not node_ids:
+            return np.empty((0,), dtype=np.int32)
+        return np.unique(np.concatenate(node_ids)).astype(np.int32)
 
     def _to_int(self, value):
         try:
@@ -350,9 +375,9 @@ class MeshViewer:
         for row in rows:
             cell_indices = np.where(comp == row["id"])[0]
             component_grid = grid.extract_cells(cell_indices)
-            component_node_indices[row["id"]] = np.unique(
-                self.mesh.elements[cell_indices].ravel()
-            ).astype(np.int32)
+            component_node_indices[row["id"]] = self._element_node_ids(
+                cell_indices
+            )
             actors[row["id"]] = plotter.add_mesh(
                 component_grid,
                 color=row["color"],
