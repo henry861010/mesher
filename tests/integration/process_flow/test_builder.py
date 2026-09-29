@@ -166,47 +166,31 @@ class BuilderIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported field.*elementSize"):
             validate_mesh_control(invalid)
 
-    def test_public_builder_validates_but_does_not_apply_mesh_controls(self):
+    def test_public_builder_applies_mesh_controls(self):
+        structure = _box_structure()
+        structure["root"]["key"] = "hbm"
         baseline = _build_mesh_from_structure(
-            _box_structure(),
+            structure,
             _mesh_control(1.0),
         )
         mesh = _build_mesh_from_structure(
-            _box_structure(),
+            structure,
             _mesh_control(
                 1.0,
                 controls=[
                     {
-                        "method": method,
-                        "reference": {"kind": "root"},
+                        "method": "Z_SECTION_AVG",
+                        "reference": {"kind": "container", "key": "hbm"},
                         "elementSize": 0.25,
-                        "startZ": {
-                            "mode": "relative",
-                            "anchor": "z_min",
-                            "offset": 0,
-                        },
+                        "startZ": {"mode": "absolute", "value": 0},
                         "endZ": {"mode": "absolute", "value": 1},
-                    }
-                    for method in (
-                        "Z_SECTION_AVG",
-                        "Z_SECTION_TOP",
-                        "Z_SECTION_BOT",
-                        "Z_SECTION_CENTER",
-                    )
-                ]
-                + [
-                    {
-                        "method": "Z_POINT",
-                        "z": {"mode": "absolute", "value": 0.5},
                     }
                 ],
             ),
         )
 
-        np.testing.assert_array_equal(mesh.nodes, baseline.nodes)
-        np.testing.assert_array_equal(mesh.elements, baseline.elements)
-        np.testing.assert_array_equal(mesh.element_comps, baseline.element_comps)
-        self.assertEqual(mesh.comps, baseline.comps)
+        self.assertGreater(mesh.node_count, baseline.node_count)
+        self.assertGreater(mesh.element_count, baseline.element_count)
 
     def test_public_builder_rejects_relative_z_without_reference(self):
         mesh_control = _mesh_control(

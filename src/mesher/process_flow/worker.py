@@ -16,10 +16,6 @@ from .exporters import write_cdb_text
 from .pipeline import build_mesh_from_structure
 
 PROGRESS_PREFIX = "PROCESS_FLOW_PROGRESS "
-MESH_CONTROLS_IGNORED_WARNING = (
-    "Mesh controls were sent to the mesher but are not applied by this version; "
-    "the CDB uses globalElementSize and symmetry only."
-)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -66,8 +62,6 @@ def main(argv: list[str] | None = None) -> int:
             mesh=mesh,
             progress=_emit_progress,
         )
-        if mesh_control.get("controls"):
-            metadata["warnings"] = [MESH_CONTROLS_IGNORED_WARNING]
         output_bytes = Path(output_path).stat().st_size
         _complete_stage(
             "writing_output",

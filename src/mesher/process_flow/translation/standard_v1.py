@@ -75,8 +75,6 @@ class StandardV1Translator:
         
         layer_index = 0
         while layer_index < len(layer_infos):
-            print(f'layer_z: {layer_infos[layer_index]["z"]}')
-                        
             # remove the old mesh control
             stack_index = len(focus_stack)-1
             while stack_index >=0:
@@ -525,13 +523,21 @@ def _convert_to_objectless_mesh_controls(container, mesh_control):
     global_element_size = mesh_control["globalElementSize"]
 
     for control in controls:
+        # control objectless
         z_controls_sub = _convert_to_objectless_mesh_control(
             container, 
             control, 
             global_element_size
         )
-       
-        z_controls += z_controls_sub
+        
+        # filt the duplicate
+        seen = set()
+        for item in z_controls_sub:
+            identifier = frozenset(item.items()) # frozenset makes the dictionary hashable and ignores key order
+            
+            if identifier not in seen:
+                seen.add(identifier)
+                z_controls.append(item)
         
     return z_controls
 

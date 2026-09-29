@@ -195,24 +195,29 @@ class WorkerIntegrationTests(unittest.TestCase):
             self.assertIn("symmetry must be one of", result.stderr)
             self.assertFalse(output_path.exists())
 
-    def test_worker_reports_unapplied_mesh_controls_as_a_warning(self):
+    def test_worker_applies_mesh_controls_without_a_compatibility_warning(self):
         controls = [
             {
-                "method": "Z_POINT",
-                "z": {"mode": "absolute", "value": 0.5},
+                "method": "Z_SECTION_AVG",
+                "reference": {"kind": "container", "key": "hbm"},
+                "elementSize": 0.25,
+                "startZ": {"mode": "absolute", "value": 0},
+                "endZ": {"mode": "absolute", "value": 1},
             }
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "geometry.json"
             output_path = Path(temp_dir) / "mesh.cdb"
-            input_path.write_text(json.dumps(_box_structure()), encoding="utf-8")
+            structure = _box_structure()
+            structure["root"]["key"] = "hbm"
+            input_path.write_text(json.dumps(structure), encoding="utf-8")
 
             result = self._run_worker(input_path, output_path, controls=controls)
 
             self.assertEqual(result.returncode, 0, result.stderr)
             metadata = json.loads(result.stdout)
-            self.assertEqual(len(metadata["warnings"]), 1)
-            self.assertIn("not applied", metadata["warnings"][0])
+            self.assertNotIn("warnings", metadata)
+            self.assertGreater(metadata["elementCount"], 1)
             self.assertTrue(output_path.exists())
 
     def test_worker_does_not_write_partial_output_for_incompatible_circles(self):
