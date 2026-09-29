@@ -166,6 +166,52 @@ class BuilderIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported field.*elementSize"):
             validate_mesh_control(invalid)
 
+    def test_public_mesh_control_validator_accepts_optional_labels(self):
+        section = {
+            "method": "Z_SECTION_AVG",
+            "label": "Base die",
+            "elementSize": 0.25,
+            "startZ": {"mode": "absolute", "value": 0},
+            "endZ": {"mode": "absolute", "value": 1},
+        }
+        point = {
+            "method": "Z_POINT",
+            "label": "Interface plane",
+            "z": {"mode": "absolute", "value": 0.5},
+        }
+        validate_mesh_control(_mesh_control(controls=[section, point]))
+        validate_mesh_control(_mesh_control(controls=[
+            {key: value for key, value in section.items() if key != "label"},
+            {key: value for key, value in point.items() if key != "label"},
+        ]))
+
+        for invalid_label in ("", "  ", 12, None):
+            with self.subTest(label=invalid_label):
+                invalid = _mesh_control(controls=[{**point, "label": invalid_label}])
+                with self.assertRaisesRegex(ValueError, "label must be a non-empty string"):
+                    validate_mesh_control(invalid)
+
+    def test_control_label_does_not_change_the_mesh(self):
+        control = {
+            "method": "Z_SECTION_AVG",
+            "reference": {"kind": "container", "key": "hbm"},
+            "elementSize": 0.25,
+            "startZ": {"mode": "absolute", "value": 0},
+            "endZ": {"mode": "absolute", "value": 1},
+        }
+        structure = _box_structure()
+        structure["root"]["key"] = "hbm"
+        unlabeled = _build_mesh_from_structure(
+            structure, _mesh_control(1.0, controls=[control])
+        )
+        labeled = _build_mesh_from_structure(
+            structure, _mesh_control(1.0, controls=[{**control, "label": "Base die"}])
+        )
+        self.assertEqual(
+            (labeled.node_count, labeled.element_count),
+            (unlabeled.node_count, unlabeled.element_count),
+        )
+
     def test_public_builder_applies_mesh_controls(self):
         structure = _box_structure()
         structure["root"]["key"] = "hbm"

@@ -79,7 +79,7 @@ def _validate_mesh_control_entry(value: Any, path: str) -> None:
             value,
             path,
             required={"method", "elementSize", "startZ", "endZ"},
-            optional={"reference"},
+            optional={"reference", "label"},
         )
         _positive_finite_number(value["elementSize"], f"{path}.elementSize")
         locations = (
@@ -91,12 +91,15 @@ def _validate_mesh_control_entry(value: Any, path: str) -> None:
             value,
             path,
             required={"method", "z"},
-            optional={"reference"},
+            optional={"reference", "label"},
         )
         locations = (_validate_z_location(value["z"], f"{path}.z"),)
     else:
         allowed = ", ".join([*Z_SECTION_METHODS, "Z_POINT"])
         raise ValueError(f"{path}.method must be one of: {allowed}.")
+
+    if "label" in value:
+        _non_blank_string(value["label"], f"{path}.label")
 
     reference = value.get("reference")
     if reference is not None:
