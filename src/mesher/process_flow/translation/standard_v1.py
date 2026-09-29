@@ -16,7 +16,7 @@ class StandardV1Translator:
     converted to a ``CIRCLE`` face.
     """
 
-    def get_2D_pattern(self, container, tolerance=DEFAULT_TOLERANCE):
+    def get_2D_pattern(self, container, mesh_control, tolerance=DEFAULT_TOLERANCE):
         """Extracts the 2D print pattern from a standard container tree.
 
         Args:
@@ -42,7 +42,9 @@ class StandardV1Translator:
 
         return base_face, faces
 
-    def get_3D_pattern(self, container):
+    def get_3D_pattern(self, container, mesh_control):
+        global_element_size = mesh_control["globalElementSize"]
+        
         # assign priority
         _assign_priority(container)
         
@@ -58,17 +60,124 @@ class StandardV1Translator:
             if not layer_infos or layer_infos[-1]["z"] < assignment["z"]:
                 layer_infos.append({
                     "z": assignment["z"],
+                    "element_size": global_element_size,
                     "assignments": [assignment]
                 })
             else:
                 layer_infos[-1]["assignments"].append(assignment)
                 
+        # asign the z mesh control
+        z_controls = _convert_to_objectless_mesh_controls(container, mesh_control)
+        z_controls = sorted(z_controls, key=lambda item: (item['start'], item['element_size'], item['end']))
+        
+        unhandle_index = 0
+        focus_stack = []
+        
+        layer_index = 0
+        while layer_index < len(layer_infos):
+            print(f'layer_z: {layer_infos[layer_index]["z"]}')
+                        
+            # remove the old mesh control
+            stack_index = len(focus_stack)-1
+            while stack_index >=0:
+                layer_start = layer_infos[layer_index]["z"]
+                control_end = focus_stack[stack_index]["end"]
+                if _le(control_end, layer_start):
+                    focus_stack.pop()
+                    stack_index -= 1
+                else:
+                    break
+                    
+            # set the mesh control to focus if in interval
+            while unhandle_index < len(z_controls):
+                layer_start = layer_infos[layer_index]["z"]
+                layer_end = layer_infos[layer_index+1]["z"]
+                
+                control_start = z_controls[unhandle_index]["start"]
+                control_end = z_controls[unhandle_index]["end"]
+
+                if _eq(control_start, layer_start):
+                    # add to focus mesh control
+                    focus_stack.append(z_controls[unhandle_index])
+                    
+                    # add end point
+                    temp_index = layer_index
+                    while temp_index < len(layer_infos[:-1]):
+                        temp_layer_start = layer_infos[temp_index]["z"]
+                        temp_layer_end = layer_infos[temp_index+1]["z"]
+                        if _lt(temp_layer_start, control_end) and _lt(control_end, temp_layer_end):
+                            layer_infos.insert(temp_index+1, {
+                                "z": control_end,
+                                "element_size": global_element_size,
+                                "assignments": []
+                            })
+                        elif _lt(control_end, temp_layer_start):
+                            break
+                        temp_index += 1
+                        
+                    unhandle_index += 1
+                                    
+                elif _lt(control_start, layer_end):
+                    # add to focus mesh control
+                    focus_stack.append(z_controls[unhandle_index])
+                    
+                    # add new point for mesh control start
+                    layer_infos.insert(layer_index+1, {
+                        "z": control_start,
+                        "element_size": global_element_size,
+                        "assignments": []
+                    })
+                    
+                    # add end point
+                    temp_index = layer_index
+                    while temp_index < len(layer_infos[:-1]):
+                        temp_layer_start = layer_infos[temp_index]["z"]
+                        temp_layer_end = layer_infos[temp_index+1]["z"]
+                        if _lt(temp_layer_start, control_end) and _lt(control_end, temp_layer_end):
+                            layer_infos.insert(temp_index+1, {
+                                "z": control_end,
+                                "element_size": global_element_size,
+                                "assignments": []
+                            })
+                        elif _lt(control_end, temp_layer_start):
+                            break
+                        temp_index += 1
+                        
+                    unhandle_index += 1
+                    
+                else:
+                    break
+                
+            # set focus element size
+            element_size = global_element_size
+            for control in focus_stack:
+                if _le(control["start"], layer_infos[layer_index]["z"]):
+                    element_size = min(element_size, control["element_size"])
+            layer_infos[layer_index]["element_size"] = element_size
+             
+            layer_index += 1
+            
         return layer_infos
+
+
+def _lt(a, b, tol=0.01):
+    if abs(a - b) < tol:
+        return False
+    return a < b
+
+def _le(a, b, tol=0.01):
+    if abs(a - b) < tol:
+        return True
+    return a < b
+
+def _eq(a, b, tol=0.01):
+    return abs(a - b) < tol
 
 
 def _get_assignments(container, ancestors=None, path="root"):
     '''
         assignment {
+            element_size: float
             z: float
             type:  0 / 1 / 2 / 3 (END / START_CONVERT / START_DENSITY / START_NORMAL)
             face: face
@@ -77,6 +186,7 @@ def _get_assignments(container, ancestors=None, path="root"):
         
         # area of START_NORMAL
         area {
+            element_size: float
             face: face,
             priority: float
             material: str
@@ -84,6 +194,7 @@ def _get_assignments(container, ancestors=None, path="root"):
         
         # area of START_DENSITY
         area {
+            element_size: float
             face: face,
             priority: float
             density: float
@@ -92,6 +203,7 @@ def _get_assignments(container, ancestors=None, path="root"):
         
         # area of START_CONVERT
         area {
+            element_size: float
             face: face,
             priority: float
             priority_o: float
@@ -101,6 +213,7 @@ def _get_assignments(container, ancestors=None, path="root"):
         
         # area of END
         area {
+            element_size: float
             face: face,
             priority_o: float
             priority: float
@@ -121,6 +234,7 @@ def _get_assignments(container, ancestors=None, path="root"):
             container_ref = container.get("id") or container.get("key") or path
             geometry_type = term.get("geometry", {}).get("type")
             feature_type = key[:-1] if key.endswith("s") else key
+            
             if key == "bodies":
                 geometry = term["geometry"]
                 material = term["material"]
@@ -256,8 +370,401 @@ def _get_assignments(container, ancestors=None, path="root"):
         assignments = assignments + assignment_child
         
     return assignments
+
+
+def _get_control_z_abs(control, obj_min, obj_max, global_element_size, min_dis=0.1):
+    '''
+        Z_SECTION_AVG
+        Z_SECTION_TOP
+        Z_SECTION_BOT
+        Z_SECTION_CENTER
+        Z_POINT
+        
+        return [{
+            element_size: float
+            start: float
+            end: float
+        }]
+    '''
+    def _parse_z(control_z, z_min, z_max):
+        '''            
+            {
+                "mode": "relative",
+                "anchor": "z_min",
+                "offset": 10
+            }
+        '''
+        # start z
+        if control_z["mode"] == "absolute":
+            start_z = float(control_z["value"]) 
+        elif control_z["mode"] == "relative":
+            if control_z["anchor"] == "z_min":
+                start_z = z_min + float(control_z["offset"])
+            elif control_z["anchor"] == "z_max":
+                start_z = z_max + float(control_z["offset"])
+            else:
+                raise ValueError(f'Unknown anchor - {control_z["anchor"]}')
+        return start_z
     
+    if control["method"] == "Z_POINT":
+        z = _parse_z(control["z"], obj_min, obj_max)
+        
+        return [{
+            "element_size": global_element_size,
+            "method": control["method"],
+            "start": z,
+            "end": z
+        }]
+        
+    if control["method"] == "Z_SECTION_AVG":
+        element_size = control["elementSize"]
+        start_z = _parse_z(control["startZ"], obj_min, obj_max)
+        end_z = _parse_z(control["endZ"], obj_min, obj_max)
+        
+        return [{
+            "element_size": element_size,
+            "method": control["method"],
+            "start": start_z,
+            "end": end_z
+        }]
+        
+    if control["method"] == "Z_SECTION_TOP":
+        element_size = control["elementSize"]
+        start_z = _parse_z(control["startZ"], obj_min, obj_max)
+        end_z = _parse_z(control["endZ"], obj_min, obj_max)
+        
+        if (end_z - start_z) % element_size < min_dis or (end_z - start_z) // element_size == 0:
+            return [{
+                "element_size": element_size,
+                "method": control["method"],
+                "start": start_z,
+                "end": end_z
+            }]
+        else:
+            center_z = end_z - (end_z - start_z) % element_size
+            
+            return [{
+                "element_size": element_size,
+                "method": control["method"],
+                "start": start_z,
+                "end": center_z
+            }, {
+                "element_size": element_size,
+                "method": control["method"],
+                "start": center_z,
+                "end": end_z
+            }]
+        
+    if control["method"] == "Z_SECTION_BOT":
+        element_size = control["elementSize"]
+        start_z = _parse_z(control["startZ"], obj_min, obj_max)
+        end_z = _parse_z(control["endZ"], obj_min, obj_max)
+        
+        if (end_z - start_z) % element_size < min_dis or (end_z - start_z) // element_size == 0:
+            return [{
+                "element_size": element_size,
+                "method": control["method"],
+                "start": start_z,
+                "end": end_z
+            }]
+        else:
+            center_z = start_z + (end_z - start_z) % element_size
+            
+            return [{
+                "element_size": element_size,
+                "method": control["method"],
+                "start": start_z,
+                "end": center_z
+            }, {
+                "element_size": element_size,
+                "method": control["method"],
+                "start": center_z,
+                "end": end_z
+            }]
+        
+    if control["method"] == "Z_SECTION_CENTER":
+        element_size = control["elementSize"]
+        start_z = _parse_z(control["startZ"], obj_min, obj_max)
+        end_z = _parse_z(control["endZ"], obj_min, obj_max)
+        
+        if (end_z - start_z) % element_size < min_dis or (end_z - start_z) // element_size <= 1:
+            return [{
+                "element_size": element_size,
+                "method": control["method"],
+                "start": start_z,
+                "end": end_z
+            }]
+        else:
+            center1_z = start_z + element_size * ((end_z - start_z) // element_size) / 2
+            center2_z = center1_z + ((end_z - start_z) % element_size)
+            
+            return [{
+                "element_size": element_size,
+                "method": control["method"],
+                "start": start_z,
+                "end": center1_z
+            }, {
+                "element_size": element_size,
+                "method": control["method"],
+                "start": center1_z,
+                "end": center2_z
+            }, {
+                "element_size": element_size,
+                "method": control["method"],
+                "start": center2_z,
+                "end": end_z
+            }]
+        
+    raise ValueError(f'Unknow tymethodpe - {control["method"]}')
+
+
+def _convert_to_objectless_mesh_controls(container, mesh_control):
+    z_controls = []
     
+    controls = mesh_control["controls"]
+    global_element_size = mesh_control["globalElementSize"]
+
+    for control in controls:
+        z_controls_sub = _convert_to_objectless_mesh_control(
+            container, 
+            control, 
+            global_element_size
+        )
+       
+        z_controls += z_controls_sub
+        
+    return z_controls
+
+
+def _convert_to_objectless_mesh_control(container, control, global_element_size):
+    '''        
+        {
+        "schemaVersion": "1.0.0",
+        "unitSystem": "um",
+        "mesher": "process_flow_2_5d",
+        "globalElementSize": 200,
+        "symmetry": "full",
+        "controls": [
+            {
+                "method": "Z_SECTION_AVG",
+                "reference": {
+                    "kind": "container",
+                    "key": "hbm",
+                    "id": "container-id-optional"
+                },
+                "elementSize": 10,
+                "startZ": {
+                    "mode": "relative",
+                    "anchor": "z_min",
+                    "offset": 10
+                },
+                "endZ": {
+                    "mode": "relative",
+                    "anchor": "z_min",
+                    "offset": 100
+                }
+            },
+            {
+                "method": "Z_POINT",
+                "reference": {
+                    "kind": "root"
+                },
+                "z": {
+                    "mode": "relative",
+                    "anchor": "z_max",
+                    "offset": -10
+                }
+            }
+        ]
+        }
+        
+        
+        return [{
+            element_size: float
+            start: float
+            end: float
+        }]
+    '''
+    def _is_target(object:dict, control_info:dict, kind:str):
+        reference_info = control_info["reference"]
+        
+        if reference_info["kind"] != kind:
+            return False
+        if "id" in reference_info:
+            if "id" not in object:
+                return Fasle
+            if reference_info["id"] != object["id"]:
+                return False
+        if "key" in reference_info:
+            if "key" not in object:
+                return False
+            if reference_info["key"] != object["key"]:
+                return False
+        return True
+        
+    z_controls = []
+
+    isUsed = False
+    
+    # container
+    if _is_target(container, control, "container"):
+        container_min, container_max = _bottom_top_z(container)
+            
+        z_controls_sub = _get_control_z_abs(
+            control, 
+            container_min, 
+            container_max, 
+            global_element_size,
+            min_dis=0.1
+        )
+        
+        z_controls += z_controls_sub
+        isUsed = True
+        
+    # body
+    if not isUsed:
+        for body in container["bodies"]:
+            if _is_target(body, control, "body"):
+                body_min = _geometry_to_z(body["geometry"])
+                body_max = body_min + body["thk"]
+                
+                z_controls_sub = _get_control_z_abs(
+                    control, 
+                    body_min, 
+                    body_max, 
+                    global_element_size
+                )
+        
+                z_controls += z_controls_sub
+                isUsed = True
+                break
+            
+    # via
+    if not isUsed:
+        for via in container["vias"]:
+            if _is_target(via, control, "via"):
+                via_min = _geometry_to_z(via["geometry"])
+                via_max = via_min + via["thk"]
+                
+                z_controls_sub = _get_control_z_abs(
+                    control, 
+                    via_min, 
+                    via_max, 
+                    global_element_size
+                )
+                
+                z_controls += z_controls_sub
+                isUsed = True
+                break
+                            
+    # bump
+    if not isUsed:
+        for bump in container["bumps"]:
+            if _is_target(bump, control, "bump"):
+                bump_min = _geometry_to_z(bump["geometry"])
+                bump_max = bump_min + bump["thk"]
+                
+                z_controls_sub = _get_control_z_abs(
+                    control, 
+                    bump_min, 
+                    bump_max, 
+                    global_element_size
+                )
+                
+                z_controls += z_controls_sub
+                isUsed = True
+                break
+            
+    # circuit
+    if not isUsed:
+        for circuit in container["circuits"]:
+            if _is_target(circuit, control, "circuit"):
+                circuit_min = _geometry_to_z(circuit["geometry"])
+                circuit_max = circuit_min + circuit["thk"]
+                
+                z_controls_sub = _get_control_z_abs(
+                    control, 
+                    circuit_min, 
+                    circuit_max, 
+                    global_element_size
+                )
+                
+                z_controls += z_controls_sub
+                isUsed = True
+                break
+        
+    # child
+    if not isUsed:
+        for child in container["children"]:
+            z_controls_sub = _convert_to_objectless_mesh_control(
+                child, 
+                control, 
+                global_element_size
+            )
+            
+            z_controls += z_controls_sub
+            
+    return z_controls
+   
+            
+def _bottom_top_z(container):
+    """Returns the Z bounds of all geometry in a container subtree.
+
+    Bodies, bumps, circuits, vias, and geometries in descendant containers are
+    included.  Both geometry endpoints are considered so the result remains
+    ordered even if a geometry has a negative thickness.
+
+    Raises:
+        ValueError: If ``container`` is malformed or contains no geometry.
+    """
+    if not isinstance(container, dict):
+        raise ValueError("container must be a dictionary")
+
+    min_z = None
+    max_z = None
+
+    def include_container(current, path):
+        nonlocal min_z, max_z
+
+        if not isinstance(current, dict):
+            raise ValueError(f"{path} must be a dictionary")
+
+        for item_type in CONTAINER_ITEM_FIELDS:
+            for item_index, item in enumerate(_collect_items(current, item_type)):
+                geometry = _required_field(
+                    item,
+                    "geometry",
+                    f"{path}.{item_type}[{item_index}]",
+                )
+                start_z = _finite_number(
+                    _geometry_to_z(geometry, isStart=True),
+                    f"{path}.{item_type}[{item_index}].geometry start Z",
+                )
+                end_z = _finite_number(
+                    _geometry_to_z(geometry, isStart=False),
+                    f"{path}.{item_type}[{item_index}].geometry end Z",
+                )
+
+                item_min_z = min(start_z, end_z)
+                item_max_z = max(start_z, end_z)
+                min_z = item_min_z if min_z is None else min(min_z, item_min_z)
+                max_z = item_max_z if max_z is None else max(max_z, item_max_z)
+
+        children = current.get("children", [])
+        if children is None:
+            children = []
+        if not isinstance(children, list):
+            raise ValueError(f"{path}.children must be a list")
+        for child_index, child in enumerate(children):
+            include_container(child, f"{path}.children[{child_index}]")
+
+    include_container(container, "container")
+
+    if min_z is None:
+        raise ValueError("container does not contain any geometry")
+    return min_z, max_z
+
+
 def _assign_priority(container, priority=1):
     container["priority"] = priority
     for child in container["children"]:

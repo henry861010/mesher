@@ -86,7 +86,7 @@ def build_mesh_from_structure(
     stage = _start_stage(progress, "analyzing_geometry", "Analyzing geometry patterns.")
     container = copy.deepcopy(root)
     translator = StandardV1Translator()
-    base_face, faces = translator.get_2D_pattern(container)
+    base_face, faces = translator.get_2D_pattern(container, mesh_control)
     if base_face is None:
         raise ValueError("CDB export requires at least one geometry body or feature.")
 
@@ -98,7 +98,7 @@ def build_mesh_from_structure(
     domain = _model_domain(normalized_symmetry, root_body_faces or all_faces)
     if normalized_symmetry is not SymmetryMode.FULL:
         _filter_container_to_domain(container, domain)
-        base_face, faces = translator.get_2D_pattern(container)
+        base_face, faces = translator.get_2D_pattern(container, mesh_control)
         if base_face is None:
             raise ValueError(
                 f"CDB export has no geometry with positive XY area in "
@@ -155,7 +155,7 @@ def build_mesh_from_structure(
         domain,
     )
 
-    layer_infos = translator.get_3D_pattern(container)
+    layer_infos = translator.get_3D_pattern(container, mesh_control)
     _complete_stage(
         progress,
         "analyzing_geometry",
@@ -227,7 +227,7 @@ def build_mesh_from_structure(
     )
     dragger = Dragger()
     dragger.set_2D(mesh_2d.nodes, elements_2d)
-    mesh = dragger.build(layer_infos, normalized_element_size, progress=progress)
+    mesh = dragger.build(layer_infos, progress=progress)
     _complete_stage(
         progress,
         "building_3d_mesh",

@@ -574,7 +574,6 @@ class Dragger:
     def build(
         self,
         layer_infos,
-        element_size,
         *,
         verbose=False,
         progress: ProgressCallback | None = None,
@@ -585,7 +584,6 @@ class Dragger:
             layer_infos (Sequence[dict]): Ordered z-level dictionaries. Every
                 entry except the last must include ``assignments``; every entry
                 used as a boundary must include ``z``.
-            element_size (float): Requested maximum extrusion height.
 
         Returns:
             Mesh3D: An owned snapshot containing only valid 3D mesh rows.
@@ -604,6 +602,7 @@ class Dragger:
             elements_before = self.element_num
             z_now = layer_infos[index]["z"]
             z_next = layer_infos[index+1]["z"]
+            element_size = layer_info["element_size"]
             assignments = layer_info["assignments"]
             
             self._organize(
