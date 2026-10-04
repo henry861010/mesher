@@ -650,7 +650,7 @@ def _convert_to_objectless_mesh_control(container, control, global_element_size)
         for via in container["vias"]:
             if _is_target(via, control, "via"):
                 via_min = _geometry_to_z(via["geometry"])
-                via_max = via_min + via["thk"]
+                via_max = via_min + via["geometry"]["thk"]
                 
                 z_controls_sub = _get_control_z_abs(
                     control, 
@@ -668,7 +668,7 @@ def _convert_to_objectless_mesh_control(container, control, global_element_size)
         for bump in container["bumps"]:
             if _is_target(bump, control, "bump"):
                 bump_min = _geometry_to_z(bump["geometry"])
-                bump_max = bump_min + bump["thk"]
+                bump_max = bump_min + bump["geometry"]["thk"]
                 
                 z_controls_sub = _get_control_z_abs(
                     control, 
@@ -686,7 +686,7 @@ def _convert_to_objectless_mesh_control(container, control, global_element_size)
         for circuit in container["circuits"]:
             if _is_target(circuit, control, "circuit"):
                 circuit_min = _geometry_to_z(circuit["geometry"])
-                circuit_max = circuit_min + circuit["thk"]
+                circuit_max = circuit_min + circuit["geometry"]["thk"]
                 
                 z_controls_sub = _get_control_z_abs(
                     control, 

@@ -77,7 +77,7 @@ def _mesh_control(
             "schemaVersion": "1.0.0",
             "unitSystem": "um",
             "mesher": "process_flow_2_5d",
-            "globalElementSize": 500.0,
+            "globalElementSize": 1000.0,
             "symmetry": "full",
             "controls": [],
         }
