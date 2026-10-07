@@ -1,5 +1,7 @@
 import math
 
+from .koz import inset_face, koz_tolerance, koz_value
+
 
 DEFAULT_TOLERANCE = 1e-6
 CONTAINER_ITEM_FIELDS = ("bodies", "vias", "circuits", "bumps")
@@ -36,8 +38,14 @@ class StandardV1Translator:
         """
         normalized_tolerance = _normalize_tolerance(tolerance)
         all_faces = _collect_faces(container)
+        normalized_tolerance = koz_tolerance(container, normalized_tolerance)
         unique_faces = _dedupe_faces(all_faces, normalized_tolerance)
-        base_face = _select_base_face(unique_faces)
+        # KOZ faces are constraints inside physical footprints, never the
+        # model's base. Polygon source winding need not match buffer winding.
+        original_faces = _dedupe_faces(
+            _collect_faces(container, include_koz=False), normalized_tolerance
+        )
+        base_face = _select_base_face(original_faces)
         faces = _remove_base_face(unique_faces, base_face, normalized_tolerance)
 
         return base_face, faces
@@ -297,9 +305,16 @@ def _get_assignments(container, ancestors=None, path="root"):
             elif key in ["bumps", "vias", "circuits"]:
                 geometry = term["geometry"]
                 material = term["material"]
-                koz = term["koz"]
+                koz = koz_value(term)
                 priority = container["priority"] + 0.5
                 face = _geometry_to_face(geometry)
+                # An empty polygon explicitly selects no elements. None keeps
+                # the legacy density-area convention for zero KOZ.
+                density_face = None
+                if koz > 0:
+                    density_face = inset_face(face, koz)
+                    if density_face is None:
+                        density_face = {"type": "POLYGON", "dim": []}
             
                 # START
                 assignments.append({
@@ -307,7 +322,7 @@ def _get_assignments(container, ancestors=None, path="root"):
                     "type": START_DENSITY,
                     "face": face,
                     "areas": [{
-                        "face": None,
+                        "face": density_face,
                         "priority": priority,
                         "material": material,
                         "density": term["density"],
@@ -777,7 +792,7 @@ def _assign_priority(container, priority=1):
         _assign_priority(child, priority=priority+1)
 
 
-def _collect_faces(container):
+def _collect_faces(container, *, include_koz=True):
     """Collects all 2D faces from a standard container subtree.
 
     Args:
@@ -801,6 +816,12 @@ def _collect_faces(container):
                 f"container.{item_type}[{item_index}]",
             )
             faces.append(_geometry_to_face(geometry))
+            if include_koz and item_type != "bodies":
+                koz = koz_value(item)
+                if koz > 0:
+                    inner = inset_face(faces[-1], koz)
+                    if inner is not None:
+                        faces.append(inner)
 
     children = container.get("children", [])
     if children is None:
@@ -809,7 +830,7 @@ def _collect_faces(container):
         raise ValueError("container.children must be a list")
 
     for child in children:
-        faces.extend(_collect_faces(child))
+        faces.extend(_collect_faces(child, include_koz=include_koz))
 
     return faces
 

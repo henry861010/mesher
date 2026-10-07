@@ -3,6 +3,9 @@ import unittest
 from mesher.process_flow.translation.standard_v1 import StandardV1Translator
 
 
+MESH_CONTROL = {"globalElementSize": 1.0, "controls": []}
+
+
 class StandardV1TranslatorTests(unittest.TestCase):
     def test_translates_box_geometry_to_face_and_layers(self):
         container = {
@@ -24,8 +27,8 @@ class StandardV1TranslatorTests(unittest.TestCase):
         }
 
         translator = StandardV1Translator()
-        base_face, faces = translator.get_2D_pattern(container)
-        layers = translator.get_3D_pattern(container)
+        base_face, faces = translator.get_2D_pattern(container, MESH_CONTROL)
+        layers = translator.get_3D_pattern(container, MESH_CONTROL)
 
         self.assertEqual(base_face, {"type": "BOX", "dim": [0.0, 0.0, 2.0, 1.0]})
         self.assertEqual(faces, [])
@@ -68,7 +71,7 @@ class StandardV1TranslatorTests(unittest.TestCase):
             "children": [],
         }
 
-        base_face, faces = StandardV1Translator().get_2D_pattern(container)
+        base_face, faces = StandardV1Translator().get_2D_pattern(container, MESH_CONTROL)
 
         self.assertEqual(base_face, {"type": "BOX", "dim": [-10.0, -10.0, 10.0, 10.0]})
         self.assertEqual(
@@ -108,7 +111,7 @@ class StandardV1TranslatorTests(unittest.TestCase):
             "children": [],
         }
 
-        base_face, faces = StandardV1Translator().get_2D_pattern(container)
+        base_face, faces = StandardV1Translator().get_2D_pattern(container, MESH_CONTROL)
 
         self.assertEqual(base_face["type"], "BOX")
         self.assertEqual(

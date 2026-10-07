@@ -44,6 +44,7 @@ from .domain import (
     restrict_grid_lines_to_domain as _restrict_grid_lines_to_domain,
 )
 from .translation.standard_v1 import StandardV1Translator, _geometry_to_face
+from .translation.koz import koz_tolerance
 
 JsonObject = dict[str, Any]
 ProgressCallback = Callable[[JsonObject], None]
@@ -108,9 +109,11 @@ def build_mesh_from_structure(
     all_faces = [base_face, *faces]
     circle_patterns = _collect_circle_patterns(all_faces)
     circle_source_refs = _collect_circle_source_refs(container)
+    koz_circle_patterns = set(_collect_circle_source_refs(container, koz_only=True))
     planar_element_size = _planar_element_size(
         normalized_element_size,
         circle_patterns,
+        koz_patterns=koz_circle_patterns,
     )
     circle_band_width = 2.0 * planar_element_size
     _validate_circle_domain_topology(
@@ -125,9 +128,17 @@ def build_mesh_from_structure(
         band_width=circle_band_width,
     )
     pattern_segments = _collect_pattern_segments(all_faces)
+    circle_clearance_tolerance = koz_tolerance(container, 1e-6)
+    if koz_circle_patterns:
+        # Refinement may be driven by the gap to a neighboring feature, which
+        # can be smaller than the source feature's own KOZ width.
+        circle_clearance_tolerance = min(
+            circle_clearance_tolerance, planar_element_size / 100.0
+        )
     _validate_circle_clearances(
         list(circle_plan.imprint_patterns),
         circle_band_width,
+        tolerance=circle_clearance_tolerance,
     )
 
     x_lines: list[float] = []
@@ -184,6 +195,7 @@ def build_mesh_from_structure(
         planar_element_size,
         x_lines,
         y_lines,
+        coordinate_tolerance=koz_tolerance(container, 1e-3),
     )
 
     _imprint_circle_patterns(

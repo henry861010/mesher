@@ -132,6 +132,17 @@ mesh = build_mesh_from_structure(
 Supported symmetry values are `full`, `upper_half`, `right_half`, and
 `upper_right_quarter`.
 
+For bumps, circuits, and vias, `koz` is an inward XY keep-out distance. Both
+the original footprint and the remaining eligible region contribute 2D mesh
+boundaries; 3D metal allocation uses that same eligible region. Box, cylinder,
+and polygon footprints are supported, including polygon holes and disconnected
+regions. Polygon insets preserve straight corners, and their vertices contribute
+X/Y grid lines; slanted edges retain the existing stair-step approximation.
+Narrow circular KOZ boundaries automatically reduce the XY element size to
+resolve both rings, which can increase mesh size without changing Z layer sizes.
+If the inset removes the entire region, the feature allocates no metal while
+its original footprint remains in the mesh pattern.
+
 Run the worker through its console script or module path:
 
 ```bash

@@ -28,11 +28,13 @@ visualization = [
 process-flow = [
     "matplotlib>=3.8",
     "process-flow-kernel",
+    "shapely>=2.1,<3",
 ]
 dev = [
     "build>=1.2",
     "matplotlib>=3.8",
     "process-flow-kernel",
+    "shapely>=2.1,<3",
     "PySide6>=6.8",
     "pyvista>=0.48",
 ]

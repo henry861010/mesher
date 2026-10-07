@@ -35,6 +35,19 @@ class GenerateRectilinearMeshTests(unittest.TestCase):
                         y_coordinates=[0.0, 1.0],
                     )
 
+    def test_optional_coordinate_tolerance_preserves_thin_required_lines(self):
+        x_lines = [0.0, 1e-4, 1.0 - 1e-4, 1.0]
+        mesh = generate_rectilinear_mesh(1.0, x_lines, [0, 1], coordinate_tolerance=1e-6)
+        np.testing.assert_array_equal(np.unique(mesh.nodes[:, 0]), x_lines)
+        legacy = generate_rectilinear_mesh(1.0, x_lines, [0, 1])
+        self.assertEqual(len(np.unique(legacy.nodes[:, 0])), 2)
+
+    def test_rejects_invalid_coordinate_tolerance(self):
+        for value in (-1, np.nan, np.inf, None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "coordinate_tolerance"):
+                    generate_rectilinear_mesh(1, [0, 1], [0, 1], coordinate_tolerance=value)
+
 
 if __name__ == "__main__":
     unittest.main()

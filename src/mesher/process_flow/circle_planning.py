@@ -15,6 +15,7 @@ from .domain import (
     domain_center_y as _domain_center_y,
 )
 from .translation.standard_v1 import _geometry_to_face
+from .translation.koz import inset_face, koz_value
 
 JsonObject = dict[str, Any]
 
@@ -98,7 +99,10 @@ def _collect_circle_patterns(faces: list[JsonObject]) -> list[_CirclePattern]:
 
 def _collect_circle_source_refs(
     container: JsonObject,
+    *,
+    koz_only: bool = False,
 ) -> dict[_CirclePattern, list[str]]:
+    """Map original/KOZ circles to feature refs, optionally collecting only KOZ."""
     refs: dict[_CirclePattern, list[str]] = {}
 
     def visit(current: JsonObject, path: str) -> None:
@@ -112,10 +116,17 @@ def _collect_circle_source_refs(
                 face = _geometry_to_face(item["geometry"])
                 if face.get("type") != "CIRCLE":
                     continue
-                pattern = _circle_pattern_from_face(face)
-                refs.setdefault(pattern, []).append(
-                    str(item.get("id") or f"{path}.{field}[{index}]")
-                )
+                item_faces = [] if koz_only else [face]
+                if field != "bodies" and koz_value(item) > 0:
+                    inner = inset_face(face, koz_value(item))
+                    if inner is not None:
+                        item_faces.append(inner)
+                source_ref = str(item.get("id") or f"{path}.{field}[{index}]")
+                for item_face in item_faces:
+                    pattern = _circle_pattern_from_face(item_face)
+                    pattern_refs = refs.setdefault(pattern, [])
+                    if source_ref not in pattern_refs:
+                        pattern_refs.append(source_ref)
         children = current.get("children", [])
         if isinstance(children, list):
             for child_index, child in enumerate(children):
@@ -379,28 +390,49 @@ def _circle_band_is_inside_circle(
 def _planar_element_size(
     element_size: float,
     circle_patterns: list[_CirclePattern],
+    *,
+    koz_patterns: set[_CirclePattern] | None = None,
 ) -> float:
     if not circle_patterns:
         return element_size
     minimum_radius = min(pattern.radius for pattern in circle_patterns)
-    return min(element_size, minimum_radius / 3.0)
+    size = min(element_size, minimum_radius / 3.0)
+    if koz_patterns:
+        for index, left in enumerate(circle_patterns):
+            for right in circle_patterns[index + 1:]:
+                if left not in koz_patterns and right not in koz_patterns:
+                    continue
+                clearance = _circle_clearance(left, right)
+                if clearance <= 0:
+                    raise ValueError(
+                        "Circle patterns have intersecting or tangent boundaries: "
+                        f"{_circle_label(left)} and {_circle_label(right)}."
+                    )
+                size = min(size, clearance / 4.0)
+    return size
+
+
+def _circle_clearance(left: _CirclePattern, right: _CirclePattern) -> float:
+    center_distance = math.hypot(
+        right.center_x - left.center_x,
+        right.center_y - left.center_y,
+    )
+    return max(
+        center_distance - left.radius - right.radius,
+        abs(left.radius - right.radius) - center_distance,
+    )
 
 
 def _validate_circle_clearances(
     circle_patterns: list[_CirclePattern],
     band_width: float,
+    *,
+    tolerance: float = CIRCLE_CLEARANCE_TOLERANCE,
 ) -> None:
-    required_clearance = band_width + CIRCLE_CLEARANCE_TOLERANCE
+    required_clearance = band_width + tolerance
     for left_index, left in enumerate(circle_patterns):
         for right in circle_patterns[left_index + 1 :]:
-            center_distance = math.hypot(
-                right.center_x - left.center_x,
-                right.center_y - left.center_y,
-            )
-            clearance = max(
-                center_distance - left.radius - right.radius,
-                abs(left.radius - right.radius) - center_distance,
-            )
+            clearance = _circle_clearance(left, right)
             if clearance <= required_clearance:
                 raise ValueError(
                     "Circle patterns have intersecting, tangent, or overlapping "

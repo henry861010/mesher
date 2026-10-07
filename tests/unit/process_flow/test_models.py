@@ -183,7 +183,7 @@ class MeshModelTests(unittest.TestCase):
             dtype=np.float64,
         )
 
-        mesh = dragger.build([], 1.0)
+        mesh = dragger.build([])
         dragger.nodes[0, 0] = 42.0
 
         self.assertEqual(mesh.node_count, 1)
@@ -197,7 +197,7 @@ class MeshModelTests(unittest.TestCase):
             np.array([[0, 1, 2, 2]], dtype=np.int32),
         )
 
-        mesh = dragger.build(_layers(), 1.0)
+        mesh = dragger.build(_layers())
 
         np.testing.assert_array_equal(
             mesh.elements[0, :8],
@@ -222,7 +222,7 @@ class MeshModelTests(unittest.TestCase):
             np.array([[0, 1, 2, 3]], dtype=np.int32),
         )
 
-        mesh = dragger.build(_layers(), 1.0)
+        mesh = dragger.build(_layers())
 
         np.testing.assert_array_equal(mesh.element_comps, [1])
         self.assertEqual(mesh.elements.shape, (1, 20))
@@ -235,10 +235,10 @@ class MeshModelTests(unittest.TestCase):
             np.array([[0, 1, 2, 3]], dtype=np.int32),
         )
         layers = _layers()
-        layers.insert(1, {"z": 1.0, "assignments": []})
+        layers.insert(1, {"z": 1.0, "element_size": 1.0, "assignments": []})
         layers[-1]["z"] = 2.0
 
-        mesh = dragger.build(layers, 1.0)
+        mesh = dragger.build(layers)
 
         self.assertEqual(mesh.node_count, 12)
         self.assertEqual(mesh.element_count, 2)
@@ -252,8 +252,8 @@ class MeshModelTests(unittest.TestCase):
         )
 
         mesh = dragger.build(
-            [{"z": 0.0, "assignments": []}, {"z": 1.0, "assignments": []}],
-            1.0,
+            [{"z": 0.0, "element_size": 1.0, "assignments": []},
+             {"z": 1.0, "assignments": []}],
         )
 
         self.assertEqual(mesh.node_count, 0)
@@ -274,6 +274,7 @@ def _layers():
     return [
         {
             "z": 0.0,
+            "element_size": 1.0,
             "assignments": [
                 {
                     "type": 3,

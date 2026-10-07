@@ -47,7 +47,7 @@ class PackageBoundaryTests(unittest.TestCase):
                 (
                     "import sys; import mesher; "
                     "optional = {'matplotlib', 'pyvista', 'PySide6', "
-                    "'process_flow_kernel'}; "
+                    "'process_flow_kernel', 'shapely'}; "
                     "print(','.join(sorted(optional.intersection(sys.modules))))"
                 ),
             ],
@@ -72,7 +72,7 @@ class PackageBoundaryTests(unittest.TestCase):
                     "from mesher.contracts.process_flow_2_5d import "
                     "validate_mesh_control; "
                     "runtime = {'matplotlib', 'pyvista', 'PySide6', "
-                    "'process_flow_kernel'}; "
+                    "'process_flow_kernel', 'shapely'}; "
                     "print(','.join(sorted(runtime.intersection(sys.modules))))"
                 ),
             ],

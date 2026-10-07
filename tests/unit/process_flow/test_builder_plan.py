@@ -4,6 +4,9 @@ from mesher.process_flow.circle_planning import (
     _CirclePattern,
     _build_circle_meshing_plan,
     _collect_pattern_segments,
+    _collect_circle_source_refs,
+    _planar_element_size,
+    _validate_circle_clearances,
     _segment_intersects_annulus,
 )
 
@@ -13,6 +16,37 @@ def _circle(x, y, radius):
 
 
 class CircleMeshingPlanTests(unittest.TestCase):
+    def test_koz_circle_clearance_refines_xy_size(self):
+        outer, inner = _CirclePattern(0, 0, 1), _CirclePattern(0, 0, 0.9)
+        self.assertAlmostEqual(
+            _planar_element_size(1, [outer, inner], koz_patterns={inner}), 0.025
+        )
+        self.assertEqual(_planar_element_size(1, [outer, inner]), 0.3)
+
+    def test_koz_boundary_intersections_and_tangency_still_fail(self):
+        inner = _CirclePattern(0, 0, 1)
+        for other in (_CirclePattern(1, 0, 1), _CirclePattern(2, 0, 1)):
+            with self.subTest(other=other), self.assertRaisesRegex(ValueError, "intersecting or tangent"):
+                _planar_element_size(1, [inner, other], koz_patterns={inner})
+
+    def test_neighbor_gap_can_drive_finer_koz_resolution(self):
+        inner = _CirclePattern(0, 0, 1)
+        neighbor = _CirclePattern(2.0000001, 0, 1)
+        size = _planar_element_size(1, [inner, neighbor], koz_patterns={inner})
+        self.assertAlmostEqual(size, 2.5e-8)
+        _validate_circle_clearances([inner, neighbor], 2 * size, tolerance=size / 100)
+
+    def test_koz_circles_retain_original_feature_refs(self):
+        container = {"children": [{"vias": [{
+            "id": "via-1", "koz": 0.2, "geometry": {"type": "CylinderGeometry",
+            "center": [0, 0, 0], "bottom_radius": 1, "thk": 1},
+        }]}]}
+        refs = _collect_circle_source_refs(container)
+        self.assertEqual(refs[_CirclePattern(0, 0, 1)], ["via-1"])
+        self.assertEqual(refs[_CirclePattern(0, 0, 0.8)], ["via-1"])
+        self.assertEqual(set(_collect_circle_source_refs(container, koz_only=True)),
+                         {_CirclePattern(0, 0, 0.8)})
+
     def test_collects_box_and_polygon_segments_but_not_circles(self):
         faces = [
             _circle(0.0, 0.0, 10.0),

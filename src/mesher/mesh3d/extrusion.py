@@ -268,23 +268,28 @@ class Dragger:
             mask = np.all(mask_bl_x & mask_bl_y & mask_tr_x & mask_tr_y, axis=1)
             return mask
         elif face_type == "POLYGON":
-            mask = np.zeros(len(element_coordinates), dtype=bool)
             flat_coordinates = element_coordinates.reshape(-1, 2)
+            flat_mask = np.zeros(len(flat_coordinates), dtype=bool)
             
-            for poly in face_dim:
+            paths = [Path(np.array(poly, dtype=np.float64)) for poly in face_dim]
+            for loop_index, (poly, path) in enumerate(zip(face_dim, paths)):
+                depth = sum(
+                    other.contains_point(poly[0])
+                    for index, other in enumerate(paths)
+                    if index != loop_index
+                )
                 radius = tolerance if self._signed_area(poly) > 0 else -tolerance
-                
-                path = Path(np.array(poly, dtype=np.float64))
+                # Expand hulls but shrink holes so points on either kind of
+                # boundary belong to the retained region, regardless of winding.
+                if depth % 2:
+                    radius = -radius
                 flat_mask_sub = path.contains_points(flat_coordinates, radius=radius)
                 
-                # Reshape the boolean array back to (n, 4) and determine each element
-                node_mask_reshaped = flat_mask_sub.reshape(element_coordinates.shape[0], 4)
-                element_mask_sub = node_mask_reshaped.all(axis=1)
-                
-                # Apply your XOR logic
-                mask = np.logical_xor(mask, element_mask_sub)
+                flat_mask ^= flat_mask_sub
 
-            return mask
+            # Combine loop parity per corner before requiring every corner to
+            # be inside. Elements partially entering a hole must be excluded.
+            return flat_mask.reshape(len(element_coordinates), 4).all(axis=1)
         elif face_type == "CIRCLE":
             center_x, center_y, radius = face_dim
             dx = element_coordinates[:, :, 0] - center_x
@@ -436,7 +441,15 @@ class Dragger:
                 self.element_2D_density_occupy[target_indices] = priority
                 
                 ### koz
-                mask = self._search_faces(face, koz=koz, indices=target_indices)
+                density_face = area.get("face")
+                if density_face is None:
+                    mask = self._search_faces(face, koz=koz, indices=target_indices)
+                else:
+                    mask = self._search_faces(
+                        density_face,
+                        indices=target_indices,
+                        tolerance=min(0.01, koz / 100.0),
+                    )
                 target_indices = target_indices[mask]
                 
                 ### total volume

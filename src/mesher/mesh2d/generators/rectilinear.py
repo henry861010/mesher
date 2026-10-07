@@ -43,11 +43,14 @@ def generate_rectilinear_mesh(
     target_edge_size: float,
     x_coordinates: ArrayLike,
     y_coordinates: ArrayLike,
+    *,
+    coordinate_tolerance: float = 1e-3,
 ) -> Mesh2D:
     """Generate a planar rectilinear Quad4 mesh.
 
     The supplied coordinates define mandatory grid lines. Intervals are
     subdivided as needed so no generated edge exceeds ``target_edge_size``.
+    ``coordinate_tolerance`` controls merging of nearly coincident input lines.
     """
     try:
         target_edge_size = float(target_edge_size)
@@ -56,8 +59,15 @@ def generate_rectilinear_mesh(
     if not np.isfinite(target_edge_size) or target_edge_size <= 0.0:
         raise ValueError("target_edge_size must be positive")
 
-    x_coordinates = _sort(x_coordinates)
-    y_coordinates = _sort(y_coordinates)
+    try:
+        coordinate_tolerance = float(coordinate_tolerance)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("coordinate_tolerance must be finite and non-negative") from error
+    if not np.isfinite(coordinate_tolerance) or coordinate_tolerance < 0:
+        raise ValueError("coordinate_tolerance must be finite and non-negative")
+
+    x_coordinates = _sort(x_coordinates, coordinate_tolerance)
+    y_coordinates = _sort(y_coordinates, coordinate_tolerance)
 
     x = _densify(target_edge_size, x_coordinates)
     y = _densify(target_edge_size, y_coordinates)
