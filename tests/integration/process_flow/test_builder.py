@@ -3,6 +3,8 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from shapely import contains_xy
+from shapely.geometry import Polygon
 from mesher import Mesh3D
 from mesher.mesh2d.circular import extend_circular_mesh
 from mesher.mesh2d.circular.imprint_v2 import imprint_circle
@@ -331,6 +333,28 @@ class BuilderIntegrationTests(unittest.TestCase):
             )
         )
         self.assertAlmostEqual(float(np.sum(element_areas)), 900.0)
+
+    def test_circle_with_slanted_polygon_child_preserves_footprint(self):
+        trapezoid = [(1.6, -1.6), (4.0, -1.6), (3.6, 1.6), (1.6, 1.6)]
+        diamond = [(2.5, -2.0), (4.5, 0.0), (2.5, 2.0), (0.5, 0.0)]
+        for points in (trapezoid, [*trapezoid, trapezoid[0]], diamond):
+            with self.subTest(points=points):
+                structure = _circle_structure((0.0, 0.0, 15.0, 0.0, 1.0, "wafer"))
+                child = _append_polygon(_circle_structure(), points=points, material="HBM")
+                for point in child["root"]["bodies"][0]["geometry"]["polys"][0]:
+                    point[2] = 1.0
+                structure["root"]["children"] = [child["root"]]
+                snapshot = copy.deepcopy(structure)
+
+                mesh = build_mesh_from_structure(structure, element_size=0.5)
+
+                self.assertEqual(structure, snapshot)
+                self.assertTrue(np.all(np.isfinite(mesh.nodes)))
+                child_elements = mesh.elements[mesh.element_comps == mesh.comps["HBM"]]
+                self.assertGreater(len(child_elements), 0)
+                centers = mesh.nodes[child_elements[:, :8]].mean(axis=1)
+                self.assertTrue(np.all(contains_xy(Polygon(points), centers[:, 0], centers[:, 1])))
+                self.assertTrue(np.all((centers[:, 2] > 1.0) & (centers[:, 2] < 2.0)))
 
     def test_public_builder_matches_known_mesh_contract(self):
         mesh = build_mesh_from_structure(_box_structure(), element_size=1.0)

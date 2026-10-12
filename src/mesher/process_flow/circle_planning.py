@@ -286,11 +286,21 @@ def _line_pattern_crosses_annulus(
 def _collect_pattern_segments(
     faces: list[JsonObject],
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Collect non-zero, axis-aligned boundaries for circular imprint guides.
+
+    Slanted polygon edges still participate in geometric planning through
+    ``_face_boundary_segments`` and contribute vertex X/Y grid lines. They
+    cannot guide the circular imprint's rectilinear pattern helpers.
+    """
     segments = []
     for face in faces:
         if face.get("type") == "CIRCLE":
             continue
-        segments.extend(_face_boundary_segments(face))
+        for start, end in _face_boundary_segments(face):
+            fixed_x = start[0] == end[0]
+            fixed_y = start[1] == end[1]
+            if fixed_x != fixed_y:
+                segments.append((start, end))
     return segments
 
 

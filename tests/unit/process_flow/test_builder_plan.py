@@ -90,6 +90,35 @@ class CircleMeshingPlanTests(unittest.TestCase):
         self.assertEqual(plan.imprint_patterns, tuple(patterns))
         self.assertEqual(plan.extensions, ())
 
+    def test_polygon_guides_exclude_slanted_and_duplicate_closing_edges(self):
+        points = [[8.0, -8.0], [20.0, -8.0], [18.0, 8.0], [8.0, 8.0]]
+        for loop in (points, [*points, points[0]], [points[0], *points]):
+            with self.subTest(loop=loop):
+                segments = _collect_pattern_segments([
+                    _circle(0.0, 0.0, 75.0),
+                    {"type": "POLYGON", "dim": [loop]},
+                ])
+                self.assertEqual(segments, [
+                    ((8.0, -8.0), (20.0, -8.0)),
+                    ((18.0, 8.0), (8.0, 8.0)),
+                    ((8.0, 8.0), (8.0, -8.0)),
+                ])
+
+    def test_slanted_polygon_edges_still_block_annulus_extension(self):
+        base = _circle(0.0, 0.0, 13.0)
+        faces = [
+            _circle(0.0, 0.0, 10.0),
+            base,
+            {"type": "POLYGON", "dim": [[[11.0, -0.5], [12.0, 0.5], [10.5, 1.0]]]},
+        ]
+        patterns = [_CirclePattern(0.0, 0.0, 10.0), _CirclePattern(0.0, 0.0, 13.0)]
+
+        self.assertEqual(_collect_pattern_segments(faces), [])
+        plan = _build_circle_meshing_plan(base, faces, patterns, band_width=1.0)
+
+        self.assertEqual(plan.imprint_patterns, tuple(patterns))
+        self.assertEqual(plan.extensions, ())
+
     def test_protruding_footprint_disables_circular_extension(self):
         base = _circle(0.0, 0.0, 13.0)
         protruding_box = {

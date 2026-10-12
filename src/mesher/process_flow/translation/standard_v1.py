@@ -303,7 +303,8 @@ def _get_assignments(container, ancestors=None, path="root"):
                 }) 
             
             elif key in ["bumps", "vias", "circuits"]:
-                if key == "bump" and term["stage"] != "joined":
+                if key == "bumps" and term["stage"] != "joined":
+                    print("aaaaa")
                     continue
                 
                 geometry = term["geometry"]
