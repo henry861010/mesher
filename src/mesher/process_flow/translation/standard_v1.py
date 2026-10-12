@@ -303,6 +303,9 @@ def _get_assignments(container, ancestors=None, path="root"):
                 }) 
             
             elif key in ["bumps", "vias", "circuits"]:
+                if key == "bump" and term["stage"] != "joined":
+                    continue
+                
                 geometry = term["geometry"]
                 material = term["material"]
                 koz = koz_value(term)
