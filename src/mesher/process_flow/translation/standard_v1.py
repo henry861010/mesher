@@ -912,19 +912,19 @@ def _geometry_to_z(geometry, isStart=True):
         z = geometry["bottom_left"][2] 
         if not isStart:
             z += geometry["thk"]
-        return z
+        return round(z,3)
 
     if geometry["type"] == "PolygonGeometry":
         z = geometry["polys"][0][0][2]
         if not isStart:
             z += geometry["thk"]
-        return z
+        return round(z,3)
     
     if geometry["type"] == "CylinderGeometry":
         z = geometry["center"][2]
         if not isStart:
             z += geometry["thk"]
-        return z
+        return round(z,3)
     
     if geometry["type"] == "ConeGeometry":
         raise ValueError("ConeGeometry is not supported by StandardV1Translator")
