@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,16 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "src"
+
+
+def _positive_element_size(value: str) -> float:
+    try:
+        size = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive finite number") from error
+    if not math.isfinite(size) or size <= 0:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return size
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -30,6 +41,16 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "mesh-control JSON file; when omitted, use the input's 'meshControl' "
             "or the default mesh-control configuration"
+        ),
+    )
+    parser.add_argument(
+        "--element_size",
+        type=_positive_element_size,
+        default=None,
+        metavar="SIZE",
+        help=(
+            "global element size in um; overrides --mesh-control, embedded "
+            "meshControl, and the default global size; preserves local elementSize controls"
         ),
     )
     parser.add_argument(
@@ -93,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
         document = _read_json(args.json, label="geometry")
         structure = _geometry_structure(document)
         mesh_control = _mesh_control(document, args.mesh_control)
+        if args.element_size is not None:
+            mesh_control["globalElementSize"] = args.element_size
     except ValueError as error:
         parser.error(str(error))
 

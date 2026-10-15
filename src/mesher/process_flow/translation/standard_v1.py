@@ -617,7 +617,7 @@ def _convert_to_objectless_mesh_control(container, control, global_element_size)
             return False
         if "id" in reference_info:
             if "id" not in object:
-                return Fasle
+                return False
             if reference_info["id"] != object["id"]:
                 return False
         if "key" in reference_info:
@@ -651,7 +651,7 @@ def _convert_to_objectless_mesh_control(container, control, global_element_size)
         for body in container["bodies"]:
             if _is_target(body, control, "body"):
                 body_min = _geometry_to_z(body["geometry"])
-                body_max = body_min + body["thk"]
+                body_max = body_min + body["geometry"]["thk"]
                 
                 z_controls_sub = _get_control_z_abs(
                     control, 
