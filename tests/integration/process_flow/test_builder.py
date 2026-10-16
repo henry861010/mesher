@@ -789,6 +789,65 @@ class BuilderIntegrationTests(unittest.TestCase):
         self.assertTrue(np.all(mesh.nodes[:, 0] >= 0.0))
         self.assertTrue(np.all(mesh.nodes[:, 1] >= 0.0))
 
+    def test_reduced_models_prune_empty_containers_before_resolving_controls(self):
+        from mesher.process_flow.translation.standard_v1 import StandardV1Translator
+
+        outside = copy.deepcopy(_box_structure()["root"])
+        outside["id"] = "outside"
+        outside["bodies"][0]["geometry"]["top_right"] = [0.5, 0.5, 0.0]
+        outside["bodies"][0]["material"] = "outside"
+        inside = copy.deepcopy(_box_structure()["root"])
+        inside["id"] = "inside"
+        inside["bodies"][0]["geometry"]["bottom_left"] = [1.0, 1.0, 0.0]
+        inside["bodies"][0]["material"] = "inside"
+        parent = copy.deepcopy(outside)
+        parent["id"] = "parent"
+        parent["children"] = [inside]
+        structure = _box_structure()
+        structure["root"]["children"] = [outside, parent]
+        snapshot = copy.deepcopy(structure)
+        controls = [
+            {
+                "method": "Z_POINT",
+                "reference": {"kind": "container", "id": container_id},
+                "z": {"mode": "relative", "anchor": "z_min", "offset": offset},
+            }
+            for container_id, offset in (("outside", 0.5), ("parent", 0.25))
+        ]
+        original_get_pattern = StandardV1Translator.get_3D_pattern
+
+        for symmetry in ("full", "upper_half", "right_half", "upper_right_quarter"):
+            with self.subTest(symmetry=symmetry):
+                captured = {}
+
+                def capture_pattern(translator, container, mesh_control):
+                    layers = original_get_pattern(translator, container, mesh_control)
+                    captured["container"] = copy.deepcopy(container)
+                    captured["layers"] = layers
+                    return layers
+
+                with patch.object(
+                    StandardV1Translator, "get_3D_pattern", new=capture_pattern
+                ):
+                    mesh = _build_mesh_from_structure(
+                        structure, _mesh_control(0.5, symmetry, controls)
+                    )
+
+                children = captured["container"]["children"]
+                if symmetry == "full":
+                    self.assertEqual([child["id"] for child in children], ["outside", "parent"])
+                    self.assertIn("outside", mesh.comps)
+                    expected_z = [0.0, 0.25, 0.5, 1.0]
+                else:
+                    self.assertEqual([child["id"] for child in children], ["parent"])
+                    self.assertEqual(children[0]["bodies"], [])
+                    self.assertNotIn("outside", mesh.comps)
+                    expected_z = [0.0, 0.25, 1.0]
+                self.assertEqual(children[-1]["children"][0]["priority"], 3)
+                self.assertEqual([layer["z"] for layer in captured["layers"]], expected_z)
+                self.assertIn("inside", mesh.comps)
+                self.assertEqual(structure, snapshot)
+
     def test_quarter_model_uses_actual_polygon_footprint_not_its_bounds(self):
         structure = {
             "root": {

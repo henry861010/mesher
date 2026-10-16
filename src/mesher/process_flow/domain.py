@@ -66,6 +66,15 @@ def model_domain(symmetry: SymmetryMode, faces: list[JsonObject]) -> ModelDomain
 
 
 def filter_container_to_domain(container: JsonObject, domain: ModelDomain) -> None:
+    """Filter geometry in place and prune empty child subtrees, keeping the root."""
+    _filter_container_subtree_to_domain(container, domain)
+
+
+def _filter_container_subtree_to_domain(
+    container: JsonObject, domain: ModelDomain
+) -> bool:
+    """Return whether the filtered subtree still contains any geometry."""
+    has_geometry = False
     for field in ("bodies", "vias", "circuits", "bumps"):
         items = container.get(field, [])
         if items is None:
@@ -84,16 +93,21 @@ def filter_container_to_domain(container: JsonObject, domain: ModelDomain) -> No
             if face_intersects_domain(_geometry_to_face(geometry), domain):
                 retained.append(item)
         container[field] = retained
+        has_geometry = has_geometry or bool(retained)
 
     children = container.get("children", [])
     if children is None:
         children = []
     if not isinstance(children, list):
         raise ValueError("container.children must be a list")
+    retained_children = []
     for index, child in enumerate(children):
         if not isinstance(child, dict):
             raise ValueError(f"container.children[{index}] must be an object")
-        filter_container_to_domain(child, domain)
+        if _filter_container_subtree_to_domain(child, domain):
+            retained_children.append(child)
+    container["children"] = retained_children
+    return has_geometry or bool(retained_children)
 
 
 def face_bounds(face: JsonObject) -> tuple[float, float, float, float]:
