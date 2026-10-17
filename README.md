@@ -87,6 +87,9 @@ extend_circular_mesh(
 Both circular operations are transactional and in place: they return the same
 `Mesh2D` after success and leave it unchanged on failure.
 
+For the second-generation `circular.imprint_v2` implementation, see the
+[ten reproducible hole cases and stage diagnostics](examples/failures/imprint_v2_holes/README.md).
+
 ## Process-flow 3D extrusion
 
 ```python

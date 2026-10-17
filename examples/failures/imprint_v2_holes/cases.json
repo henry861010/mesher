@@ -1,0 +1,866 @@
+{
+  "schema_version": 1,
+  "description": "Ten independently discovered full-circle imprint_v2 hole cases at radius 300000 and target element size 5000, using the current process_flow parameters. Entire input grids have edge spacing at most 5000; local fine spacing is retained.",
+  "context": {
+    "circle_radius": 300000.0,
+    "planar_element_size": 5000.0,
+    "minimum_radius_to_max_grid_spacing": 60.0,
+    "domain_bounds": [
+      -320000.0,
+      -320000.0,
+      320000.0,
+      320000.0
+    ],
+    "parameter_source": "src/mesher/process_flow/pipeline.py",
+    "parameter_ratios": {
+      "projection_tolerance": 0.2,
+      "guide_tolerance": 0.2,
+      "merge_tolerance": 0.002,
+      "minimum_area": 0.0004
+    },
+    "minimum_area_effective": 1.0,
+    "supersedes": "All previous small-radius cases were removed; case_01 through case_10 now refer to the full-circle process_flow-scale corpus."
+  },
+  "cases": [
+    {
+      "id": "case_01",
+      "source_seed": 26,
+      "angle_degrees": 225,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -226833.37058,
+          -223379.23722,
+          -221162.45055,
+          -210488.58708,
+          -207565.53501,
+          -204894.85543,
+          -201486.11751,
+          -200986.11751,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -223154.42749,
+          -222251.75426,
+          -220383.69156,
+          -217503.83814,
+          -211908.7048,
+          -211459.34966,
+          -196409.8214,
+          -196389.8214,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              -234132.03436,
+              -211908.7048
+            ],
+            [
+              -190132.03436,
+              -211908.7048
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 20.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18495
+      },
+      "inspection_bounds": [
+        -217355.12904092146,
+        -216908.7048,
+        -205488.58708,
+        -206459.34966
+      ]
+    },
+    {
+      "id": "case_02",
+      "source_seed": 707,
+      "angle_degrees": 45,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          196358.38505,
+          199398.11259,
+          206076.28571,
+          211554.55248,
+          212341.66233,
+          212841.66233,
+          215224.08273,
+          221713.36466,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          203385.81881,
+          203817.93237,
+          208392.63457,
+          209829.50626,
+          217816.24012,
+          222068.02496,
+          222168.02496,
+          226305.35974,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              212341.66233,
+              190132.03436
+            ],
+            [
+              212341.66233,
+              234132.03436
+            ]
+          ],
+          [
+            [
+              190132.03436,
+              209829.50626
+            ],
+            [
+              234132.03436,
+              209829.50626
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 100.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18224
+      },
+      "inspection_bounds": [
+        206554.55248,
+        204829.50626,
+        217341.66233,
+        216922.19902344415
+      ]
+    },
+    {
+      "id": "case_03",
+      "source_seed": 745,
+      "angle_degrees": 135,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -219030.35933,
+          -214237.07978,
+          -213987.07978,
+          -210079.08803,
+          -201911.98884,
+          -197280.48667,
+          -196594.17783,
+          -196593.99396,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          196297.22298,
+          212939.34127,
+          214092.83754,
+          218192.77764,
+          220889.76801,
+          220909.76801,
+          222789.53496,
+          226089.09295,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              -213987.07978,
+              190132.03436
+            ],
+            [
+              -213987.07978,
+              234132.03436
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 0.183870000008028,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18225
+      },
+      "inspection_bounds": [
+        -219237.07978,
+        205260.62324464825,
+        -208987.07978,
+        217939.34127
+      ]
+    },
+    {
+      "id": "case_04",
+      "source_seed": 1099,
+      "angle_degrees": 25,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          249892.33611,
+          262346.70908,
+          273498.32777,
+          273748.32777,
+          274141.5814,
+          274387.22334,
+          277235.50999,
+          279717.11623,
+          285562.46872,
+          293892.33611,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          104785.47852,
+          110428.06905,
+          110448.06905,
+          125141.92282,
+          129675.65736,
+          129720.33055,
+          135431.06756,
+          136592.53079,
+          141179.49162,
+          148785.47852,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              273498.32777,
+              104785.47852
+            ],
+            [
+              273498.32777,
+              148785.47852
+            ]
+          ],
+          [
+            [
+              249892.33611,
+              125141.92282
+            ],
+            [
+              293892.33611,
+              125141.92282
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 20.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18090
+      },
+      "inspection_bounds": [
+        268748.32777,
+        110346.02030666667,
+        279141.5814,
+        130141.92282
+      ]
+    },
+    {
+      "id": "case_05",
+      "source_seed": 173,
+      "angle_degrees": 225,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -221523.82132,
+          -219609.43359,
+          -217651.9973,
+          -212413.0143,
+          -211921.65062,
+          -211871.65062,
+          -207583.62957,
+          -202131.94655,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -225348.16783,
+          -214156.35544,
+          -206789.71785,
+          -206689.71785,
+          -198990.24351,
+          -198602.16748,
+          -197611.48586,
+          -196960.98895,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              -211921.65062,
+              -234132.03436
+            ],
+            [
+              -211921.65062,
+              -190132.03436
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 50.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18496
+      },
+      "inspection_bounds": [
+        -217413.0143,
+        -219156.35544,
+        -206921.65062,
+        -207342.20964870517
+      ]
+    },
+    {
+      "id": "case_06",
+      "source_seed": 711,
+      "angle_degrees": 45,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          200055.69206,
+          201550.0047,
+          202050.0047,
+          205548.15569,
+          209876.40459,
+          213779.31887,
+          221881.26264,
+          226872.01471,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          196095.89709,
+          197521.36554,
+          197830.78378,
+          206427.75092,
+          212947.9176,
+          213356.90861,
+          213376.90861,
+          227247.48546,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              213779.31887,
+              190132.03436
+            ],
+            [
+              213779.31887,
+              234132.03436
+            ]
+          ],
+          [
+            [
+              190132.03436,
+              212947.9176
+            ],
+            [
+              234132.03436,
+              212947.9176
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 20.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18088
+      },
+      "inspection_bounds": [
+        206313.00099573526,
+        207947.9176,
+        218779.31887,
+        218356.90861
+      ]
+    },
+    {
+      "id": "case_07",
+      "source_seed": 1135,
+      "angle_degrees": 225,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -214071.83173,
+          -214021.83173,
+          -213924.77656,
+          -210502.74023,
+          -209370.4792,
+          -205028.75798,
+          -204671.76961,
+          -199753.43297,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -226725.95561,
+          -226225.95561,
+          -224344.48263,
+          -218549.64174,
+          -211907.98325,
+          -211404.9344,
+          -209425.29669,
+          -209362.84897,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              -210502.74023,
+              -234132.03436
+            ],
+            [
+              -210502.74023,
+              -190132.03436
+            ]
+          ],
+          [
+            [
+              -234132.03436,
+              -211907.98325
+            ],
+            [
+              -190132.03436,
+              -211907.98325
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 50.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18360
+      },
+      "inspection_bounds": [
+        -217355.8490715943,
+        -216907.98325,
+        -205502.74023,
+        -206404.9344
+      ]
+    },
+    {
+      "id": "case_08",
+      "source_seed": 1506,
+      "angle_degrees": 45,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          195690.13436,
+          196122.91219,
+          208408.73807,
+          211198.84965,
+          215006.58862,
+          221189.46311,
+          226752.96347,
+          227252.96347,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          195987.00599,
+          197904.54877,
+          202181.63622,
+          209025.48526,
+          209184.5394,
+          210627.38101,
+          211127.38101,
+          223811.60139,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              190132.03436,
+              211127.38101
+            ],
+            [
+              234132.03436,
+              211127.38101
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 159.05414000002202,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18496
+      },
+      "inspection_bounds": [
+        206198.84965,
+        205627.38101,
+        218131.95205754176,
+        216127.38101
+      ]
+    },
+    {
+      "id": "case_09",
+      "source_seed": 1975,
+      "angle_degrees": 135,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -223707.87262,
+          -223556.38316,
+          -222498.55759,
+          -218719.73237,
+          -210283.87794,
+          -209783.87794,
+          -208058.43325,
+          -199908.44693,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          199510.04476,
+          200010.04476,
+          201940.2786,
+          207429.45611,
+          210779.25194,
+          211902.06161,
+          222973.80284,
+          225186.45821,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              -210283.87794,
+              190132.03436
+            ],
+            [
+              -210283.87794,
+              234132.03436
+            ]
+          ],
+          [
+            [
+              -234132.03436,
+              211902.06161
+            ],
+            [
+              -190132.03436,
+              211902.06161
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 151.4894600000116,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18225
+      },
+      "inspection_bounds": [
+        -215283.87794,
+        206902.06161,
+        -204783.87794,
+        218964.22756740244
+      ]
+    },
+    {
+      "id": "case_10",
+      "source_seed": 2042,
+      "angle_degrees": 135,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          -234132.03436,
+          -227259.89832,
+          -225425.40873,
+          -220379.72642,
+          -220279.72642,
+          -219161.25263,
+          -214809.71977,
+          -202182.64575,
+          -197191.11333,
+          -190132.03436,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          190132.03436,
+          204342.1282,
+          210685.20332,
+          211157.53405,
+          216227.63779,
+          218990.86295,
+          225580.8948,
+          226714.19268,
+          226734.19268,
+          234132.03436,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 1000.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              -234132.03436,
+              211157.53405
+            ],
+            [
+              -190132.03436,
+              211157.53405
+            ]
+          ]
+        ]
+      },
+      "mechanism": "guide_projection_fold",
+      "expected": {
+        "first_invalid_stage": "projection",
+        "first_hole_stage": "cleanup"
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 20.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18360
+      },
+      "inspection_bounds": [
+        -218102.07838949646,
+        205685.20332,
+        -205600.69509666666,
+        216157.53405
+      ]
+    }
+  ]
+}
