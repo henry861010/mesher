@@ -53,12 +53,12 @@ flowchart TB
     OBJ --> Z
     subgraph PLANAR["mesh25d.plan2d：2D 階段"]
         PATTERN["Geometry → Pattern2D<br/>footprints・KOZ・來源資訊"]
-        CHECK{"XY controls 是否為空？"}
+        CUTS["XY controls → x/y 加密座標<br/>逐頂點區間 section_avg・限制模型範圍"]
         P2["2D planner → Plan2D<br/>格線・圓形支援線・操作順序"]
         A2["呼叫 mesh2d 演算法<br/>grid → circular imprint／extend"]
         MESH2["Mesh2D"]
         PATTERN --> P2
-        CHECK -- "是：目前 Z methods" --> P2
+        CUTS --> P2
         P2 --> A2 --> MESH2
     end
     subgraph SOLID["mesh25d.plan3d：3D 階段"]
@@ -73,10 +73,9 @@ flowchart TB
     end
     PREP --> PATTERN
     PREP --> ASSIGN
-    XY --> CHECK
+    XY --> CUTS
     Z --> LAYER
     MESH2 --> ADAPTER
-    CHECK -. "否：3D_REGION" .-> RESERVED["本次明確報錯<br/>XY 投影資料已定義<br/>區域加密演算法待後續實作"]
     MESH3 --> OUTPUT["process_flow<br/>CDB 輸出"]
 ```
 
@@ -90,8 +89,18 @@ flowchart TB
 
 XY 使用端定義 `XYRegionControl`，包含 `region`（既有 2D face 格式）與
 `element_size`。Z methods 回傳空的 XY controls。`3D_REGION` 只回傳絕對座標
-XY 投影，不保留 Z 範圍、不增加 Z constraints；區域加密尚未實作，因此實際
-建網格遇到非空 XY controls 時，須在 meshing 前回報 control index／label。
+XY 投影，不保留 Z 範圍、不增加 Z constraints。每個 control 獨立收集 BOX／
+POLYGON 所有 loops 頂點的 x、y 座標，分別排序、去重；每個相鄰座標區間以
+`max(1, floor(區間長度 / element_size))` 段平均分配，保留各頂點切線。
+例如長度 20、尺寸 5 產生 `0,5,10,15,20`；尺寸 6 則為
+`0,20/3,40/3,20`。重疊 controls 直接合併各自的座標，不另計重疊區域尺寸。
+
+切線先按原 control 區間計算，再篩選至模型 XY bounds 及 symmetry 保留域；
+與保留模型 bounds 完全不相交的 control 不增加格線。加密座標加入既有
+geometry、KOZ 與 circle support 的 `x_lines`／`y_lines` 後，由原 grid generator
+依 global planar element size 補滿間隙。各 x、y 切線貫穿模型，會沿投影方向
+影響 region 外網格；polygon 不新增沿斜邊的切線。若 global 尺寸更細，control
+產生的等分區間仍會再細分。既有圓形／KOZ 導致的 planar 尺寸調整維持不變。
 
 Z constraints 保留 `start`、`end`、`element_size`、`method`，其中 `method`
 只作診斷資訊。`Z_POINT` 只增加邊界；重疊區間使用 global size 與有效 controls
@@ -113,4 +122,4 @@ Python 呼叫端改用 `mesher.mesh25d.build_mesh`；舊 builder／translator �
 保持相容；不支援舊版座標格式。
 
 驗證包含原始碼比對、無 controls 的 mesh／CDB 回歸、Z 分段與重疊、reference
-及 symmetry、XY 投影與明確拒絕、輸入不變、import boundaries、完整測試及 build。
+及 symmetry、XY 投影與區域切線加密、輸入不變、import boundaries、完整測試及 build。

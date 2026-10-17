@@ -59,5 +59,8 @@ planar plans, and layer plans are internal to Mesh25D. The worker command and
 CDB/progress contracts remain unchanged. Controls use the current document
 contract with required `label` and `coordinateMode`; legacy per-coordinate
 `mode`/`value` objects are not accepted. Z controls are applied; `3D_REGION`
-provides its XY projection but regional XY meshing still raises an explicit
-unsupported-control error. See [Mesh25D design](mesh25d-design.md).
+adds XY cuts by evenly subdividing each box/polygon vertex interval into
+`max(1, floor(length / elementSize))` segments. The existing grid generator
+fills remaining gaps using the global planar element size. These lines span
+the model; the region's Z extent does not change Z layers.
+See [Mesh25D design](mesh25d-design.md).

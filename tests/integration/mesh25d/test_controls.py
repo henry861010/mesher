@@ -1,6 +1,5 @@
 import copy
 import unittest
-from unittest.mock import patch
 
 import numpy as np
 
@@ -87,7 +86,7 @@ class ControlIntegrationTests(unittest.TestCase):
         self.assertEqual(obj.get_25D_z_controls(), [])
         self.assertEqual(entry, before)
 
-    def test_xy_control_rejects_before_algorithms_with_original_source_index(self):
+    def test_xy_reference_control_builds_with_z_point_without_mutating_inputs(self):
         structure = _box_structure()
         structure["root"]["bodies"][0]["id"] = "body"
         point = {"method": "Z_POINT", "coordinateMode": "absolute", "label": "Cut", "z": 0.5}
@@ -96,12 +95,63 @@ class ControlIntegrationTests(unittest.TestCase):
                   "region": {"type": "box", "min": {axis: {"anchor": f"{axis}_min", "offset": 0} for axis in "xyz"},
                              "max": {axis: {"anchor": f"{axis}_max", "offset": 0} for axis in "xyz"}}}
         before = copy.deepcopy(structure)
-        with patch("mesher.mesh25d.plan2d.generate_rectilinear_mesh") as grid, patch("mesher.mesh25d.plan3d.Dragger") as dragger:
-            with self.assertRaisesRegex(NotImplementedError, r"XY.*controls\[1\].*Local sizing"):
-                build_mesh(structure, _mesh_control(1, controls=[point, region]))
-        grid.assert_not_called()
-        dragger.assert_not_called()
+        control = _mesh_control(1, controls=[point, region])
+        snapshot = copy.deepcopy(control)
+        mesh = build_mesh(structure, control)
+        np.testing.assert_allclose(np.unique(mesh.nodes[:, 0]), np.linspace(0, 2, 21))
+        np.testing.assert_allclose(np.unique(mesh.nodes[:, 1]), np.linspace(0, 2, 21))
+        np.testing.assert_allclose(np.unique(mesh.nodes[:, 2]), [0, 0.5, 1])
         self.assertEqual(structure, before)
+        self.assertEqual(control, snapshot)
+
+    def test_xy_region_clips_to_each_symmetry_domain_and_does_not_add_z_layers(self):
+        region = {"method": "3D_REGION", "coordinateMode": "absolute", "label": "XY",
+                  "elementSize": 0.5, "region": {"type": "box",
+                  "min": {"x": -1, "y": -1, "z": -10},
+                  "max": {"x": 3, "y": 3, "z": 10}}}
+        full = [0, 0.5, 1, 1.5, 2]
+        half = [1, 1.5, 2]
+        for symmetry, xs, ys in (
+            ("full", full, full), ("right_half", half, full),
+            ("upper_half", full, half), ("upper_right_quarter", half, half),
+        ):
+            with self.subTest(symmetry=symmetry):
+                mesh = build_mesh(_box_structure(), _mesh_control(10, symmetry, [region]))
+                np.testing.assert_allclose(np.unique(mesh.nodes[:, 0]), xs)
+                np.testing.assert_allclose(np.unique(mesh.nodes[:, 1]), ys)
+                np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [0, 1])
+
+    def test_xy_polygon_control_builds_without_changing_its_geometry_or_z_extent(self):
+        region = {"method": "3D_REGION", "coordinateMode": "absolute", "label": "Polygon",
+                  "elementSize": 0.25, "region": {"type": "polygon", "loops": [[
+                      {"x": 0.5, "y": 0.5}, {"x": 1.5, "y": 0.5},
+                      {"x": 0.5, "y": 1.5},
+                  ]], "startZ": 20, "endZ": 30}}
+        structure = _box_structure()
+        control = _mesh_control(10, controls=[region])
+        snapshot = copy.deepcopy((structure, control))
+        mesh = build_mesh(structure, control)
+        expected = [0, 0.5, 0.75, 1, 1.25, 1.5, 2]
+        np.testing.assert_allclose(np.unique(mesh.nodes[:, 0]), expected)
+        np.testing.assert_allclose(np.unique(mesh.nodes[:, 1]), expected)
+        np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [0, 1])
+        self.assertEqual(mesh.element_count, 36)
+        self.assertEqual((structure, control), snapshot)
+
+    def test_xy_reference_removed_by_symmetry_adds_no_grid_lines(self):
+        structure = _box_structure()
+        removed = copy.deepcopy(structure["root"]["bodies"][0])
+        removed["id"] = "left-body"
+        removed["geometry"].update(bottom_left=[0, 0, 0], top_right=[0.5, 2, 0])
+        structure["root"]["bodies"].append(removed)
+        region = {"method": "3D_REGION", "coordinateMode": "reference", "label": "Removed",
+                  "reference": {"kind": "body", "id": "left-body"}, "elementSize": 0.1,
+                  "region": {"type": "box",
+                  "min": {axis: {"anchor": f"{axis}_min", "offset": 0} for axis in "xyz"},
+                  "max": {axis: {"anchor": f"{axis}_max", "offset": 0} for axis in "xyz"}}}
+        mesh = build_mesh(structure, _mesh_control(10, "right_half", [region]))
+        np.testing.assert_array_equal(np.unique(mesh.nodes[:, 0]), [1, 2])
+        np.testing.assert_array_equal(np.unique(mesh.nodes[:, 1]), [0, 2])
 
     def test_assignment_extraction_respects_bump_stage(self):
         container = _box_structure()["root"]

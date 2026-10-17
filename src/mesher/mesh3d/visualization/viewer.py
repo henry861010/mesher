@@ -247,6 +247,7 @@ class MeshViewer:
         actors,
         component_label_actors,
         component_node_indices,
+        camera_widget=None,
     ):
         point_actor_names = (
             "selected_node_marker",
@@ -319,6 +320,13 @@ class MeshViewer:
                 return
 
             x, y = position
+            # Use the widget's live viewport so resizing and HiDPI coordinates
+            # cannot turn a camera-control click into a mesh-selection click.
+            if (
+                camera_widget is not None
+                and camera_widget.GetDefaultRenderer().IsInViewport(x, y)
+            ):
+                return
             cell_picker.Pick(x, y, 0, plotter.renderer)
             comp_id = component_id_for_actor(cell_picker.GetActor())
             if comp_id is None:
@@ -358,6 +366,15 @@ class MeshViewer:
             viewport=True,
         )
         return on_visibility_change
+
+    def _add_camera_orientation_widget(self, plotter):
+        widget = plotter.add_camera_orientation_widget(animate=True, n_frames=20)
+        widget.ShouldResetCameraOff()
+        representation = widget.GetRepresentation()
+        representation.AnchorToLowerLeft()
+        representation.SetSize(120, 120)
+        representation.SetPadding(10, 10)
+        return widget
 
     def show(self, randomize_colors=False, component_names=None):
         grid = self._build_grid()
@@ -402,11 +419,12 @@ class MeshViewer:
             self.mesh.node_count,
             on_visibility_change=handle_visibility_change,
         )
+        camera_widget = self._add_camera_orientation_widget(plotter)
         on_visibility_change = self._add_selection_tool(
             plotter,
             actors,
             component_label_actors,
             component_node_indices,
+            camera_widget=camera_widget,
         )
-        plotter.add_axes()
         plotter.show()

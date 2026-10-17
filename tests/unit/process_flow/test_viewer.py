@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pyvista as pv
+from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow
 
 from mesher import Mesh3D
 from mesher.mesh3d.visualization import MeshViewer
@@ -56,11 +57,13 @@ class FakePicker:
         self.actor = None
         self.position = (0.0, 0.0, 0.0)
         self.tolerance = None
+        self.pick_count = 0
 
     def SetTolerance(self, tolerance):
         self.tolerance = tolerance
 
     def Pick(self, *_args):
+        self.pick_count += 1
         return int(self.actor is not None)
 
     def GetActor(self):
@@ -207,6 +210,54 @@ class MeshViewerSelectionTests(unittest.TestCase):
         self.assertFalse(self.labels[1].prop.bold)
         self.assertNotIn("selected_node_marker", self.plotter.visuals)
         self.assertNotIn("selected_node_label", self.plotter.visuals)
+
+    def test_camera_widget_clicks_preserve_selection_and_skip_mesh_pickers(self):
+        window = vtkRenderWindow()
+        window.SetSize(1024, 768)
+        renderer = vtkRenderer()
+        window.AddRenderer(renderer)
+        renderer.SetViewport(10 / 1024, 10 / 768, 130 / 1024, 130 / 768)
+        widget = SimpleNamespace(GetDefaultRenderer=lambda: renderer)
+        self.vision._add_selection_tool(
+            self.plotter,
+            self.actors,
+            self.labels,
+            self.component_nodes,
+            camera_widget=widget,
+        )
+        self.cell_picker.actor = self.component_1
+        self.point_picker.actor = self.component_1
+        self.point_picker.position = (1.0, 2.0, 3.0)
+        self.plotter.callbacks[False]((300, 300))
+        marker = self.plotter.visuals["selected_node_marker"]
+        label = self.plotter.visuals["selected_node_label"]
+        pick_counts = (self.cell_picker.pick_count, self.point_picker.pick_count)
+
+        for double in (False, True):
+            for picked_actor in (None, self.component_2):
+                with self.subTest(double=double, actor=picked_actor):
+                    self.cell_picker.actor = picked_actor
+                    self.plotter.callbacks[double]((70, 70))
+                    self.assertTrue(self.labels[1].prop.bold)
+                    self.assertFalse(self.labels[2].prop.bold)
+                    self.assertIs(self.plotter.visuals["selected_node_marker"], marker)
+                    self.assertIs(self.plotter.visuals["selected_node_label"], label)
+                    self.assertEqual(
+                        (self.cell_picker.pick_count, self.point_picker.pick_count),
+                        pick_counts,
+                    )
+
+        # Read the current renderer viewport, including after window/DPI changes.
+        window.SetSize(2048, 1536)
+        self.plotter.callbacks[False]((200, 200))
+        self.assertIs(self.plotter.visuals["selected_node_marker"], marker)
+        self.assertEqual(self.cell_picker.pick_count, pick_counts[0])
+
+        self.cell_picker.actor = None
+        self.plotter.callbacks[False]((400, 400))
+        self.assertFalse(self.labels[1].prop.bold)
+        self.assertNotIn("selected_node_marker", self.plotter.visuals)
+        self.assertEqual(self.cell_picker.pick_count, pick_counts[0] + 1)
 
     def test_component_panel_returns_labels_and_disables_hidden_actor(self):
         plotter = FakePlotter()

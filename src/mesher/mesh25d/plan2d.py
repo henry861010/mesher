@@ -7,8 +7,11 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from ..mesh2d.circular.extend import extend_circular_mesh
 from ..mesh2d.circular.imprint_v2 import imprint_circle
+from ..mesh2d.controls import XYRegionControl
 from ..mesh2d.generators import generate_rectilinear_mesh
 from ..mesh2d.model import Mesh2D
 from .circle_planning import (
@@ -18,7 +21,10 @@ from .circle_planning import (
     _planar_element_size, _validate_circle_clearances, _validate_circle_domain_topology,
 )
 from .controls import ResolvedControls
-from .domain import ModelDomain, restrict_grid_lines_to_domain as _restrict_grid_lines_to_domain
+from .domain import (
+    ModelDomain, face_bounds,
+    restrict_grid_lines_to_domain as _restrict_grid_lines_to_domain,
+)
 from .geometry.patterns import Pattern2D
 from .progress import ProgressCallback, _emit_progress, _emit_item_completed
 
@@ -53,11 +59,6 @@ def plan_2d(
     domain: ModelDomain,
 ) -> Plan2D:
     """Combine patterns and sizing requests before executing mesh algorithms."""
-    if controls.xy:
-        raise NotImplementedError(
-            "XY region controls are not implemented for mesh25d: "
-            + ", ".join(controls.xy_sources)
-        )
     base_face = pattern.base_face
     if base_face is None:
         raise ValueError("Cannot plan a mesh without a geometry footprint.")
@@ -109,6 +110,19 @@ def plan_2d(
         x_lines.extend(xs)
         y_lines.extend(ys)
 
+    if controls.xy:
+        bounds = [face_bounds(face) for face in all_faces]
+        x_bounds, y_bounds = _restrict_grid_lines_to_domain(
+            [min(bound[0] for bound in bounds), max(bound[2] for bound in bounds)],
+            [min(bound[1] for bound in bounds), max(bound[3] for bound in bounds)],
+            domain,
+        )
+        _add_xy_control_lines(
+            controls.xy, x_lines, y_lines,
+            x_bounds=(min(x_bounds), max(x_bounds)),
+            y_bounds=(min(y_bounds), max(y_bounds)),
+        )
+
     _add_circle_support_lines(
         list(circle_plan.imprint_patterns),
         circle_band_width,
@@ -144,6 +158,46 @@ def build_2d_mesh(plan: Plan2D, *, progress: ProgressCallback | None = None) -> 
         total_operations=plan.feature_total, source_refs=plan.circle_source_refs,
     )
     return mesh
+
+
+def _add_xy_control_lines(
+    controls: list[XYRegionControl],
+    x_lines: list[float],
+    y_lines: list[float],
+    *,
+    x_bounds: tuple[float, float],
+    y_bounds: tuple[float, float],
+) -> None:
+    """Union independent region cuts without changing the geometry footprint."""
+    for control in controls:
+        xs, ys = _face_grid_lines(control["region"])
+        if (
+            max(xs) < x_bounds[0] or min(xs) > x_bounds[1]
+            or max(ys) < y_bounds[0] or min(ys) > y_bounds[1]
+        ):
+            continue
+        size = control["element_size"]
+        x_lines.extend(_section_avg_lines(xs, size, x_bounds))
+        y_lines.extend(_section_avg_lines(ys, size, y_bounds))
+
+
+def _section_avg_lines(
+    coordinates: list[float],
+    element_size: float,
+    bounds: tuple[float, float],
+) -> list[float]:
+    """Subdivide vertex intervals before clipping, preserving each region's cuts."""
+    ordered = sorted(set(coordinates))
+    lines = [value for value in ordered if bounds[0] <= value <= bounds[1]]
+    for start, end in zip(ordered, ordered[1:]):
+        if end <= bounds[0] or start >= bounds[1]:
+            continue
+        count = max(1, math.floor((end - start) / element_size))
+        lines.extend(
+            value for value in np.linspace(start, end, count + 1)[1:-1].tolist()
+            if bounds[0] <= value <= bounds[1]
+        )
+    return lines
 
 
 def _imprint_circle_patterns(

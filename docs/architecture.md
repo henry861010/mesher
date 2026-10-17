@@ -16,7 +16,7 @@ Python callers / mesher.process_flow
 ```
 
 See [Mesh25D design](mesh25d-design.md) for the Mermaid dependency and data-flow
-diagrams, design decisions, and current XY refinement boundary.
+diagrams, design decisions, and XY refinement behavior.
 
 `mesh2d` and `mesh3d` own reusable models, control data interfaces, and
 dimension-specific algorithms. They never import `mesh25d`, `meshcontrol`, or

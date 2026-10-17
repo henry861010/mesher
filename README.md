@@ -157,8 +157,13 @@ Success writes JSON metadata as the final stdout line. Progress events retain
 the `PROCESS_FLOW_PROGRESS ` stderr prefix. `Z_SECTION_AVG`, `Z_SECTION_TOP`,
 `Z_SECTION_BOT`, `Z_SECTION_CENTER`, and `Z_POINT` are applied through shared
 control objects. Overlapping Z constraints use the smallest active size.
-`3D_REGION` exposes an XY projection interface; regional XY refinement is not
-implemented, so the builder rejects it before running mesh algorithms.
+`3D_REGION` adds XY grid lines from its box or polygon region. Each interval
+between consecutive vertex coordinates is split evenly into
+`max(1, floor(length / elementSize))` segments. Controls contribute their cuts
+independently; their union is clipped to the model bounds and symmetry domain.
+The grid then fills remaining gaps using the global planar element size.
+Lines span the model, so refinement also affects points outside the region
+along the same X/Y projections. The region's Z extent adds no Z constraints.
 
 ## Optional tools
 

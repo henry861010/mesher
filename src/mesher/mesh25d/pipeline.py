@@ -27,7 +27,8 @@ def build_mesh(
 
     Symmetry is centered on the combined root body XY bounds, falling back to
     all footprints when the root has no bodies. Control references follow the
-    retained geometry. XY region sizing is defined but not yet implemented.
+    retained geometry. XY regions contribute axis-aligned cuts before the base
+    grid fills remaining gaps using the global planar element size.
     """
     stage = _start_stage(progress, "validating", "Checking geometry input.")
     element_size, symmetry, _ = mesh_control_settings(mesh_control)
