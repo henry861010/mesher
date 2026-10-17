@@ -31,6 +31,11 @@ class PackageBoundaryTests(unittest.TestCase):
             "mesher.generators",
             "mesher.quality",
             "mesher.visualization",
+            "mesher.process_flow.pipeline",
+            "mesher.process_flow.domain",
+            "mesher.process_flow.circle_planning",
+            "mesher.process_flow.translation.standard_v1",
+            "mesher.process_flow.translation.parse_meshcontrol",
         ):
             with self.subTest(module_name=module_name):
                 with self.assertRaises(ModuleNotFoundError):
@@ -80,6 +85,44 @@ class PackageBoundaryTests(unittest.TestCase):
             capture_output=True,
             text=True,
             env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
+
+    def test_control_methods_and_interfaces_import_without_meshing_runtime(self):
+        repository_root = Path(__file__).resolve().parents[2]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository_root / "src")
+        result = subprocess.run(
+            [sys.executable, "-c", (
+                "import sys; from mesher.meshcontrol import get_control_obj; "
+                "from mesher.mesh2d.controls import XYRegionControl; "
+                "from mesher.mesh3d.controls import ZControl, LayerInfo; "
+                "from mesher.mesh25d import build_mesh, SymmetryMode; "
+                "runtime = {'matplotlib', 'pyvista', 'PySide6', "
+                "'process_flow_kernel', 'shapely', 'mesher.mesh25d.pipeline', "
+                "'mesher.mesh3d.extrusion'}; "
+                "print(','.join(sorted(runtime.intersection(sys.modules))))"
+            )],
+            check=False, capture_output=True, text=True, env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
+    def test_dimension_algorithms_do_not_import_orchestration(self):
+        repository_root = Path(__file__).resolve().parents[2]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository_root / "src")
+        result = subprocess.run(
+            [sys.executable, "-c", (
+                "import sys; import mesher.mesh2d.circular; "
+                "from mesher.mesh3d.extrusion import Dragger; "
+                "print(','.join(sorted(name for name in sys.modules if "
+                "name.startswith(('mesher.mesh25d', 'mesher.meshcontrol', "
+                "'mesher.process_flow')))))"
+            )],
+            check=False, capture_output=True, text=True, env=environment,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "")

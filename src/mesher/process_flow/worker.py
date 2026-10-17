@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from ..mesh3d import Mesh3D
 from .exporters import write_cdb_text
-from .pipeline import build_mesh_from_structure
+from ..mesh25d import build_mesh
 
 PROGRESS_PREFIX = "PROCESS_FLOW_PROGRESS "
 
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         # Keep stdout machine-readable if a downstream callback emits diagnostics.
         with redirect_stdout(sys.stderr):
-            mesh = build_mesh_from_structure(
+            mesh = build_mesh(
                 geometry_structure,
                 mesh_control,
                 progress=_emit_progress,

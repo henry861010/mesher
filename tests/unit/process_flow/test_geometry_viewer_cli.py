@@ -43,16 +43,16 @@ class GeometryViewerCliTests(unittest.TestCase):
                             argv += ["--mesh-control", str(control_path)]
                         if override is not None:
                             argv += ["--element_size", override]
-                        process_flow = ModuleType("mesher.process_flow")
-                        process_flow.build_mesh_from_structure = Mock(return_value=object())
+                        mesh25d = ModuleType("mesher.mesh25d")
+                        mesh25d.build_mesh = Mock(return_value=object())
                         visualization = ModuleType("mesher.mesh3d.visualization")
                         visualization.MeshViewer = Mock()
                         with patch.dict(sys.modules, {
-                            "mesher.process_flow": process_flow,
+                            "mesher.mesh25d": mesh25d,
                             "mesher.mesh3d.visualization": visualization,
                         }):
                             self.assertEqual(VIEWER["main"](argv), 0)
-                        builder = process_flow.build_mesh_from_structure
+                        builder = mesh25d.build_mesh
                         builder.assert_called_once()
                         actual_structure, control = builder.call_args.args
                         self.assertEqual(actual_structure, structure)

@@ -199,10 +199,12 @@ class WorkerIntegrationTests(unittest.TestCase):
         controls = [
             {
                 "method": "Z_SECTION_AVG",
+                "coordinateMode": "reference",
+                "label": "Base die",
                 "reference": {"kind": "container", "key": "hbm"},
                 "elementSize": 0.25,
-                "startZ": {"mode": "absolute", "value": 0},
-                "endZ": {"mode": "absolute", "value": 1},
+                "startZ": {"anchor": "z_min", "offset": 0},
+                "endZ": {"anchor": "z_max", "offset": 0},
             }
         ]
         with tempfile.TemporaryDirectory() as temp_dir:

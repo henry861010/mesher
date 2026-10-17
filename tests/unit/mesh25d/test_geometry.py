@@ -1,12 +1,14 @@
 import unittest
 
-from mesher.process_flow.translation.standard_v1 import StandardV1Translator
+from mesher.mesh25d.geometry.patterns import extract_pattern
+from mesher.mesh25d.geometry.assignments import extract_assignments
+from mesher.mesh25d.plan3d import plan_layers
 
 
 MESH_CONTROL = {"globalElementSize": 1.0, "controls": []}
 
 
-class StandardV1TranslatorTests(unittest.TestCase):
+class GeometryExtractionTests(unittest.TestCase):
     def test_translates_box_geometry_to_face_and_layers(self):
         container = {
             "bodies": [
@@ -26,9 +28,10 @@ class StandardV1TranslatorTests(unittest.TestCase):
             "children": [],
         }
 
-        translator = StandardV1Translator()
-        base_face, faces = translator.get_2D_pattern(container, MESH_CONTROL)
-        layers = translator.get_3D_pattern(container, MESH_CONTROL)
+        pattern = extract_pattern(container)
+
+        base_face, faces = pattern.base_face, pattern.faces
+        layers = plan_layers(extract_assignments(container), [], element_size=MESH_CONTROL["globalElementSize"]).layer_infos
 
         self.assertEqual(base_face, {"type": "BOX", "dim": [0.0, 0.0, 2.0, 1.0]})
         self.assertEqual(faces, [])
@@ -70,8 +73,8 @@ class StandardV1TranslatorTests(unittest.TestCase):
             "bumps": [],
             "children": [],
         }
-
-        base_face, faces = StandardV1Translator().get_2D_pattern(container, MESH_CONTROL)
+        pattern = extract_pattern(container)
+        base_face, faces = pattern.base_face, pattern.faces
 
         self.assertEqual(base_face, {"type": "BOX", "dim": [-10.0, -10.0, 10.0, 10.0]})
         self.assertEqual(
@@ -110,8 +113,8 @@ class StandardV1TranslatorTests(unittest.TestCase):
             "bumps": [circle(6.0)],
             "children": [],
         }
-
-        base_face, faces = StandardV1Translator().get_2D_pattern(container, MESH_CONTROL)
+        pattern = extract_pattern(container)
+        base_face, faces = pattern.base_face, pattern.faces
 
         self.assertEqual(base_face["type"], "BOX")
         self.assertEqual(

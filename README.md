@@ -9,11 +9,15 @@ The package is organized by responsibility:
 - `mesher.mesh2d` owns planar models, generators, circular operations,
   quality checks, and 2D visualization.
 - `mesher.mesh3d` owns solid models, process-flow extrusion, and 3D visualization.
-- `mesher.process_flow` translates Standard V1 geometry and coordinates the
-  complete 2D-to-3D process-flow pipeline.
+- `mesher.meshcontrol` resolves Standard V1 geometry references and owns each
+  control method's mesher-specific behavior.
+- `mesher.mesh25d` translates Standard V1 geometry and coordinates the complete
+  workflow through `plan2d.py` (2D meshing) and `plan3d.py` (3D meshing).
+- `mesher.process_flow` owns the worker CLI, progress transport, and CDB export.
 
-See [Architecture](docs/architecture.md) for the dependency rules and
-[Migrating to 0.2](docs/migration-0.2.md) for breaking import and field changes.
+See [Architecture](docs/architecture.md) for the dependency rules,
+[Mesh25D design](docs/mesh25d-design.md) for the architecture and data-flow diagrams,
+and [Migrating to 0.2](docs/migration-0.2.md) for breaking import and field changes.
 
 ## Installation
 
@@ -94,23 +98,22 @@ from mesher.mesh3d.extrusion import Dragger
 
 dragger = Dragger()
 dragger.set_2D(mesh.nodes, mesh.elements)
-solid = dragger.build(layer_infos, element_size=1.0)
+solid = dragger.build(layer_infos)
 ```
 
-`layer_infos` is the ordered dictionary structure returned by
-`StandardV1Translator.get_3D_pattern()`. Component id zero represents an empty
-planar element, and adjacent layers reuse their shared top/bottom nodes.
+`layer_infos` is an ordered sequence of dictionaries with `z`, `element_size`,
+and `assignments`. The final entry supplies the terminal Z boundary. The
+Mesh25D workflow prepares this structure internally. Component id zero
+represents an empty planar element, and adjacent layers reuse their shared
+top/bottom nodes.
 
-## Process-flow pipeline
+## Mesh25D pipeline
 
 Install the `process-flow` extra, then build from a Standard V1 structure:
 
 ```python
-from mesher.process_flow import (
-    SymmetryMode,
-    build_mesh_from_structure,
-    validate_mesh_control,
-)
+from mesher.mesh25d import SymmetryMode, build_mesh
+from mesher.contracts.process_flow_2_5d import validate_mesh_control
 
 mesh_control = {
     "schemaVersion": "1.0.0",
@@ -122,7 +125,7 @@ mesh_control = {
 }
 validate_mesh_control(mesh_control)
 
-mesh = build_mesh_from_structure(
+mesh = build_mesh(
     structure,
     mesh_control,
     progress=optional_event_callback,
@@ -151,8 +154,11 @@ python -m mesher.process_flow.worker geometry.json mesh_control.json output.cdb
 ```
 
 Success writes JSON metadata as the final stdout line. Progress events retain
-the `PROCESS_FLOW_PROGRESS ` stderr prefix. Mesh-control entries are validated
-but not yet applied; non-empty `controls` produce a warning in the metadata.
+the `PROCESS_FLOW_PROGRESS ` stderr prefix. `Z_SECTION_AVG`, `Z_SECTION_TOP`,
+`Z_SECTION_BOT`, `Z_SECTION_CENTER`, and `Z_POINT` are applied through shared
+control objects. Overlapping Z constraints use the smallest active size.
+`3D_REGION` exposes an XY projection interface; regional XY refinement is not
+implemented, so the builder rejects it before running mesh algorithms.
 
 ## Optional tools
 

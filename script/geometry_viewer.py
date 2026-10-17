@@ -126,9 +126,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.path.insert(0, source_root)
 
     from mesher.mesh3d.visualization import MeshViewer
-    from mesher.process_flow import build_mesh_from_structure
+    from mesher.mesh25d import build_mesh
 
-    mesh = build_mesh_from_structure(structure, mesh_control)
+    mesh = build_mesh(structure, mesh_control)
     MeshViewer(mesh).show(randomize_colors=args.randomize_colors)
     return 0
 

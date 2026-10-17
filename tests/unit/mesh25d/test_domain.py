@@ -1,11 +1,13 @@
 import unittest
 
-from mesher.process_flow.domain import (
+from mesher.mesh25d.domain import (
     ModelDomain,
     SymmetryMode,
     filter_container_to_domain,
 )
-from mesher.process_flow.translation.standard_v1 import StandardV1Translator
+from mesher.mesh25d.geometry.patterns import extract_pattern
+from mesher.mesh25d.geometry.assignments import extract_assignments
+from mesher.mesh25d.plan3d import plan_layers
 
 
 def _box(x_min, y_min, x_max, y_max):
@@ -67,9 +69,7 @@ class DomainFilteringTests(unittest.TestCase):
         filter_container_to_domain(
             root, ModelDomain(SymmetryMode.UPPER_RIGHT_QUARTER, 0.0, 0.0)
         )
-        layers = StandardV1Translator().get_3D_pattern(
-            root, {"globalElementSize": 1.0, "controls": []}
-        )
+        layers = plan_layers(extract_assignments(root), [], element_size={"globalElementSize": 1.0, "controls": []}["globalElementSize"]).layer_infos
 
         self.assertEqual(root["children"], [first, parent, last])
         self.assertIs(parent["children"][0], inside)

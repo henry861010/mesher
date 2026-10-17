@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher.mesh3d.extrusion import Dragger
-from mesher.process_flow import build_mesh_from_structure
+from mesher.mesh25d import build_mesh
 
 
 def _box(left=-1, bottom=-1, right=1, top=1):
@@ -19,13 +19,14 @@ def _structure(geometry, *, field="vias", koz=0.2):
         "vias": [], "bumps": [], "circuits": [], "children": [{
             "bodies": [], "vias": [], "bumps": [], "circuits": [], "children": [],
             field: [{"id": "feature-1", "geometry": geometry, "koz": koz,
+                     **({"stage": "joined"} if field == "bumps" else {}),
                      "density": 100, "material": "Cu"}],
         }],
     }}
 
 
 def _build(structure, *, size=0.4, symmetry="full", events=None):
-    return build_mesh_from_structure(structure, {
+    return build_mesh(structure, {
         "schemaVersion": "1.0.0", "unitSystem": "um", "mesher": "process_flow_2_5d",
         "globalElementSize": size, "symmetry": symmetry, "controls": [],
     }, progress=None if events is None else events.append)
@@ -68,7 +69,7 @@ class KozMeshingIntegrationTests(unittest.TestCase):
                     planar["nodes"], planar["elements"] = nodes.copy(), elements.copy()
                     return original(dragger, nodes, elements)
 
-                with patch("mesher.process_flow.pipeline.Dragger.set_2D", capture):
+                with patch("mesher.mesh25d.plan3d.Dragger.set_2D", capture):
                     mesh = _build(structure, size=0.5, symmetry=symmetry, events=events)
                 nodes, elements = planar["nodes"], planar["elements"]
                 radii = np.linalg.norm(nodes[:, :2], axis=1)
