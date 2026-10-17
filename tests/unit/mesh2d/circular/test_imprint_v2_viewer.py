@@ -1,7 +1,6 @@
 """Case selection, fresh public-API replay, and linked comparison views."""
 
 import contextlib
-import ast
 import importlib.util
 import io
 import json
@@ -78,30 +77,64 @@ class CaseSelectionTests(unittest.TestCase):
 
 
 class MeshReplayTests(unittest.TestCase):
-    def test_corpus_uses_large_circles_and_current_process_flow_tolerances(self):
-        tree = ast.parse((ROOT / "src/mesher/process_flow/pipeline.py").read_text())
+    def test_corpus_uses_large_circles_and_current_pipeline_tolerances(self):
+        from mesher.mesh25d.plan2d import (
+            _CIRCLE_GUIDE_TOLERANCE_MINIMUM,
+            _CIRCLE_GUIDE_TOLERANCE_RATIO,
+            _CIRCLE_MERGE_TOLERANCE_RATIO,
+            _CIRCLE_MINIMUM_AREA_RATIO,
+            _CIRCLE_PROJECTION_TOLERANCE_RATIO,
+        )
+
+        context = json.loads(viewer.CASES_PATH.read_text())["context"]
         ratios = {
-            node.targets[0].id: ast.literal_eval(node.value)
-            for node in tree.body
-            if isinstance(node, ast.Assign)
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id.startswith("_CIRCLE_")
+            "projection_tolerance": _CIRCLE_PROJECTION_TOLERANCE_RATIO,
+            "guide_tolerance": _CIRCLE_GUIDE_TOLERANCE_RATIO,
+            "merge_tolerance": _CIRCLE_MERGE_TOLERANCE_RATIO,
+            "minimum_area": _CIRCLE_MINIMUM_AREA_RATIO,
         }
+        self.assertEqual(context["parameter_ratios"], ratios)
+        self.assertEqual(context["parameter_minimums"]["guide_tolerance"], _CIRCLE_GUIDE_TOLERANCE_MINIMUM)
         for case in viewer.load_cases():
             with self.subTest(case=case["id"]):
                 p = case["parameters"]
                 self.assertEqual(p["circle_radius"], 300000)
                 self.assertEqual(p["target_edge_size"], 5000)
                 self.assertGreaterEqual(p["circle_radius"] / p["target_edge_size"], 60)
-                for name, exponent in (("projection_tolerance", 1), ("guide_tolerance", 1),
+                self.assertEqual(p["guide_tolerance"], max(
+                    _CIRCLE_GUIDE_TOLERANCE_RATIO * p["target_edge_size"],
+                    _CIRCLE_GUIDE_TOLERANCE_MINIMUM,
+                ))
+                for name, exponent in (("projection_tolerance", 1),
                                        ("merge_tolerance", 1), ("minimum_area", 2)):
-                    ratio = ratios[f"_CIRCLE_{name.upper()}_RATIO"]
+                    ratio = ratios[name]
                     self.assertEqual(p[name], ratio * p["target_edge_size"] ** exponent)
                 cx, cy = p["grid_circler_center_coordinate"]
                 self.assertLess(min(p["grid_x_list"]), cx - p["circle_radius"])
                 self.assertGreater(max(p["grid_x_list"]), cx + p["circle_radius"])
                 self.assertLess(min(p["y_list"]), cy - p["circle_radius"])
                 self.assertGreater(max(p["y_list"]), cy + p["circle_radius"])
+
+    def test_case_01_node_3696_moves_radially_with_current_guide_tolerance(self):
+        from mesher.mesh2d.circular.imprint_v2.utils import _to_circle
+        from mesher.mesh2d.generators import generate_rectilinear_mesh
+
+        p = viewer.load_cases()[0]["parameters"]
+        mesh = generate_rectilinear_mesh(
+            p["target_edge_size"], p["grid_x_list"], p["y_list"],
+            coordinate_tolerance=p["coordinate_tolerance"],
+        )
+        source = mesh.nodes[3696, :2].copy()
+        center = np.asarray(p["grid_circler_center_coordinate"])
+        offset = source - center
+        expected = center + p["circle_radius"] * offset / np.linalg.norm(offset)
+
+        _to_circle(
+            mesh, center, p["circle_radius"], p["projection_tolerance"],
+            p["guide_tolerance"], p["guide_segments"],
+        )
+
+        np.testing.assert_allclose(mesh.nodes[3696, :2], expected, rtol=0, atol=1e-8)
 
     def test_all_ten_cases_keep_the_input_unchanged_and_call_public_v2(self):
         from mesher.mesh2d.circular import imprint_v2
@@ -170,7 +203,7 @@ class LinkedViewTests(unittest.TestCase):
                     warnings.filterwarnings("ignore", message="\nThis system does not appear")
                     plotter = viewer.create_plotter(case, before, after, off_screen=True)
                 try:
-                    left, right = plotter.renderers
+                    left, right = plotter.renderers[0], plotter.renderers[2]
                     self.assertIs(left.camera, right.camera)
                     self.assertTrue(left.camera.parallel_projection)
                     np.testing.assert_allclose(left.camera.direction, [0, 0, -1])
@@ -188,7 +221,7 @@ class LinkedViewTests(unittest.TestCase):
                     initial_position = np.array(left.camera.position)
                     initial_focus = np.array(left.camera.focal_point)
                     initial_scale = left.camera.parallel_scale
-                    for column, key in ((0, "f"), (1, "F")):
+                    for column, key in ((0, "f"), (2, "F")):
                         plotter.subplot(0, column)
                         plotter.camera.zoom(2)
                         plotter.camera.position = initial_position + [1, 2, 0]

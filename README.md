@@ -92,7 +92,14 @@ Both circular operations are transactional and in place: they return the same
 `Mesh2D` after success and leave it unchanged on failure.
 
 For the second-generation `circular.imprint_v2` implementation, see the
-[ten reproducible hole cases and stage diagnostics](examples/failures/imprint_v2_holes/README.md).
+[current inspection cases and stage diagnostics](examples/failures/imprint_v2_holes/README.md).
+It processes a conservative circle-band patch with shared-node and merge closure,
+preserves remote geometry, and commits the stitched result atomically.
+As a final step, local quads with an interior angle of at least `flat_quad_angle`
+(default: 170°, valid range: `0 < flat_quad_angle <= 180`) are split into two
+triangles using the diagonal that maximizes their smallest angle; the original
+nodes and cell boundary are preserved.
+The case collection includes a reproducible 100,000-element performance comparison.
 
 ## Process-flow 3D extrusion
 

@@ -21,6 +21,30 @@ else:
 
 @unittest.skipIf(diagnostics is None, "diagnostics require optional Shapely")
 class HoleMeasurementTests(unittest.TestCase):
+    def test_resolved_case_is_a_valid_passing_diagnostic(self):
+        case = {
+            "id": "resolved",
+            "parameters": {
+                "target_edge_size": 1.0,
+                "grid_x_list": [-2.0, 2.0],
+                "y_list": [-2.0, 2.0],
+                "coordinate_tolerance": 1e-6,
+                "grid_circler_center_coordinate": [0.0, 0.0],
+                "circle_radius": 1.0,
+                "projection_tolerance": 0.0,
+                "guide_tolerance": 1.0,
+                "merge_tolerance": 0.0,
+                "minimum_area": 0.0,
+                "guide_segments": [],
+            },
+        }
+
+        result, _, _ = diagnostics.diagnose(case)
+
+        self.assertEqual(result["status"], "pass")
+        self.assertIsNone(result["first_hole_stage"])
+        self.assertEqual(diagnostics.verify(case, result), [])
+
     def test_enclosed_missing_cell_is_a_hole(self):
         mesh = generate_rectilinear_mesh(1, [0, 3], [0, 3])
         mesh = Mesh2D(nodes=mesh.nodes, elements=np.delete(mesh.elements, 4, axis=0))

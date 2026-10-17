@@ -30,7 +30,9 @@ from .progress import ProgressCallback, _emit_progress, _emit_item_completed
 
 JsonObject = dict[str, Any]
 _CIRCLE_PROJECTION_TOLERANCE_RATIO = 0.2
-_CIRCLE_GUIDE_TOLERANCE_RATIO = 0.2
+# 判斷 node 是否在 guide segment 上面；而非用來找 segment 附近 node。
+_CIRCLE_GUIDE_TOLERANCE_RATIO = 0.001
+_CIRCLE_GUIDE_TOLERANCE_MINIMUM = 1.0
 _CIRCLE_MERGE_TOLERANCE_RATIO = 0.002
 _CIRCLE_MINIMUM_AREA_RATIO = 0.0004
 
@@ -231,8 +233,9 @@ def _imprint_circle_patterns(
                 projection_tolerance=(
                     _CIRCLE_PROJECTION_TOLERANCE_RATIO * element_size
                 ),
-                guide_tolerance=(
-                    _CIRCLE_GUIDE_TOLERANCE_RATIO * element_size
+                guide_tolerance=max(
+                    _CIRCLE_GUIDE_TOLERANCE_RATIO * element_size,
+                    _CIRCLE_GUIDE_TOLERANCE_MINIMUM,
                 ),
                 merge_tolerance=(
                     _CIRCLE_MERGE_TOLERANCE_RATIO * element_size

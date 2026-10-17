@@ -1,0 +1,166 @@
+{
+  "runtime": {
+    "python": "3.13.5",
+    "numpy": "2.5.2",
+    "platform": "macOS-14.6-arm64-arm-64bit-Mach-O"
+  },
+  "method": "one warm-up, median of five runs by default; separate worker for peak traced algorithm allocations; full mesh construction excluded",
+  "parameters": {
+    "center": [
+      158.0,
+      158.0
+    ],
+    "radius": 60.0,
+    "projection_tolerance": 0.2,
+    "guide_tolerance": 1.0,
+    "merge_tolerance": 0.002,
+    "minimum_area": 0.0004
+  },
+  "legacy": {
+    "median_seconds": 2.895972540951334,
+    "samples_seconds": [
+      2.895972540951334,
+      2.907336249947548,
+      2.890535374986939,
+      2.893614750006236,
+      2.925009208964184
+    ],
+    "stages": {
+      "projection_seconds": 0.018253416055813432,
+      "cleanup_seconds": 2.810565833002329,
+      "split_seconds": 0.06534645799547434,
+      "total_seconds": 2.8956853749696165
+    },
+    "work": {
+      "global_elements": 99856,
+      "patch_elements": 99856
+    },
+    "geometry_digest": "8a00c3228196c4f9f1ff46c2bf567889c4acf66223be3d0d2a6541e0f5298af1",
+    "peak_traced_bytes": 137683434
+  },
+  "local": {
+    "median_seconds": 0.13899949996266514,
+    "samples_seconds": [
+      0.15705458295997232,
+      0.14670829195529222,
+      0.13899949996266514,
+      0.12876975000835955,
+      0.13219237502198666
+    ],
+    "stages": {
+      "selection_seconds": 0.016388291958719492,
+      "adjacency_seconds": 0.006982250022701919,
+      "extraction_seconds": 0.00024029205087572336,
+      "projection_seconds": 0.0008267090888693929,
+      "merge_index_seconds": 0.02789445803500712,
+      "cleanup_seconds": 0.04837779200170189,
+      "split_seconds": 0.005738375009968877,
+      "closure_seconds": 0.012525707948952913,
+      "stitch_seconds": 0.015024375054053962,
+      "commit_seconds": 0.0002709999680519104,
+      "total_seconds": 0.13463841704651713
+    },
+    "work": {
+      "global_elements": 99856,
+      "patch_elements": 1604,
+      "patch_nodes": 2084
+    },
+    "geometry_digest": "8a00c3228196c4f9f1ff46c2bf567889c4acf66223be3d0d2a6541e0f5298af1",
+    "peak_traced_bytes": 62367016
+  },
+  "speedup": 20.834409776504113,
+  "geometry_matches": true,
+  "scaling": [
+    {
+      "size": 224,
+      "median_seconds": 0.10091912501957268,
+      "samples_seconds": [
+        0.09526808303780854,
+        0.10091912501957268,
+        0.0980248749256134,
+        0.3057040839921683,
+        0.15379191702231765
+      ],
+      "stages": {
+        "selection_seconds": 0.008334459038451314,
+        "adjacency_seconds": 0.0035625830059871078,
+        "extraction_seconds": 0.00023504195269197226,
+        "projection_seconds": 0.0007861250778660178,
+        "merge_index_seconds": 0.011374208959750831,
+        "cleanup_seconds": 0.047971292049624026,
+        "split_seconds": 0.005758082959800959,
+        "closure_seconds": 0.011125292163342237,
+        "stitch_seconds": 0.007040832890197635,
+        "commit_seconds": 0.0001461670035496354,
+        "total_seconds": 0.09838774998206645
+      },
+      "work": {
+        "global_elements": 50176,
+        "patch_elements": 1604,
+        "patch_nodes": 2084
+      },
+      "geometry_digest": "254e417e7927fe14f473bfef2e7a1da720ac1d8b5aeb08c2d7ca04abeb60d62d"
+    },
+    {
+      "size": 316,
+      "median_seconds": 0.13696308399084955,
+      "samples_seconds": [
+        0.13696308399084955,
+        0.13825099996756762,
+        0.14249774999916553,
+        0.13000487501267344,
+        0.12923970900010318
+      ],
+      "stages": {
+        "selection_seconds": 0.015809375094249845,
+        "adjacency_seconds": 0.006971208029426634,
+        "extraction_seconds": 0.0002507079625502229,
+        "projection_seconds": 0.0008342500077560544,
+        "merge_index_seconds": 0.024165916023775935,
+        "cleanup_seconds": 0.04864733305294067,
+        "split_seconds": 0.005732999998144805,
+        "closure_seconds": 0.01233687496278435,
+        "stitch_seconds": 0.014989583054557443,
+        "commit_seconds": 0.0002543330192565918,
+        "total_seconds": 0.1325749169336632
+      },
+      "work": {
+        "global_elements": 99856,
+        "patch_elements": 1604,
+        "patch_nodes": 2084
+      },
+      "geometry_digest": "8a00c3228196c4f9f1ff46c2bf567889c4acf66223be3d0d2a6541e0f5298af1"
+    },
+    {
+      "size": 448,
+      "median_seconds": 0.21342295804060996,
+      "samples_seconds": [
+        0.21426325000356883,
+        0.20584354200400412,
+        0.21638466697186232,
+        0.20289141696412116,
+        0.21342295804060996
+      ],
+      "stages": {
+        "selection_seconds": 0.03158900002017617,
+        "adjacency_seconds": 0.012987790978513658,
+        "extraction_seconds": 0.0002327919937670231,
+        "projection_seconds": 0.0009315840434283018,
+        "merge_index_seconds": 0.06204733299091458,
+        "cleanup_seconds": 0.04750962508842349,
+        "split_seconds": 0.0056776669807732105,
+        "closure_seconds": 0.012942457920871675,
+        "stitch_seconds": 0.031091458979062736,
+        "commit_seconds": 0.0005480420077219605,
+        "total_seconds": 0.20509016700088978
+      },
+      "work": {
+        "global_elements": 200704,
+        "patch_elements": 1604,
+        "patch_nodes": 2084
+      },
+      "geometry_digest": "8e13dc0c4657901eb2183fa26d4728a9c61fa084d0abe4ec9094d08cd7c1468c"
+    }
+  ],
+  "verification_errors": []
+}

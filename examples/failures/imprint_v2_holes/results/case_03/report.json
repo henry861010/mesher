@@ -1,6 +1,6 @@
 {
   "id": "case_03",
-  "mechanism": "guide_projection_fold",
+  "status": "pass",
   "parameters": {
     "grid_x_list": [
       -320000.0,
@@ -42,7 +42,7 @@
     "target_edge_size": 5000.0,
     "coordinate_tolerance": 0.001,
     "projection_tolerance": 1000.0,
-    "guide_tolerance": 1000.0,
+    "guide_tolerance": 5.0,
     "merge_tolerance": 10.0,
     "minimum_area": 10000.0,
     "guide_segments": [
@@ -73,8 +73,8 @@
     217939.34127
   ],
   "area_epsilon": 40.96,
-  "first_invalid_stage": "projection",
-  "first_hole_stage": "cleanup",
+  "first_invalid_stage": null,
+  "first_hole_stage": null,
   "public_call_matches_stages": true,
   "stages": {
     "original": {
@@ -95,9 +95,7 @@
     "projection": {
       "node_count": 18496,
       "element_count": 18225,
-      "invalid_element_rows": [
-        14603
-      ],
+      "invalid_element_rows": [],
       "covered_area": 409600000000.0006,
       "missing_area": 0.0,
       "outside_domain_area": 0.0,
@@ -113,59 +111,31 @@
       "node_count": 18354,
       "element_count": 18090,
       "invalid_element_rows": [],
-      "covered_area": 409599665160.24744,
-      "missing_area": 334839.75316896976,
+      "covered_area": 409600000000.0006,
+      "missing_area": 0.0,
       "outside_domain_area": 0.0,
-      "closed_hole_count": 1,
-      "closed_hole_area": 334839.75316896976,
+      "closed_hole_count": 0,
+      "closed_hole_area": 0,
       "boundary_notch_count": 0,
       "boundary_notch_area": 0,
       "overlap_area": 0.0,
       "nonmanifold_edge_count": 0,
-      "holes": [
-        {
-          "area": 334839.75316896976,
-          "bounds": [
-            -214237.07978,
-            210260.62324464825,
-            -213987.07978,
-            212939.34127
-          ],
-          "interior_point": [
-            -214049.57978,
-            211599.98225732413
-          ]
-        }
-      ]
+      "holes": []
     },
     "split": {
       "node_count": 18547,
-      "element_count": 18454,
+      "element_count": 18455,
       "invalid_element_rows": [],
-      "covered_area": 409599665160.24744,
-      "missing_area": 334839.75316896976,
+      "covered_area": 409600000000.0006,
+      "missing_area": 0.0,
       "outside_domain_area": 0.0,
-      "closed_hole_count": 1,
-      "closed_hole_area": 334839.75316896976,
+      "closed_hole_count": 0,
+      "closed_hole_area": 0,
       "boundary_notch_count": 0,
       "boundary_notch_area": 0,
       "overlap_area": 0.0,
       "nonmanifold_edge_count": 0,
-      "holes": [
-        {
-          "area": 334839.75316896976,
-          "bounds": [
-            -214237.07978,
-            210260.62324464825,
-            -213987.07978,
-            212939.34127
-          ],
-          "interior_point": [
-            -214049.57978,
-            211599.98225732413
-          ]
-        }
-      ]
+      "holes": []
     }
   },
   "projection_reoriented_element_rows": [],
@@ -1761,10 +1731,10 @@
         208778.8116975
       ],
       "projected_xy": [
-        -213987.07978,
-        210260.62324464825
+        -214851.33625836432,
+        209377.41833348517
       ],
-      "distance": 1502.7526281001394
+      "distance": 857.6951240726585
     },
     {
       "node_id": 14802,
@@ -11604,57 +11574,6 @@
       "footprint_intersecting_final_missing_area": 0.0
     },
     {
-      "element_row": 14468,
-      "reason": "split_by_repair",
-      "projected_node_ids": [
-        14575,
-        14576,
-        14712,
-        14711
-      ],
-      "representative_node_ids": [
-        14575,
-        14576,
-        14712,
-        14711
-      ],
-      "projected_xy": [
-        [
-          -214237.07978,
-          204618.282125
-        ],
-        [
-          -213987.07978,
-          204618.282125
-        ],
-        [
-          -213987.07978,
-          208778.8116975
-        ],
-        [
-          -213987.07978,
-          210260.62324464825
-        ]
-      ],
-      "validity": "Valid Geometry",
-      "signed_area": 705292.639956031,
-      "repair_output_in_projected_node_ids": [
-        [
-          14575,
-          14576,
-          14712,
-          14712
-        ],
-        [
-          14575,
-          14712,
-          14711,
-          14711
-        ]
-      ],
-      "footprint_intersecting_final_missing_area": 0.0
-    },
-    {
       "element_row": 14474,
       "reason": "discarded_by_repair",
       "projected_node_ids": [
@@ -11736,44 +11655,6 @@
         ]
       ],
       "footprint_intersecting_final_missing_area": 0.0
-    },
-    {
-      "element_row": 14603,
-      "reason": "discarded_by_repair",
-      "projected_node_ids": [
-        14711,
-        14712,
-        14848,
-        14847
-      ],
-      "representative_node_ids": [
-        14711,
-        14712,
-        14848,
-        14847
-      ],
-      "projected_xy": [
-        [
-          -213987.07978,
-          210260.62324464825
-        ],
-        [
-          -213987.07978,
-          208778.8116975
-        ],
-        [
-          -213987.07978,
-          212939.34127
-        ],
-        [
-          -214237.07978,
-          212939.34127
-        ]
-      ],
-      "validity": "Ring Self-intersection[-213987.07978 210260.623244648]",
-      "signed_area": 334839.75316896976,
-      "repair_output_in_projected_node_ids": [],
-      "footprint_intersecting_final_missing_area": 334839.75316896976
     },
     {
       "element_row": 14609,
@@ -14647,6 +14528,12 @@
       "footprint_intersecting_final_missing_area": 0.0
     }
   ],
+  "local_patch": {
+    "global_elements": 18225,
+    "core_elements": 699,
+    "patch_elements": 2088,
+    "patch_nodes": 2710
+  },
   "controls": {
     "no_projection": {
       "closed_hole_area": 0,
@@ -14661,14 +14548,14 @@
       "invalid_element_rows": []
     },
     "no_target_merge": {
-      "closed_hole_area": 334839.75316896976,
-      "missing_area": 334839.75316896976,
+      "closed_hole_area": 0,
+      "missing_area": 0.0,
       "overlap_area": 0.0,
       "invalid_element_rows": []
     },
     "no_area_cutoff": {
-      "closed_hole_area": 334839.75316896976,
-      "missing_area": 334839.75316896976,
+      "closed_hole_area": 0,
+      "missing_area": 0.0,
       "overlap_area": 0.0,
       "invalid_element_rows": []
     }

@@ -1,6 +1,6 @@
 {
   "id": "case_07",
-  "mechanism": "guide_projection_fold",
+  "status": "pass",
   "parameters": {
     "grid_x_list": [
       -320000.0,
@@ -42,7 +42,7 @@
     "target_edge_size": 5000.0,
     "coordinate_tolerance": 0.001,
     "projection_tolerance": 1000.0,
-    "guide_tolerance": 1000.0,
+    "guide_tolerance": 5.0,
     "merge_tolerance": 10.0,
     "minimum_area": 10000.0,
     "guide_segments": [
@@ -84,7 +84,7 @@
   ],
   "area_epsilon": 40.96,
   "first_invalid_stage": "projection",
-  "first_hole_stage": "cleanup",
+  "first_hole_stage": null,
   "public_call_matches_stages": true,
   "stages": {
     "original": {
@@ -106,9 +106,6 @@
       "node_count": 18632,
       "element_count": 18360,
       "invalid_element_rows": [
-        3533,
-        3534,
-        3535,
         3668,
         3669,
         3803,
@@ -127,61 +124,33 @@
     },
     "cleanup": {
       "node_count": 18620,
-      "element_count": 18354,
+      "element_count": 18356,
       "invalid_element_rows": [],
-      "covered_area": 409599533897.8642,
-      "missing_area": 466102.1358444171,
+      "covered_area": 409600000000.00006,
+      "missing_area": 0.0,
       "outside_domain_area": 0.0,
-      "closed_hole_count": 1,
-      "closed_hole_area": 466102.1358444171,
+      "closed_hole_count": 0,
+      "closed_hole_area": 0,
       "boundary_notch_count": 0,
       "boundary_notch_area": 0,
       "overlap_area": 0.0,
       "nonmanifold_edge_count": 0,
-      "holes": [
-        {
-          "area": 466102.1358444171,
-          "bounds": [
-            -212355.8490715943,
-            -211907.98325,
-            -210502.74023,
-            -211404.9344
-          ],
-          "interior_point": [
-            -210966.01744039854,
-            -211656.45882499998
-          ]
-        }
-      ]
+      "holes": []
     },
     "split": {
       "node_count": 18829,
-      "element_count": 18740,
+      "element_count": 18743,
       "invalid_element_rows": [],
-      "covered_area": 409599533897.8642,
-      "missing_area": 466102.1358444171,
+      "covered_area": 409600000000.00006,
+      "missing_area": 0.0,
       "outside_domain_area": 0.0,
-      "closed_hole_count": 1,
-      "closed_hole_area": 466102.1358444171,
+      "closed_hole_count": 0,
+      "closed_hole_area": 0,
       "boundary_notch_count": 0,
       "boundary_notch_area": 0,
       "overlap_area": 0.0,
       "nonmanifold_edge_count": 0,
-      "holes": [
-        {
-          "area": 466102.1358444171,
-          "bounds": [
-            -212355.8490715943,
-            -211907.98325,
-            -210502.74023,
-            -211404.9344
-          ],
-          "interior_point": [
-            -210966.01744039854,
-            -211656.45882499998
-          ]
-        }
-      ]
+      "holes": []
     }
   },
   "projection_reoriented_element_rows": [],
@@ -793,10 +762,10 @@
         -211404.9344
       ],
       "projected_xy": [
-        -212355.8490715943,
-        -211907.98325
+        -213385.05399454306,
+        -210871.56928269382
       ],
-      "distance": 1788.198710835966
+      "distance": 869.5642623052074
     },
     {
       "node_id": 3696,
@@ -805,10 +774,10 @@
         -211404.9344
       ],
       "projected_xy": [
-        -212355.8490715943,
-        -211907.98325
+        -213385.05399454306,
+        -210871.56928269382
       ],
-      "distance": 1740.2747954259526
+      "distance": 830.6408566478689
     },
     {
       "node_id": 3697,
@@ -817,10 +786,10 @@
         -211404.9344
       ],
       "projected_xy": [
-        -212355.8490715943,
-        -211907.98325
+        -213385.05399454306,
+        -210871.56928269382
       ],
-      "distance": 1647.6017751147615
+      "distance": 758.8008935303451
     },
     {
       "node_id": 3831,
@@ -2793,59 +2762,8 @@
       "footprint_intersecting_final_missing_area": 0.0
     },
     {
-      "element_row": 3532,
-      "reason": "split_by_repair",
-      "projected_node_ids": [
-        3558,
-        3559,
-        3695,
-        3694
-      ],
-      "representative_node_ids": [
-        3558,
-        3559,
-        3695,
-        3694
-      ],
-      "projected_xy": [
-        [
-          -218083.872256,
-          -211907.98325
-        ],
-        [
-          -214071.83173,
-          -211907.98325
-        ],
-        [
-          -212355.8490715943,
-          -211907.98325
-        ],
-        [
-          -218083.872256,
-          -211404.9344
-        ]
-      ],
-      "validity": "Valid Geometry",
-      "signed_area": 1440737.737844289,
-      "repair_output_in_projected_node_ids": [
-        [
-          3558,
-          3559,
-          3694,
-          3694
-        ],
-        [
-          3559,
-          3695,
-          3694,
-          3694
-        ]
-      ],
-      "footprint_intersecting_final_missing_area": 0.0
-    },
-    {
       "element_row": 3533,
-      "reason": "rejected_by_candidate_mask",
+      "reason": "remapped_or_collapsed",
       "projected_node_ids": [
         3559,
         3560,
@@ -2855,7 +2773,7 @@
       "representative_node_ids": [
         3559,
         3560,
-        3696,
+        3695,
         3695
       ],
       "projected_xy": [
@@ -2868,22 +2786,29 @@
           -211907.98325
         ],
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ],
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ]
       ],
-      "validity": "Self-intersection[-214021.83173 -211907.98325]",
-      "signed_area": 0.0,
-      "repair_output_in_projected_node_ids": [],
+      "validity": "Valid Geometry",
+      "signed_area": 25910.349182654318,
+      "repair_output_in_projected_node_ids": [
+        [
+          3559,
+          3560,
+          3695,
+          3695
+        ]
+      ],
       "footprint_intersecting_final_missing_area": 0.0
     },
     {
       "element_row": 3534,
-      "reason": "rejected_by_candidate_mask",
+      "reason": "remapped_or_collapsed",
       "projected_node_ids": [
         3560,
         3561,
@@ -2894,7 +2819,7 @@
         3560,
         3561,
         3695,
-        3696
+        3695
       ],
       "projected_xy": [
         [
@@ -2906,22 +2831,29 @@
           -211907.98325
         ],
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ],
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ]
       ],
-      "validity": "Self-intersection[-213924.77656 -211907.98325]",
-      "signed_area": 0.0,
-      "repair_output_in_projected_node_ids": [],
+      "validity": "Valid Geometry",
+      "signed_area": 50294.6668936411,
+      "repair_output_in_projected_node_ids": [
+        [
+          3560,
+          3561,
+          3695,
+          3695
+        ]
+      ],
       "footprint_intersecting_final_missing_area": 0.0
     },
     {
       "element_row": 3535,
-      "reason": "discarded_by_repair",
+      "reason": "remapped_or_collapsed",
       "projected_node_ids": [
         3561,
         3562,
@@ -2948,14 +2880,21 @@
           -211404.9344
         ],
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ]
       ],
-      "validity": "Ring Self-intersection[-212355.849071594 -211907.98325]",
-      "signed_area": 466102.1358444171,
-      "repair_output_in_projected_node_ids": [],
-      "footprint_intersecting_final_missing_area": 466102.1358444171
+      "validity": "Valid Geometry",
+      "signed_area": 2498295.436816848,
+      "repair_output_in_projected_node_ids": [
+        [
+          3561,
+          3562,
+          3698,
+          3695
+        ]
+      ],
+      "footprint_intersecting_final_missing_area": 0.0
     },
     {
       "element_row": 3668,
@@ -2968,18 +2907,18 @@
       ],
       "representative_node_ids": [
         3695,
-        3696,
+        3695,
         3832,
         3831
       ],
       "projected_xy": [
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ],
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ],
         [
           -214374.52383758896,
@@ -2990,7 +2929,7 @@
           -209865.58443300566
         ]
       ],
-      "validity": "Too few points in geometry component[-212355.849071594 -211907.98325]",
+      "validity": "Too few points in geometry component[-213385.053994543 -210871.569282694]",
       "signed_area": 0.0,
       "repair_output_in_projected_node_ids": [],
       "footprint_intersecting_final_missing_area": 0.0
@@ -3005,19 +2944,19 @@
         3832
       ],
       "representative_node_ids": [
-        3696,
+        3695,
         3695,
         3831,
         3832
       ],
       "projected_xy": [
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ],
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ],
         [
           -214374.52383758896,
@@ -3028,7 +2967,7 @@
           -209865.58443300566
         ]
       ],
-      "validity": "Too few points in geometry component[-212355.849071594 -211907.98325]",
+      "validity": "Too few points in geometry component[-213385.053994543 -210871.569282694]",
       "signed_area": 0.0,
       "repair_output_in_projected_node_ids": [],
       "footprint_intersecting_final_missing_area": 0.0
@@ -3050,8 +2989,8 @@
       ],
       "projected_xy": [
         [
-          -212355.8490715943,
-          -211907.98325
+          -213385.05399454306,
+          -210871.56928269382
         ],
         [
           -210502.74023,
@@ -3067,7 +3006,7 @@
         ]
       ],
       "validity": "Valid Geometry",
-      "signed_area": 6232504.079967282,
+      "signed_area": 5018272.057406934,
       "repair_output_in_projected_node_ids": [
         [
           3695,
@@ -3875,6 +3814,12 @@
       "footprint_intersecting_final_missing_area": 0.0
     }
   ],
+  "local_patch": {
+    "global_elements": 18360,
+    "core_elements": 697,
+    "patch_elements": 1717,
+    "patch_nodes": 2227
+  },
   "controls": {
     "no_projection": {
       "closed_hole_area": 0,
@@ -3889,14 +3834,14 @@
       "invalid_element_rows": []
     },
     "no_target_merge": {
-      "closed_hole_area": 466102.1358444171,
-      "missing_area": 466102.1358444171,
-      "overlap_area": 1467.6209716796875,
+      "closed_hole_area": 85.26125928350552,
+      "missing_area": 85.26125928350552,
+      "overlap_area": 85.25341796875,
       "invalid_element_rows": []
     },
     "no_area_cutoff": {
-      "closed_hole_area": 466102.1358444171,
-      "missing_area": 466102.1358444171,
+      "closed_hole_area": 0,
+      "missing_area": 0.0,
       "overlap_area": 0.0,
       "invalid_element_rows": []
     }

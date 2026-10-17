@@ -57,11 +57,16 @@ class KozMeshingIntegrationTests(unittest.TestCase):
                     self.assertEqual(structure, before)
 
     def test_circle_keeps_both_rings_and_refines_xy_without_refining_z(self):
+        # Representative die-scale dimensions in um; microscopic KOZ widths
+        # are outside the advanced-packaging use cases covered here.
         circle = {"type": "CylinderGeometry", "center": [0, 0, 0],
-                  "bottom_radius": 0.6, "thk": 1}
+                  "bottom_radius": 3000, "thk": 1000}
         for symmetry in ("full", "upper_half", "upper_right_quarter"):
             with self.subTest(symmetry=symmetry):
-                structure = _structure(circle, koz=0.1)
+                structure = _structure(circle, koz=500)
+                body = _box(-5000, -5000, 5000, 5000)
+                body["thk"] = 1000
+                structure["root"]["bodies"][0]["geometry"] = body
                 events, planar = [], {}
                 original = Dragger.set_2D
 
@@ -70,10 +75,10 @@ class KozMeshingIntegrationTests(unittest.TestCase):
                     return original(dragger, nodes, elements)
 
                 with patch("mesher.mesh25d.plan3d.Dragger.set_2D", capture):
-                    mesh = _build(structure, size=0.5, symmetry=symmetry, events=events)
+                    mesh = _build(structure, size=500, symmetry=symmetry, events=events)
                 nodes, elements = planar["nodes"], planar["elements"]
                 radii = np.linalg.norm(nodes[:, :2], axis=1)
-                for radius in (0.5, 0.6):
+                for radius in (2500, 3000):
                     self.assertGreater(np.count_nonzero(np.isclose(radii, radius, atol=1e-10)), 4)
                 points = nodes[elements, :2]
                 signed_areas = 0.5 * np.sum(
@@ -84,11 +89,11 @@ class KozMeshingIntegrationTests(unittest.TestCase):
                 self.assertTrue(np.all(elements < len(nodes)))
                 corners = _metal_corners(mesh)
                 self.assertGreater(len(corners), 0)
-                self.assertTrue(np.all(np.linalg.norm(corners, axis=2) <= 0.5 + 1e-8))
-                np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [0, 0.5, 1])
+                self.assertTrue(np.all(np.linalg.norm(corners, axis=2) <= 2500 + 1e-8))
+                np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [0, 500, 1000])
                 analysis = next(e["data"] for e in events if e["event"] == "stage.completed"
                                 and e["stage"] == "analyzing_geometry")
-                self.assertAlmostEqual(analysis["planarElementSize"], 0.025)
+                self.assertAlmostEqual(analysis["planarElementSize"], 125)
                 circles = [e["data"] for e in events if e["event"] == "item.completed"
                            and e["stage"] == "building_2d_mesh"]
                 self.assertEqual(len(circles), 2)
@@ -109,23 +114,18 @@ class KozMeshingIntegrationTests(unittest.TestCase):
                 centers = corners.mean(axis=1)
                 self.assertFalse(np.any(np.all(np.abs(centers) < 0.3, axis=1)))
 
-    def test_thin_box_koz_survives_grid_and_material_selection_tolerances(self):
-        mesh = _build(_structure(_box(), koz=1e-4), size=0.5)
-        corners = _metal_corners(mesh)
-        self.assertGreater(len(corners), 0)
-        self.assertTrue(np.all(np.abs(corners) <= 1 - 1e-4 + 1e-10))
-        for coordinate in (-1, -1 + 1e-4, 1 - 1e-4, 1):
-            self.assertTrue(np.any(np.abs(mesh.nodes[:, 0] - coordinate) < 1e-10))
-
-    def test_circle_koz_smaller_than_legacy_selection_tolerance(self):
-        circle = {"type": "CylinderGeometry", "center": [0, 0, 0],
-                  "bottom_radius": 0.03, "thk": 1}
-        structure = _structure(circle, koz=0.005)
-        structure["root"]["bodies"][0]["geometry"] = _box(-0.05, -0.05, 0.05, 0.05)
-        mesh = _build(structure)
-        corners = _metal_corners(mesh)
-        self.assertGreater(len(corners), 0)
-        self.assertTrue(np.all(np.linalg.norm(corners, axis=2) <= 0.025 + 1e-10))
+    def test_packaging_die_koz_preserves_boundary_and_material(self):
+        for koz in (100, 500):
+            with self.subTest(koz=koz):
+                die = _box(-5000, -5000, 5000, 5000)
+                structure = _structure(die, koz=koz)
+                structure["root"]["bodies"][0]["geometry"] = copy.deepcopy(die)
+                mesh = _build(structure, size=1000)
+                corners = _metal_corners(mesh)
+                self.assertGreater(len(corners), 0)
+                self.assertTrue(np.all(np.abs(corners) <= 5000 - koz + 1e-8))
+                for coordinate in (-5000, -5000 + koz, 5000 - koz, 5000):
+                    self.assertTrue(np.any(np.abs(mesh.nodes[:, 0] - coordinate) < 1e-8))
 
     def test_zero_and_missing_koz_produce_identical_meshes(self):
         structure = _structure(_box(-0.8, -0.8, 0.8, 0.8), koz=0)

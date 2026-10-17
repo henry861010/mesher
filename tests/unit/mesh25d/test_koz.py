@@ -1,7 +1,6 @@
 import copy
 import unittest
 
-import numpy as np
 from shapely.geometry import Polygon
 
 from mesher.mesh25d.geometry.koz import inset_face, koz_value
@@ -136,15 +135,31 @@ class KozTranslationTests(unittest.TestCase):
         self.assertEqual(base["dim"], [[[x, y] for x, y, _ in loop] for loop in loops])
         self.assertEqual(len(faces), 1)
 
-    def test_thin_koz_is_not_deduplicated_and_empty_area_is_explicit(self):
+    def test_packaging_scale_koz_keeps_wafer_and_die_boundaries(self):
+        container = _container()
+        container["bodies"] = [{"geometry": {
+            "type": "CylinderGeometry", "center": [0, 0, 0],
+            "bottom_radius": 150000, "thk": 1000,
+        }, "material": "Si"}]
+        feature = {"geometry": {"type": "BoxGeometry", "bottom_left": [95000, -5000, 0],
+                   "top_right": [105000, 5000, 0], "thk": 1000},
+                   "material": "Cu", "density": 100}
+        for koz in (100, 500):
+            with self.subTest(koz=koz):
+                container["vias"] = [dict(feature, koz=koz)]
+                pattern = extract_pattern(container)
+                self.assertEqual(pattern.base_face, {"type": "CIRCLE", "dim": [0, 0, 150000]})
+                self.assertEqual(len(pattern.faces), 2)
+                self.assertIn({"type": "BOX", "dim": [95000, -5000, 105000, 5000]}, pattern.faces)
+                self.assertIn({"type": "BOX", "dim": [95000 + koz, -5000 + koz,
+                                                       105000 - koz, 5000 - koz]}, pattern.faces)
+
+    def test_collapsed_koz_area_is_explicit(self):
         container = _container()
         feature = {"geometry": {"type": "BoxGeometry", "bottom_left": [0, 0, 0],
-                   "top_right": [1, 1, 0], "thk": 1}, "material": "Cu", "density": 100}
-        container["vias"] = [dict(feature, koz=1e-7)]
-        pattern = extract_pattern(container)
-        _, faces = pattern.base_face, pattern.faces
-        np.testing.assert_allclose(faces[0]["dim"], [1e-7, 1e-7, 1-1e-7, 1-1e-7])
-        container["vias"] = [dict(feature, koz=0.5)]
+                   "top_right": [10000, 10000, 0], "thk": 1000},
+                   "material": "Cu", "density": 100}
+        container["vias"] = [dict(feature, koz=5000)]
         self.assertEqual(extract_pattern(container).faces, [])
         area = plan_layers(extract_assignments(container), [], element_size=CONTROL["globalElementSize"]).layer_infos[0]["assignments"][0]["areas"][0]
         self.assertEqual(area["face"], {"type": "POLYGON", "dim": []})

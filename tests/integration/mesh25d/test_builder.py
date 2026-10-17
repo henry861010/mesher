@@ -1039,31 +1039,34 @@ class BuilderIntegrationTests(unittest.TestCase):
         self.assertTrue(np.all(radii <= 0.5 + 1.0e-10))
 
     def test_imprints_a_repeated_xy_circle_only_once_across_z(self):
-        structure = _circle_structure(
-            (0.0, 0.0, 3.0, 0.0, 1.0, "Cu"),
-            (0.0, 0.0, 3.0, 1.0, 1.0, "Cu"),
-        )
+        # Exercise both sides of the guide-tolerance floor at element size 1000.
+        for size in (1.0, 999.0, 1000.0, 1001.0, 5000.0):
+            with self.subTest(element_size=size):
+                structure = _circle_structure(
+                    (0.0, 0.0, 3.0 * size, 0.0, 1.0, "Cu"),
+                    (0.0, 0.0, 3.0 * size, 1.0, 1.0, "Cu"),
+                )
 
-        with patch(
-            "mesher.mesh25d.plan2d.imprint_circle",
-            wraps=imprint_circle,
-        ) as mocked_imprint:
-            mesh = _build(structure, element_size=1.0)
+                with patch(
+                    "mesher.mesh25d.plan2d.imprint_circle",
+                    wraps=imprint_circle,
+                ) as mocked_imprint:
+                    mesh = _build(structure, element_size=size)
 
-        self.assertEqual(mocked_imprint.call_count, 1)
-        self.assertEqual(
-            mocked_imprint.call_args.kwargs,
-            {
-                "center": (0.0, 0.0),
-                "radius": 3.0,
-                "projection_tolerance": 0.2,
-                "guide_tolerance": 0.2,
-                "merge_tolerance": 0.002,
-                "minimum_area": 0.0004,
-                "guide_segments": [],
-            },
-        )
-        self.assertGreater(mesh.element_count, 0)
+                self.assertEqual(mocked_imprint.call_count, 1)
+                self.assertEqual(
+                    mocked_imprint.call_args.kwargs,
+                    {
+                        "center": (0.0, 0.0),
+                        "radius": 3.0 * size,
+                        "projection_tolerance": 0.2 * size,
+                        "guide_tolerance": max(0.001 * size, 1.0),
+                        "merge_tolerance": 0.002 * size,
+                        "minimum_area": 0.0004 * size**2,
+                        "guide_segments": [],
+                    },
+                )
+                self.assertGreater(mesh.element_count, 0)
 
     def test_extends_a_clean_outer_concentric_circle_chain(self):
         structure = _circle_structure(

@@ -1,4 +1,4 @@
-"""Interactively compare a fail case before and after circular.imprint_v2.
+"""Compare an inspection case before and after current circular.imprint_v2.
 
 Run directly from a checkout, for example::
 
@@ -155,16 +155,17 @@ def create_plotter(case, before, after, *, off_screen=False):
     )
 
     plotter = pv.Plotter(
-        shape=(1, 2), window_size=(1440, 800),
+        shape=(1, 3), col_weights=(49, 2, 49), border=False, window_size=(1440, 800),
         title=f"imprint_v2 | {case['id']}", off_screen=off_screen,
     )
     plotter.set_background("white", all_renderers=True)
-    for column, (label, mesh) in enumerate((
-        ("Before imprint", before), ("After imprint", after),
-    )):
+    # Keep the narrow middle subplot empty to create a white gutter.
+    for column, label, mesh in (
+        (0, "Before imprint", before), (2, "After imprint", after),
+    ):
         plotter.subplot(0, column)
         label_options = dict(
-            font_size=10, bold=False, shape=None, margin=0,
+            font_size=15, bold=False, shape=None, margin=0,
             show_points=False, always_visible=True, render=False,
         )
         if mesh.node_count:
@@ -177,7 +178,7 @@ def create_plotter(case, before, after, *, off_screen=False):
             plotter.add_mesh(
                 surface,
                 color="lightblue", show_edges=True, edge_color="#334155",
-                line_width=1.2, lighting=False, name="mesh",
+                line_width=2.5, lighting=False, name="mesh",
             )
             plotter.add_point_labels(
                 surface.cell_centers().points,
@@ -187,7 +188,7 @@ def create_plotter(case, before, after, *, off_screen=False):
         plotter.add_lines(circle, connected=True, color="blue", width=2, name="circle")
         if guides.size:
             plotter.add_lines(
-                guides, connected=False, color="orange", width=3, name="guides",
+                guides, connected=False, color="orange", width=1, name="guides",
             )
         plotter.add_text(
             f"{case['id']} | {label}\n{mesh.node_count} nodes / {mesh.element_count} elements",
@@ -200,7 +201,7 @@ def create_plotter(case, before, after, *, off_screen=False):
             position="lower_left", font_size=10, color="#334155", name="controls",
         )
 
-    plotter.link_views()
+    plotter.link_views(views=[0, 2])
     plotter.enable_custom_trackball_style(
         left="pan", shift_left="pan", control_left="pan",
         middle="pan", shift_middle="pan", control_middle="pan",
@@ -234,7 +235,7 @@ def main(argv=None):
         cases = load_cases()
         if args.list_cases:
             for case in cases:
-                print(f"{case['id']}: {case.get('mechanism', 'imprint_v2')}")
+                print(f"{case['id']}: guide_tolerance={case['parameters']['guide_tolerance']:g}")
             return 0
         case = select_case(cases, args.case)
         before, after = prepare_meshes(case)

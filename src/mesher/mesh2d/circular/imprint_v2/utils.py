@@ -204,67 +204,10 @@ def _prepare_guide_circle_roots(
     return root_values, valid_roots
 
 
-def _accumulate_guide_constraints(
-    candidate_xy: NDArray[np.float64],
-    pattern_guides: _PatternGuideSet,
-    guide_positions: NDArray[np.intp],
-    effective_guide_tolerances: NDArray[np.float64],
-    root_values: NDArray[np.float64],
-    valid_roots: NDArray[np.bool_],
-    root_choice_tolerances: NDArray[np.float64],
-    constrained: NDArray[np.bool_],
-    blocked: NDArray[np.bool_],
-    target_minimums: NDArray[np.float64],
-    target_maximums: NDArray[np.float64],
-    reference_targets: NDArray[np.float64],
-) -> None:
-    """Resolve sparse candidate/guide matches for one fixed-axis orientation.
-
-    The function receives either all vertical guides or all horizontal guides.
-    It sorts them by fixed coordinate and uses ``searchsorted`` to build only
-    plausible node/guide pairs.  Those pairs are processed in bounded batches:
-    exact point-to-segment distance decides guide membership, valid circle
-    roots are selected by proximity, and per-node target summaries are updated
-    in place.  There is no Python loop over individual nodes or guides.
-
-    Args:
-        candidate_xy: XY coordinates of the circle-band candidates, shape
-            ``(C, 2)``.  Row positions are the keys used by every accumulator.
-        pattern_guides: Prepared metadata for all ``L`` pattern segments.
-        guide_positions: Positions of guides that share one fixed axis.  The
-            array has shape ``(G,)`` and may be unsorted.
-        effective_guide_tolerances: Per-guide Euclidean hit tolerances with
-            shape ``(L,)``.  Each value is the larger of the caller's guide
-            tolerance and the guide's numerical tolerance.
-        root_values: Precomputed varying-axis circle roots with shape
-            ``(L, 2)``.
-        valid_roots: Boolean mask with shape ``(L, 2)`` identifying roots that
-            lie on their finite segments.
-        root_choice_tolerances: Per-guide numerical thresholds, shape ``(L,)``,
-            for detecting an equal-distance choice between two roots.
-        constrained: Boolean output accumulator with shape ``(C,)``.  A row is
-            set when at least one guide passes within its hit tolerance.
-        blocked: Boolean output accumulator with shape ``(C,)``.  A row is set
-            when any matching guide has no usable or uniquely nearest root.
-        target_minimums: Float64 output accumulator with shape ``(C, 2)``.
-            Component-wise minima across every usable target are written here.
-        target_maximums: Float64 output accumulator with shape ``(C, 2)``.
-            Component-wise maxima across every usable target are written here.
-        reference_targets: Float64 output accumulator with shape ``(C, 2)``.
-            The first usable target for each candidate is retained as the
-            deterministic coordinate used if all constraints agree.
-
-    Returns:
-        ``None``.  The five accumulator arrays are modified in place.  The
-        caller later compares target minima and maxima to detect conflicts
-        across this and the other guide orientation.
-
-    Notes:
-        ``_GUIDE_PAIR_BATCH_SIZE`` bounds temporary pair arrays.  A candidate
-        matched by conflicting guides is not rejected here unless a root is
-        missing or ambiguous; geometric disagreement is resolved by
-        ``_to_circle`` after both orientations have been accumulated.
-    """
+def _iter_guide_matches(
+    candidate_xy, pattern_guides, guide_positions, effective_guide_tolerances,
+):
+    """Yield exact sparse node/guide hits in bounded batches."""
     if candidate_xy.shape[0] == 0 or guide_positions.size == 0:
         return
 
@@ -371,9 +314,79 @@ def _accumulate_guide_constraints(
 
         hit_nodes = node_positions[guide_hits]
         hit_guides = paired_guides[guide_hits]
-        hit_varying_values = varying_values[guide_hits]
-        constrained[hit_nodes] = True
 
+        yield hit_nodes, hit_guides
+        node_start = node_end
+
+
+def _accumulate_guide_constraints(
+    candidate_xy: NDArray[np.float64],
+    pattern_guides: _PatternGuideSet,
+    guide_positions: NDArray[np.intp],
+    effective_guide_tolerances: NDArray[np.float64],
+    root_values: NDArray[np.float64],
+    valid_roots: NDArray[np.bool_],
+    root_choice_tolerances: NDArray[np.float64],
+    constrained: NDArray[np.bool_],
+    blocked: NDArray[np.bool_],
+    target_minimums: NDArray[np.float64],
+    target_maximums: NDArray[np.float64],
+    reference_targets: NDArray[np.float64],
+) -> None:
+    """Resolve sparse candidate/guide matches for one fixed-axis orientation.
+
+    The function receives either all vertical guides or all horizontal guides.
+    It sorts them by fixed coordinate and uses ``searchsorted`` to build only
+    plausible node/guide pairs.  Those pairs are processed in bounded batches:
+    exact point-to-segment distance decides guide membership, valid circle
+    roots are selected by proximity, and per-node target summaries are updated
+    in place.  There is no Python loop over individual nodes or guides.
+
+    Args:
+        candidate_xy: XY coordinates of the circle-band candidates, shape
+            ``(C, 2)``.  Row positions are the keys used by every accumulator.
+        pattern_guides: Prepared metadata for all ``L`` pattern segments.
+        guide_positions: Positions of guides that share one fixed axis.  The
+            array has shape ``(G,)`` and may be unsorted.
+        effective_guide_tolerances: Per-guide on-segment membership tolerances with
+            shape ``(L,)``.  Each value is the larger of the caller's guide
+            tolerance and the guide's numerical tolerance.
+        root_values: Precomputed varying-axis circle roots with shape
+            ``(L, 2)``.
+        valid_roots: Boolean mask with shape ``(L, 2)`` identifying roots that
+            lie on their finite segments.
+        root_choice_tolerances: Per-guide numerical thresholds, shape ``(L,)``,
+            for detecting an equal-distance choice between two roots.
+        constrained: Boolean output accumulator with shape ``(C,)``. A row is
+            set when a candidate lies on at least one guide within tolerance.
+        blocked: Boolean output accumulator with shape ``(C,)``.  A row is set
+            when any matching guide has no usable or uniquely nearest root.
+        target_minimums: Float64 output accumulator with shape ``(C, 2)``.
+            Component-wise minima across every usable target are written here.
+        target_maximums: Float64 output accumulator with shape ``(C, 2)``.
+            Component-wise maxima across every usable target are written here.
+        reference_targets: Float64 output accumulator with shape ``(C, 2)``.
+            The first usable target for each candidate is retained as the
+            deterministic coordinate used if all constraints agree.
+
+    Returns:
+        ``None``.  The five accumulator arrays are modified in place.  The
+        caller later compares target minima and maxima to detect conflicts
+        across this and the other guide orientation.
+
+    Notes:
+        ``_GUIDE_PAIR_BATCH_SIZE`` bounds temporary pair arrays.  A candidate
+        matched by conflicting guides is not rejected here unless a root is
+        missing or ambiguous; geometric disagreement is resolved by
+        ``_to_circle`` after both orientations have been accumulated.
+    """
+    for hit_nodes, hit_guides in _iter_guide_matches(
+        candidate_xy, pattern_guides, guide_positions, effective_guide_tolerances,
+    ):
+        constrained[hit_nodes] = True
+        fixed_axis = int(pattern_guides.fixed_axes[guide_positions[0]])
+        varying_axis = 1 - fixed_axis
+        hit_varying_values = candidate_xy[hit_nodes, varying_axis]
         hit_root_values = root_values[hit_guides]
         hit_root_validity = valid_roots[hit_guides]
         root_distances = np.abs(
@@ -411,7 +424,6 @@ def _accumulate_guide_constraints(
 
         usable = ~invalid_constraints
         if not np.any(usable):
-            node_start = node_end
             continue
 
         usable_nodes = hit_nodes[usable]
@@ -449,7 +461,6 @@ def _accumulate_guide_constraints(
         reference_targets[unique_nodes[unset]] = usable_targets[
             first_positions[unset]
         ]
-        node_start = node_end
 
 
 def _merge_close_circle_targets(
@@ -652,7 +663,137 @@ def _commit_circle_update(
     return mesh
 
 
+def _blocked_guide_paths(
+    candidate_xy, target_xy, guided_movable, guides, tolerances,
+    roots, valid_roots, root_tolerances, numerical_tolerance, constraint_nodes,
+):
+    """Find stationary two-axis junctions strictly inside proposed guide paths.
+
+    Only nodes in swept guide corridors enter the constraint resolver. The
+    source may be the full mesh, including nodes outside an element selection
+    or the circle band. Sorting each fixed axis once avoids a mesh scan per
+    candidate; interval searches avoid candidate-by-blocker distance matrices.
+    """
+    moving = np.flatnonzero(guided_movable)
+    matches = {}
+    for axis in (0, 1):
+        positions = np.flatnonzero(guides.fixed_axes == axis)
+        for nodes_hit, guides_hit in _iter_guide_matches(
+            candidate_xy[moving], guides, positions, tolerances,
+        ):
+            for guide in np.unique(guides_hit):
+                matched_nodes = moving[nodes_hit[guides_hit == guide]]
+                matches.setdefault(int(guide), []).append(matched_nodes)
+    source = np.asarray(constraint_nodes)[:, :2]
+    sorted_axes = {}
+    corridor_nodes = []
+    for guide, chunks in matches.items():
+        positions = np.concatenate(chunks)
+        matches[guide] = positions
+        fixed = int(guides.fixed_axes[guide])
+        varying = 1 - fixed
+        if fixed not in sorted_axes:
+            order = np.argsort(source[:, fixed], kind="stable")
+            sorted_axes[fixed] = order, source[order, fixed]
+        order, values = sorted_axes[fixed]
+        tolerance = tolerances[guide]
+        first = np.searchsorted(
+            values, guides.fixed_values[guide] - tolerance, side="left",
+        )
+        last = np.searchsorted(
+            values, guides.fixed_values[guide] + tolerance, side="right",
+        )
+        ids = order[first:last]
+        lower = min(
+            np.min(candidate_xy[positions, varying]),
+            np.min(target_xy[positions, varying]),
+        )
+        upper = max(
+            np.max(candidate_xy[positions, varying]),
+            np.max(target_xy[positions, varying]),
+        )
+        ids = ids[(source[ids, varying] >= lower) & (source[ids, varying] <= upper)]
+        corridor_nodes.append(ids)
+    result = np.zeros(len(candidate_xy), dtype=np.bool_)
+    if not corridor_nodes:
+        return result
+    ids = np.unique(np.concatenate(corridor_nodes))
+    points = source[ids]
+    count = len(points)
+    orientations = np.zeros(count, dtype=np.uint8)
+    constrained = np.zeros(count, dtype=np.bool_)
+    blocked = np.zeros(count, dtype=np.bool_)
+    minimums = np.full((count, 2), np.inf)
+    maximums = np.full((count, 2), -np.inf)
+    reference = np.full((count, 2), np.nan)
+    for axis in (0, 1):
+        positions = np.flatnonzero(guides.fixed_axes == axis)
+        for hit, _ in _iter_guide_matches(points, guides, positions, tolerances):
+            orientations[hit] |= np.uint8(1 << axis)
+        _accumulate_guide_constraints(
+            points, guides, positions, tolerances, roots, valid_roots,
+            root_tolerances, constrained, blocked, minimums, maximums, reference,
+        )
+    has_target = np.isfinite(reference[:, 0])
+    target_scales = np.maximum(1.0, np.max(np.abs(points), axis=1))
+    target_scales[has_target] = np.maximum(
+        target_scales[has_target], np.max(np.abs(reference[has_target]), axis=1),
+    )
+    agreement = np.maximum(
+        2.0 * numerical_tolerance,
+        256 * np.finfo(np.float64).eps * target_scales,
+    )
+    spread = np.full(count, np.inf)
+    spread[has_target] = np.hypot(*(maximums[has_target] - minimums[has_target]).T)
+    stationary = np.zeros(count, dtype=np.bool_)
+    stationary[has_target] = (
+        np.hypot(*(reference[has_target] - points[has_target]).T)
+        <= agreement[has_target]
+    )
+    locked = (orientations == 3) & (blocked | ~has_target | (spread > agreement) | stationary)
+    if not np.any(locked):
+        return result
+    points = points[locked]
+    for axis in (0, 1):
+        positions = np.flatnonzero(guides.fixed_axes == axis)
+        values_by_guide = {}
+        for hits, guide_hits in _iter_guide_matches(points, guides, positions, tolerances):
+            for guide in np.unique(guide_hits):
+                if int(guide) in matches:
+                    values = points[hits[guide_hits == guide], 1 - axis]
+                    values_by_guide.setdefault(int(guide), []).append(values)
+        for guide, chunks in values_by_guide.items():
+            values = np.sort(np.concatenate(chunks))
+            moving_positions = matches[guide]
+            starts = candidate_xy[moving_positions, 1 - axis]
+            targets = target_xy[moving_positions, 1 - axis]
+            lower = np.minimum(starts, targets) + numerical_tolerance
+            upper = np.maximum(starts, targets) - numerical_tolerance
+            crosses = (lower < upper) & (
+                np.searchsorted(values, lower, side="right")
+                < np.searchsorted(values, upper, side="left")
+            )
+            result[moving_positions[crosses]] = True
+    return result
+
+
 def _to_circle(
+    mesh: Mesh2D, center: ArrayLike, radius: float,
+    projection_tolerance: float, guide_tolerance: float, guide_segments,
+    indices: ArrayLike | None = None,
+) -> Mesh2D:
+    """Project circle-band nodes without crossing fixed guide junctions.
+
+    Element selections limit movable nodes, not the read-only blocker search.
+    All orientable element rows are normalized counter-clockwise.
+    """
+    return _project_circle(
+        mesh, center, radius, projection_tolerance, guide_tolerance,
+        guide_segments, indices,
+    )
+
+
+def _project_circle(
     mesh: Mesh2D,
     center: ArrayLike,
     radius: float,
@@ -660,16 +801,20 @@ def _to_circle(
     guide_tolerance: float,
     guide_segments,
     indices: ArrayLike | None = None,
+    *, constraint_nodes: NDArray[np.float64] | None = None,
 ) -> Mesh2D:
     """Move nodes near a circle onto its boundary, honoring pattern guides.
 
     ``projection_tolerance`` selects nodes by radial distance from the circle,
-    while ``guide_tolerance`` independently selects nodes close to a finite
-    pattern segment.  Unconstrained nodes move radially.  A constrained node
-    moves to the nearest finite-segment/circle intersection only when every
-    segment touching it agrees on the same target; otherwise that node is left
-    alone.  After projection, movable circle targets are swept clockwise from
-    the positive X axis.  A target strictly closer than
+    while ``guide_tolerance`` is an absolute distance tolerance for deciding
+    whether a candidate lies on a finite pattern segment. It is an on-segment
+    membership tolerance, not a radius for finding nearby nodes.
+    Unconstrained nodes move radially. A
+    constrained node moves to the nearest finite-segment/circle intersection
+    only when every segment touching it agrees on the same target; otherwise
+    that node is left alone. Paths crossing stationary two-axis guide nodes
+    are rejected before target merging. After projection, movable targets are swept
+    clockwise from the positive X axis. A target strictly closer than
     ``projection_tolerance`` to the current representative receives the same
     XY coordinate.  Guide targets remain fixed and take precedence over nearby
     unconstrained targets.
@@ -688,7 +833,9 @@ def _to_circle(
         radius: Strictly positive circle radius.
         projection_tolerance: Non-negative radial distance from the circle to
             process and merge distance between projected circle targets.
-        guide_tolerance: Non-negative Euclidean point-to-segment tolerance.
+        guide_tolerance: Non-negative absolute Euclidean point-to-segment
+            tolerance, in model coordinate units, for on-segment membership,
+            not for finding nodes in the segment's neighborhood.
         guide_segments: Finite horizontal or vertical pattern segments with
             shape ``(L, 2, 2)``, a prepared guide set, or ``None``.
         indices: Optional unique one-dimensional element-row indices.
@@ -712,7 +859,8 @@ def _to_circle(
         3. Precompute guide/circle roots and accumulate sparse guide matches.
         4. Radially project free nodes; accept a constrained target only when
            every touching guide agrees.  Missing, ambiguous, or conflicting
-           constraints leave that node unchanged.
+           constraints leave that node unchanged. A guided path crossing a
+           stationary two-axis junction also leaves the node unchanged.
         5. Merge nearby movable targets in a clockwise circular sweep while
            preserving guide anchors.
         6. Validate every proposed target.
@@ -913,6 +1061,17 @@ def _to_circle(
         )
     target_xy[guided_movable] = reference_targets[guided_movable]
 
+    if np.any(guided_movable):
+        path_blocked = _blocked_guide_paths(
+            candidate_xy, target_xy, guided_movable, pattern_guides,
+            effective_guide_tolerances, root_values, valid_roots,
+            root_choice_tolerances, numerical_tolerance,
+            float_nodes if constraint_nodes is None else constraint_nodes,
+        )
+        guided_movable[path_blocked] = False
+        movable[path_blocked] = False
+        target_xy[path_blocked] = candidate_xy[path_blocked]
+
     movable_positions = np.flatnonzero(movable)
     target_xy[movable_positions] = _merge_close_circle_targets(
         target_xy[movable_positions],
@@ -945,12 +1104,20 @@ def _to_circle(
 
 
 def _imprint_circle(
+    mesh: Mesh2D, center: ArrayLike, radius: float, merge_tolerance: float,
+    indices: ArrayLike | None = None,
+) -> Mesh2D:
+    """Split selected simple Tri3/convex Quad4 cells along a circle atomically."""
+    return _split_circle(mesh, center, radius, merge_tolerance, indices)[0]
+
+
+def _split_circle(
     mesh: Mesh2D,
     center: ArrayLike,
     radius: float,
     merge_tolerance: float,
     indices: ArrayLike | None = None,
-) -> Mesh2D:
+) -> tuple[Mesh2D, NDArray[np.int64], NDArray[np.int64]]:
     """Split selected elements where a circle properly crosses two edges.
 
     The two circle/element intersections are joined by a straight chord.  A
@@ -1030,7 +1197,7 @@ def _imprint_circle(
 
     element_indices = _normalize_indices(elements.shape[0], indices)
     if element_indices.size == 0:
-        return mesh
+        return mesh, np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
 
     selected_elements = elements[element_indices]
     is_triangle = selected_elements[:, 2] == selected_elements[:, 3]
@@ -1120,7 +1287,7 @@ def _imprint_circle(
     ) & np.all(element_minimum <= circle_maximum, axis=1)
     candidate_positions = np.flatnonzero(broad_phase)
     if candidate_positions.size == 0:
-        return mesh
+        return mesh, np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
 
     candidate_elements = selected_elements[candidate_positions]
     candidate_xy = selected_xy[candidate_positions]
@@ -1573,7 +1740,7 @@ def _imprint_circle(
     )
     eligible_candidate_positions = np.flatnonzero(eligible_candidates)
     if eligible_candidate_positions.size == 0:
-        return mesh
+        return mesh, np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
 
     eligible_selection_positions = candidate_positions[
         eligible_candidate_positions
@@ -1604,6 +1771,7 @@ def _imprint_circle(
     unsnapped = eligible_snap_nodes < 0
     unsnapped_rows, unsnapped_groups = np.nonzero(unsnapped)
     new_node_coordinates = np.empty((0, 3), dtype=np.float64)
+    unique_keys = np.empty((0, 3), dtype=np.int64)
     if unsnapped_rows.size:
         unsnapped_edges = eligible_group_edges[
             unsnapped_rows, unsnapped_groups
@@ -2051,7 +2219,11 @@ def _imprint_circle(
         (proposed_elements, appended_elements[appended_valid]), axis=0
     )
     mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
-    return mesh
+    sources = np.concatenate((
+        np.arange(elements.shape[0], dtype=np.int64),
+        np.repeat(eligible_element_indices, child_elements.shape[1] - 1)[appended_valid],
+    ))
+    return mesh, sources, unique_keys[:, :2]
 
 
 def _remove_redundant_element(
@@ -2119,6 +2291,27 @@ def _remove_redundant_element(
         raise ValueError("nodes must be representable as float64") from error
     working_elements = elements.astype(np.int64, copy=False)
 
+    proposed_nodes, proposed_elements, _, _, _ = _cleanup_data(
+        working_nodes, working_elements, merge_tolerance, minimum_area,
+    )
+
+    nodes_unchanged = np.array_equal(
+        proposed_nodes,
+        nodes,
+        equal_nan=True,
+    )
+    elements_unchanged = np.array_equal(proposed_elements, elements)
+    if nodes_unchanged and elements_unchanged:
+        return mesh
+
+    mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
+    return mesh
+
+
+def _cleanup_data(working_nodes, working_elements, merge_tolerance, minimum_area):
+    """Return clean arrays, surviving input nodes, representatives, and parent rows."""
+    old_to_representative = np.arange(len(working_nodes), dtype=np.int64)
+    source_rows = np.empty(0, dtype=np.int64)
     retained = _candidate_element_mask(
         working_nodes,
         working_elements,
@@ -2137,15 +2330,17 @@ def _remove_redundant_element(
             merge_tolerance,
         )
         remapped_elements = old_to_representative[candidate_elements]
-        proposed_elements = _repair_elements(
+        proposed_elements, repair_sources = _repair_elements_data(
             working_nodes,
             remapped_elements,
             candidate_is_triangle,
             minimum_area,
         )
+        source_rows = np.flatnonzero(retained)[repair_sources]
     else:
         proposed_elements = np.empty((0, 4), dtype=np.int64)
 
+    referenced_nodes = np.empty(0, dtype=np.int64)
     if proposed_elements.size:
         referenced_nodes = np.unique(proposed_elements)
         old_to_new = np.full(working_nodes.shape[0], -1, dtype=np.int64)
@@ -2162,17 +2357,7 @@ def _remove_redundant_element(
         )
         proposed_elements = np.empty((0, 4), dtype=np.int64)
 
-    nodes_unchanged = np.array_equal(
-        proposed_nodes,
-        nodes,
-        equal_nan=True,
-    )
-    elements_unchanged = np.array_equal(proposed_elements, elements)
-    if nodes_unchanged and elements_unchanged:
-        return mesh
-
-    mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
-    return mesh
+    return proposed_nodes, proposed_elements, referenced_nodes, old_to_representative, source_rows
 
 
 def _candidate_element_mask(
@@ -2267,15 +2452,21 @@ def _is_strictly_convex_quad(
     return bool(np.all(np.isfinite(corner_cross)) and np.all(corner_cross > 0.0))
 
 
-def _repair_elements(
+def _repair_elements(nodes, elements, is_triangle, area_tolerance):
+    """Repair collapsed or concave rows and discard unusable geometry."""
+    return _repair_elements_data(nodes, elements, is_triangle, area_tolerance)[0]
+
+
+def _repair_elements_data(
     nodes: NDArray[np.float64],
     elements: NDArray[np.int64],
     is_triangle: NDArray[np.bool_],
     area_tolerance: float,
-) -> NDArray[np.int64]:
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
     """Repair collapsed or concave rows and discard unusable geometry."""
     repaired: list[list[int]] = []
-    for element, triangle in zip(elements, is_triangle, strict=True):
+    sources = []
+    for source, (element, triangle) in enumerate(zip(elements, is_triangle, strict=True)):
         perimeter = element[:3] if triangle else element
         compact: list[int] = []
         for node_index_value in perimeter:
@@ -2294,10 +2485,12 @@ def _repair_elements(
             continue
 
         if len(compact) == 3:
+            sources.append(source)
             repaired.append([compact[0], compact[1], compact[2], compact[2]])
             continue
 
         if _is_strictly_convex_quad(nodes, compact):
+            sources.append(source)
             repaired.append(compact)
             continue
 
@@ -2312,15 +2505,17 @@ def _repair_elements(
                 _signed_xy_area(nodes, first) > area_tolerance
                 and _signed_xy_area(nodes, second) > area_tolerance
             ):
+                sources.append(source)
                 repaired.append([first[0], first[1], first[2], first[2]])
+                sources.append(source)
                 repaired.append(
                     [second[0], second[1], second[2], second[2]]
                 )
                 break
 
     if not repaired:
-        return np.empty((0, 4), dtype=np.int64)
-    return np.asarray(repaired, dtype=np.int64)
+        return np.empty((0, 4), dtype=np.int64), np.empty(0, dtype=np.int64)
+    return np.asarray(repaired, dtype=np.int64), np.asarray(sources, dtype=np.int64)
 
 
 def _equivalent_node_mapping(

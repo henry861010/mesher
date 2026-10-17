@@ -69,8 +69,10 @@ class FunctionSignatureTests(unittest.TestCase):
                 "merge_tolerance",
                 "minimum_area",
                 "guide_segments",
+                "flat_quad_angle",
             ),
         )
+        self.assertEqual(inspect.signature(imprint_circle).parameters["flat_quad_angle"].default, 170.0)
 
 
 class ImprintCircleWrapperTests(unittest.TestCase):
@@ -133,7 +135,7 @@ class ImprintCircleWrapperTests(unittest.TestCase):
             raise ValueError("forced imprint failure")
 
         with patch(
-            "mesher.mesh2d.circular.imprint_v2.mesher._imprint_circle",
+            "mesher.mesh2d.circular.imprint_v2.local._split_circle",
             side_effect=fail_after_mutation,
         ):
             with self.assertRaisesRegex(ValueError, "forced imprint failure"):

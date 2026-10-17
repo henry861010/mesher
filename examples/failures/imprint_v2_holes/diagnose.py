@@ -1,8 +1,8 @@
-"""Replay and inspect the known circular.imprint_v2 hole cases.
+"""Inspect circular.imprint_v2 cases with the current parameter settings.
 
 Run from the repository root with PYTHONPATH=src. Shapely is needed for
 independent coverage measurements; Matplotlib is only needed with --plot.
-The production mesher is deliberately left unchanged.
+Stage snapshots use the same local-patch engine as the public API.
 """
 
 from __future__ import annotations
@@ -21,13 +21,9 @@ from shapely.geometry import Polygon, box, mapping
 
 from mesher import Mesh2D
 from mesher.mesh2d.circular.imprint_v2 import imprint_circle
+from mesher.mesh2d.circular.imprint_v2.local import _run_local_imprint
 from mesher.mesh2d.circular.imprint_v2.utils import (
     _candidate_element_mask,
-    _equivalent_node_mapping,
-    _imprint_circle,
-    _repair_elements,
-    _to_circle,
-    _remove_redundant_element,
 )
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 
@@ -127,28 +123,29 @@ def measure(mesh, domain, area_epsilon):
     return metrics, missing
 
 
-def cleanup_trace(projected, parameters, final_missing):
+def cleanup_trace(projected, parameters, final_missing, metadata):
     """Attribute cleanup results to zero-based pre-cleanup element rows.
 
-    Use the actual candidate/equivalence/repair helpers, including equivalence
-    across all retained rows. Replaying one repair row at a time is valid
-    because _repair_elements treats each row independently. Node IDs here
-    refer to the projection snapshot, before cleanup compacts the node table.
+    Consume actual patch cleanup provenance, without replaying global cleanup.
+    Node IDs refer to the projection snapshot, before global compaction.
     """
     nodes, elements = projected.nodes, projected.elements
     minimum_area = min(1.0, parameters["minimum_area"])
-    retained = _candidate_element_mask(nodes, elements, minimum_area)
-    representatives = _equivalent_node_mapping(
-        nodes, np.unique(elements[retained]), parameters["merge_tolerance"],
-    )
+    rows = metadata["patch_rows"]
+    if not len(rows):
+        return []
+    retained_mask = _candidate_element_mask(nodes, elements[rows], minimum_area)
+    retained = dict(zip(rows.tolist(), retained_mask.tolist(), strict=True))
+    representatives = np.arange(len(nodes), dtype=np.int64)
+    representatives[metadata["node_ids"]] = metadata["representatives"]
+    outputs = {}
+    for source, row in zip(metadata["cleanup_sources"], metadata["cleanup_elements"], strict=True):
+        outputs.setdefault(int(source), []).append(row)
     issues = []
-    for index, row in enumerate(elements):
+    for index in rows.tolist():
+        row = elements[index]
         remapped = representatives[row]
-        repaired = (
-            _repair_elements(nodes, remapped[None, :],
-                             np.array([row[2] == row[3]]), minimum_area)
-            if retained[index] else np.empty((0, 4), dtype=np.int64)
-        )
+        repaired = np.asarray(outputs.get(index, []), dtype=np.int64).reshape(-1, 4)
         shape = Polygon(nodes[perimeter(row), :2])
         if shape.is_valid and np.array_equal(row, remapped) and np.array_equal(
             repaired, row[None, :],
@@ -198,20 +195,19 @@ def mesh_profile(mesh, parameters):
     }
 
 
-def execute_stages(parameters):
+def execute_stages(parameters, *, with_trace=False):
     mesh = build_mesh(parameters)
     snapshots = {"original": copy_mesh(mesh)}
-    arguments = imprint_arguments(parameters)
-    _to_circle(mesh, arguments["center"], arguments["radius"],
-               arguments["projection_tolerance"], arguments["guide_tolerance"],
-               arguments["guide_segments"])
-    snapshots["projection"] = copy_mesh(mesh)
-    _remove_redundant_element(mesh, arguments["merge_tolerance"],
-                              min(1.0, arguments["minimum_area"]))
-    snapshots["cleanup"] = copy_mesh(mesh)
-    _imprint_circle(mesh, arguments["center"], arguments["radius"],
-                    arguments["merge_tolerance"])
-    snapshots["split"] = copy_mesh(mesh)
+    metadata = {}
+    stats = {}
+
+    def capture(stage, snapshot, provenance):
+        snapshots[stage] = copy_mesh(snapshot)
+        metadata.update(provenance)
+
+    _run_local_imprint(mesh, **imprint_arguments(parameters), observer=capture, stats=stats)
+    if with_trace:
+        return snapshots, metadata, stats
     return snapshots
 
 
@@ -235,7 +231,7 @@ def control(parameters, domain, area_epsilon, *, disable_target_merge=False):
 
 def diagnose(case):
     parameters = case["parameters"]
-    snapshots = execute_stages(parameters)
+    snapshots, metadata, stats = execute_stages(parameters, with_trace=True)
     original = snapshots["original"]
     domain = box(*np.r_[original.nodes[:, :2].min(axis=0),
                         original.nodes[:, :2].max(axis=0)])
@@ -260,9 +256,14 @@ def diagnose(case):
         "no_target_merge": control(parameters, domain, area_epsilon, disable_target_merge=True),
         "no_area_cutoff": control(dict(parameters, minimum_area=0.0), domain, area_epsilon),
     }
+    final = metrics["split"]
+    failed = bool(final["invalid_element_rows"]) or any(
+        final[key] > area_epsilon
+        for key in ("missing_area", "overlap_area", "outside_domain_area")
+    )
     result = {
         "id": case["id"],
-        "mechanism": case["mechanism"],
+        "status": "fail" if failed else "pass",
         "parameters": parameters,
         "mesh_profile": mesh_profile(original, parameters),
         "minimum_area_requested": parameters["minimum_area"],
@@ -279,24 +280,21 @@ def diagnose(case):
             "projected_xy": projected.nodes[i, :2].tolist(),
             "distance": float(displacement[i]),
         } for i in moved],
-        "cleanup_trace": cleanup_trace(projected, parameters, missing["split"]),
+        "cleanup_trace": cleanup_trace(projected, parameters, missing["split"], metadata),
+        "local_patch": {key: stats[key] for key in ("global_elements", "core_elements", "patch_elements", "patch_nodes")},
         "controls": controls,
     }
     return result, snapshots, missing
 
 
 def verify(case, result):
-    """Validate the known failure and the causal counterfactuals.
+    """Validate replay consistency and input coverage for current results.
 
-    This is a diagnostic characterization, not a requirement to preserve the
-    bug. A future fix should make --verify fail and prompt updating/retiring
-    the case. Normal test discovery does not assert that the bug must remain.
+    Both passing and failing cases are valid diagnostic results. Mesh quality
+    is reported separately in status; verification does not require a hole.
     """
     errors = []
     epsilon = result["area_epsilon"]
-    for key, expected in case["expected"].items():
-        if result[key] != expected:
-            errors.append(f"{key}: expected {expected}, observed {result[key]}")
     if not result["public_call_matches_stages"]:
         errors.append("stage replay differs from public imprint_circle")
     original = result["stages"]["original"]
@@ -312,15 +310,8 @@ def verify(case, result):
                 errors.append(f"mesh profile {key} differs from the recorded corpus")
         if result["mesh_profile"]["maximum_grid_spacing"] > case["parameters"]["target_edge_size"] * (1.0 + 1e-12):
             errors.append("input grid exceeds the target element size")
-    if result["stages"]["split"]["closed_hole_area"] <= epsilon:
-        errors.append("final mesh no longer has a measurable enclosed hole")
     if abs(result["stages"]["split"]["missing_area"] - result["stages"]["cleanup"]["missing_area"]) > epsilon:
         errors.append("split changed missing area")
-    relevant = ("no_projection", "no_guides") if case["mechanism"] == "guide_projection_fold" else ("no_projection", "no_target_merge")
-    for name in relevant:
-        observation = result["controls"][name]
-        if "error" in observation or observation["missing_area"] > epsilon:
-            errors.append(f"control {name} did not restore full coverage: {observation}")
     return errors
 
 
@@ -367,7 +358,7 @@ def write_plots(output, replays):
         draw_mesh(ax, snapshots["split"], missing["split"], result["parameters"],
                   bounds=result.get("inspection_bounds"))
         final = result["stages"]["split"]
-        ax.set_title(f"{result['id']} | hole area {final['closed_hole_area']:.6f}\n"
+        ax.set_title(f"{result['id']} | {result['status']} | hole area {final['closed_hole_area']:.6f}\n"
                      f"missing area {final['missing_area']:.6f}", fontsize=10)
     for ax in list(axes.flat)[len(replays):]:
         ax.set_visible(False)
@@ -388,7 +379,7 @@ def write_plots(output, replays):
             metric = result["stages"][name]
             ax.set_title(f"{name}: {metric['element_count']} elements\n"
                          f"invalid {len(bad_rows)}, missing {metric['missing_area']:.6f}", fontsize=10)
-        figure.suptitle(f"{result['id']}: {result['mechanism']} | purple labels = invalid element rows")
+        figure.suptitle(f"{result['id']}: {result['status']} | purple labels = invalid element rows")
         figure.tight_layout()
         figure.savefig(output / result["id"] / "stages.png", dpi=150)
         plt.close(figure)
@@ -399,7 +390,7 @@ def main(argv=None):
     parser.add_argument("--case", action="append", dest="case_ids", help="case_01, etc.; repeat to select multiple")
     parser.add_argument("--output", type=Path, default=HERE / "results")
     parser.add_argument("--plot", action="store_true")
-    parser.add_argument("--verify", action="store_true", help="check the recorded failures and causal controls")
+    parser.add_argument("--verify", action="store_true", help="check input coverage and replay consistency; pass/fail status is reported separately")
     args = parser.parse_args(argv)
     cases = load_cases()
     if args.case_ids:
@@ -421,7 +412,7 @@ def main(argv=None):
             errors.extend(f"{case['id']}: {error}" for error in verify(case, result))
         replays.append((result, snapshots, missing))
         final = result["stages"]["split"]
-        print(f"{case['id']}: first hole={result['first_hole_stage']}, "
+        print(f"{case['id']}: {result['status']}, first hole={result['first_hole_stage']}, "
               f"hole area={final['closed_hole_area']:.9f}, missing={final['missing_area']:.9f}")
     summary = {
         "runtime": {"python": platform.python_version(), "numpy": np.__version__,
