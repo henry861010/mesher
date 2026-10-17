@@ -9,10 +9,8 @@ from mesher import Mesh3D
 from mesher.mesh2d.circular import extend_circular_mesh
 from mesher.mesh2d.circular.imprint_v2 import imprint_circle
 
-from mesher.process_flow import (
-    build_mesh_from_structure as _build_mesh_from_structure,
-    validate_mesh_control,
-)
+from mesher.mesh25d import build_mesh
+from mesher.contracts.process_flow_2_5d import validate_mesh_control
 
 
 def _mesh_control(element_size=1.0, symmetry="full", controls=None):
@@ -26,14 +24,14 @@ def _mesh_control(element_size=1.0, symmetry="full", controls=None):
     }
 
 
-def build_mesh_from_structure(
+def _build(
     structure,
     *,
     element_size,
     symmetry="full",
     progress=None,
 ):
-    return _build_mesh_from_structure(
+    return build_mesh(
         structure,
         _mesh_control(element_size, symmetry),
         progress=progress,
@@ -158,35 +156,37 @@ class BuilderIntegrationTests(unittest.TestCase):
         validate_mesh_control(_mesh_control(1.0))
 
         invalid = _mesh_control(1.0)
-        invalid["controls"] = [
-            {
-                "method": "Z_POINT",
-                "elementSize": 0.25,
-                "z": {"mode": "absolute", "value": 0.5},
-            }
-        ]
+        invalid["controls"] = [{
+            "method": "Z_POINT",
+            "coordinateMode": "absolute",
+            "label": "Point",
+            "elementSize": 0.25,
+            "z": 0.5,
+        }]
         with self.assertRaisesRegex(ValueError, "unsupported field.*elementSize"):
             validate_mesh_control(invalid)
 
-    def test_public_mesh_control_validator_accepts_optional_labels(self):
+    def test_public_mesh_control_validator_requires_labels(self):
         section = {
             "method": "Z_SECTION_AVG",
+            "coordinateMode": "absolute",
             "label": "Base die",
             "elementSize": 0.25,
-            "startZ": {"mode": "absolute", "value": 0},
-            "endZ": {"mode": "absolute", "value": 1},
+            "startZ": 0,
+            "endZ": 1,
         }
         point = {
             "method": "Z_POINT",
+            "coordinateMode": "absolute",
             "label": "Interface plane",
-            "z": {"mode": "absolute", "value": 0.5},
+            "z": 0.5,
         }
         validate_mesh_control(_mesh_control(controls=[section, point]))
-        validate_mesh_control(_mesh_control(controls=[
-            {key: value for key, value in section.items() if key != "label"},
-            {key: value for key, value in point.items() if key != "label"},
-        ]))
-
+        for control in (section, point):
+            with self.assertRaisesRegex(ValueError, "missing required field.*label"):
+                validate_mesh_control(_mesh_control(controls=[
+                    {key: value for key, value in control.items() if key != "label"},
+                ]))
         for invalid_label in ("", "  ", 12, None):
             with self.subTest(label=invalid_label):
                 invalid = _mesh_control(controls=[{**point, "label": invalid_label}])
@@ -196,17 +196,19 @@ class BuilderIntegrationTests(unittest.TestCase):
     def test_control_label_does_not_change_the_mesh(self):
         control = {
             "method": "Z_SECTION_AVG",
+            "coordinateMode": "reference",
+            "label": "Original label",
             "reference": {"kind": "container", "key": "hbm"},
             "elementSize": 0.25,
-            "startZ": {"mode": "absolute", "value": 0},
-            "endZ": {"mode": "absolute", "value": 1},
+            "startZ": {"anchor": "z_min", "offset": 0},
+            "endZ": {"anchor": "z_max", "offset": 0},
         }
         structure = _box_structure()
         structure["root"]["key"] = "hbm"
-        unlabeled = _build_mesh_from_structure(
+        unlabeled = build_mesh(
             structure, _mesh_control(1.0, controls=[control])
         )
-        labeled = _build_mesh_from_structure(
+        labeled = build_mesh(
             structure, _mesh_control(1.0, controls=[{**control, "label": "Base die"}])
         )
         self.assertEqual(
@@ -217,21 +219,23 @@ class BuilderIntegrationTests(unittest.TestCase):
     def test_public_builder_applies_mesh_controls(self):
         structure = _box_structure()
         structure["root"]["key"] = "hbm"
-        baseline = _build_mesh_from_structure(
+        baseline = build_mesh(
             structure,
             _mesh_control(1.0),
         )
-        mesh = _build_mesh_from_structure(
+        mesh = build_mesh(
             structure,
             _mesh_control(
                 1.0,
                 controls=[
                     {
                         "method": "Z_SECTION_AVG",
+                        "coordinateMode": "reference",
+                        "label": "Base die",
                         "reference": {"kind": "container", "key": "hbm"},
                         "elementSize": 0.25,
-                        "startZ": {"mode": "absolute", "value": 0},
-                        "endZ": {"mode": "absolute", "value": 1},
+                        "startZ": {"anchor": "z_min", "offset": 0},
+                        "endZ": {"anchor": "z_max", "offset": 0},
                     }
                 ],
             ),
@@ -245,8 +249,9 @@ class BuilderIntegrationTests(unittest.TestCase):
             controls=[
                 {
                     "method": "Z_POINT",
+                    "coordinateMode": "reference",
+                    "label": "Missing reference",
                     "z": {
-                        "mode": "relative",
                         "anchor": "z_min",
                         "offset": 0,
                     },
@@ -254,15 +259,15 @@ class BuilderIntegrationTests(unittest.TestCase):
             ]
         )
 
-        with self.assertRaisesRegex(ValueError, "relative Z locations require reference"):
-            _build_mesh_from_structure(_box_structure(), mesh_control)
+        with self.assertRaisesRegex(ValueError, "reference is required"):
+            build_mesh(_box_structure(), mesh_control)
 
     def test_rejects_unknown_semantic_keys(self):
         structure = _box_structure()
         structure["root"]["key"] = "mesh-root"
 
         with self.assertRaisesRegex(ValueError, "Unsupported container.key"):
-            build_mesh_from_structure(structure, element_size=1.0)
+            _build(structure, element_size=1.0)
 
     def test_preserves_a_box_pattern_crossing_a_circle_boundary(self):
         structure = {
@@ -306,10 +311,10 @@ class BuilderIntegrationTests(unittest.TestCase):
         }
 
         with patch(
-            "mesher.process_flow.pipeline.imprint_circle",
+            "mesher.mesh25d.plan2d.imprint_circle",
             wraps=imprint_circle,
         ) as mocked_imprint:
-            mesh = build_mesh_from_structure(structure, element_size=5.0)
+            mesh = _build(structure, element_size=5.0)
 
         self.assertEqual(
             mocked_imprint.call_args.kwargs["guide_segments"],
@@ -346,7 +351,7 @@ class BuilderIntegrationTests(unittest.TestCase):
                 structure["root"]["children"] = [child["root"]]
                 snapshot = copy.deepcopy(structure)
 
-                mesh = build_mesh_from_structure(structure, element_size=0.5)
+                mesh = _build(structure, element_size=0.5)
 
                 self.assertEqual(structure, snapshot)
                 self.assertTrue(np.all(np.isfinite(mesh.nodes)))
@@ -357,7 +362,7 @@ class BuilderIntegrationTests(unittest.TestCase):
                 self.assertTrue(np.all((centers[:, 2] > 1.0) & (centers[:, 2] < 2.0)))
 
     def test_public_builder_matches_known_mesh_contract(self):
-        mesh = build_mesh_from_structure(_box_structure(), element_size=1.0)
+        mesh = _build(_box_structure(), element_size=1.0)
 
         self.assertIsInstance(mesh, Mesh3D)
         self.assertEqual(mesh.node_count, 18)
@@ -413,7 +418,7 @@ class BuilderIntegrationTests(unittest.TestCase):
     def test_progress_callback_reports_features_inside_building_2d_mesh(self):
         events = []
 
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             _multi_circle_structure(),
             element_size=1.0,
             progress=events.append,
@@ -449,7 +454,7 @@ class BuilderIntegrationTests(unittest.TestCase):
     def test_progress_callback_matches_the_stable_box_event_contract(self):
         events = []
 
-        build_mesh_from_structure(
+        _build(
             _box_structure(),
             element_size=1.0,
             progress=events.append,
@@ -594,7 +599,7 @@ class BuilderIntegrationTests(unittest.TestCase):
 
         for symmetry, element_count, xy_min, xy_max in cases:
             with self.subTest(symmetry=symmetry):
-                mesh = build_mesh_from_structure(
+                mesh = _build(
                     structure,
                     element_size=1.0,
                     symmetry=symmetry,
@@ -643,7 +648,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             }
         }
 
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             structure,
             element_size=1.0,
             symmetry="right_half",
@@ -672,7 +677,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             }
         )
 
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             structure,
             element_size=1.0,
             symmetry="right_half",
@@ -688,7 +693,7 @@ class BuilderIntegrationTests(unittest.TestCase):
         first_geometry["top_right"] = [-6.0, 2.0, 0.0]
         _append_box(structure, x1=2.0, y1=-2.0, x2=4.0, y2=2.0)
 
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             structure,
             element_size=1.0,
             symmetry="right_half",
@@ -728,7 +733,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             }
         }
 
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             structure,
             element_size=1.0,
             symmetry="upper_right_quarter",
@@ -777,7 +782,7 @@ class BuilderIntegrationTests(unittest.TestCase):
         }
         snapshot = copy.deepcopy(structure)
 
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             structure,
             element_size=1.0,
             symmetry="upper_right_quarter",
@@ -790,7 +795,8 @@ class BuilderIntegrationTests(unittest.TestCase):
         self.assertTrue(np.all(mesh.nodes[:, 1] >= 0.0))
 
     def test_reduced_models_prune_empty_containers_before_resolving_controls(self):
-        from mesher.process_flow.translation.standard_v1 import StandardV1Translator
+        from mesher.mesh25d.geometry.assignments import extract_assignments
+        from mesher.mesh25d.plan3d import plan_layers
 
         outside = copy.deepcopy(_box_structure()["root"])
         outside["id"] = "outside"
@@ -809,27 +815,33 @@ class BuilderIntegrationTests(unittest.TestCase):
         controls = [
             {
                 "method": "Z_POINT",
+                "coordinateMode": "reference",
+                "label": container_id,
                 "reference": {"kind": "container", "id": container_id},
-                "z": {"mode": "relative", "anchor": "z_min", "offset": offset},
+                "z": {"anchor": "z_min", "offset": offset},
             }
             for container_id, offset in (("outside", 0.5), ("parent", 0.25))
         ]
-        original_get_pattern = StandardV1Translator.get_3D_pattern
-
         for symmetry in ("full", "upper_half", "right_half", "upper_right_quarter"):
             with self.subTest(symmetry=symmetry):
                 captured = {}
 
-                def capture_pattern(translator, container, mesh_control):
-                    layers = original_get_pattern(translator, container, mesh_control)
+                def capture_assignments(container):
+                    assignments = extract_assignments(container)
                     captured["container"] = copy.deepcopy(container)
-                    captured["layers"] = layers
-                    return layers
+                    return assignments
 
-                with patch.object(
-                    StandardV1Translator, "get_3D_pattern", new=capture_pattern
+                def capture_layers(assignments, constraints, *, element_size):
+                    plan = plan_layers(assignments, constraints, element_size=element_size)
+                    captured["layers"] = plan.layer_infos
+                    return plan
+
+                with patch(
+                    "mesher.mesh25d.pipeline.extract_assignments", new=capture_assignments
+                ), patch(
+                    "mesher.mesh25d.pipeline.plan_layers", new=capture_layers
                 ):
-                    mesh = _build_mesh_from_structure(
+                    mesh = build_mesh(
                         structure, _mesh_control(0.5, symmetry, controls)
                     )
 
@@ -874,7 +886,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             material="diagonal-outside",
         )
 
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             structure,
             element_size=1.0,
             symmetry="upper_right_quarter",
@@ -916,14 +928,14 @@ class BuilderIntegrationTests(unittest.TestCase):
             ValueError,
             r"no geometry with positive XY area in upper_right_quarter",
         ):
-            build_mesh_from_structure(
+            _build(
                 structure,
                 element_size=1.0,
                 symmetry="upper_right_quarter",
             )
 
     def test_quarter_model_imprints_an_offset_open_circle(self):
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             _circle_structure((10.0, 20.0, 3.0, 0.0, 1.0, "Cu")),
             element_size=1.0,
             symmetry="upper_right_quarter",
@@ -969,7 +981,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             ValueError,
             r"requires each intersecting symmetry boundary.*boundary x=0",
         ):
-            build_mesh_from_structure(
+            _build(
                 structure,
                 element_size=1.0,
                 symmetry="upper_right_quarter",
@@ -980,14 +992,14 @@ class BuilderIntegrationTests(unittest.TestCase):
             ValueError,
             r"full, upper_half, right_half, upper_right_quarter",
         ):
-            build_mesh_from_structure(
+            _build(
                 _box_structure(),
                 element_size=1.0,
                 symmetry="Upper_Model",
             )
 
     def test_builds_disjoint_cylinders_in_one_mesh(self):
-        mesh = build_mesh_from_structure(_multi_circle_structure(), element_size=1.0)
+        mesh = _build(_multi_circle_structure(), element_size=1.0)
 
         self.assertEqual(mesh.element_count, 76)
         self.assertEqual(mesh.comps, {"EMPTY": 0, "Si": 1})
@@ -1016,7 +1028,7 @@ class BuilderIntegrationTests(unittest.TestCase):
         )
 
     def test_refines_xy_mesh_for_a_circle_smaller_than_element_size(self):
-        mesh = build_mesh_from_structure(
+        mesh = _build(
             _circle_structure((0.0, 0.0, 0.5, 0.0, 1.0, "Cu")),
             element_size=1.0,
         )
@@ -1033,10 +1045,10 @@ class BuilderIntegrationTests(unittest.TestCase):
         )
 
         with patch(
-            "mesher.process_flow.pipeline.imprint_circle",
+            "mesher.mesh25d.plan2d.imprint_circle",
             wraps=imprint_circle,
         ) as mocked_imprint:
-            mesh = build_mesh_from_structure(structure, element_size=1.0)
+            mesh = _build(structure, element_size=1.0)
 
         self.assertEqual(mocked_imprint.call_count, 1)
         self.assertEqual(
@@ -1062,15 +1074,15 @@ class BuilderIntegrationTests(unittest.TestCase):
 
         with (
             patch(
-                "mesher.process_flow.pipeline.imprint_circle",
+                "mesher.mesh25d.plan2d.imprint_circle",
                 wraps=imprint_circle,
             ) as mocked_imprint,
             patch(
-                "mesher.process_flow.pipeline.extend_circular_mesh",
+                "mesher.mesh25d.plan2d.extend_circular_mesh",
                 wraps=extend_circular_mesh,
             ) as mocked_extend,
         ):
-            mesh = build_mesh_from_structure(structure, element_size=500.0)
+            mesh = _build(structure, element_size=500.0)
 
         self.assertEqual(mocked_imprint.call_count, 1)
         self.assertEqual(mocked_imprint.call_args.kwargs["radius"], 10000.0)
@@ -1106,15 +1118,15 @@ class BuilderIntegrationTests(unittest.TestCase):
 
         with (
             patch(
-                "mesher.process_flow.pipeline.imprint_circle",
+                "mesher.mesh25d.plan2d.imprint_circle",
                 wraps=imprint_circle,
             ) as mocked_imprint,
             patch(
-                "mesher.process_flow.pipeline.extend_circular_mesh",
+                "mesher.mesh25d.plan2d.extend_circular_mesh",
                 wraps=extend_circular_mesh,
             ) as mocked_extend,
         ):
-            build_mesh_from_structure(structure, element_size=500.0)
+            _build(structure, element_size=500.0)
 
         self.assertEqual(
             [call.kwargs["radius"] for call in mocked_imprint.call_args_list],
@@ -1139,15 +1151,15 @@ class BuilderIntegrationTests(unittest.TestCase):
 
         with (
             patch(
-                "mesher.process_flow.pipeline.imprint_circle",
+                "mesher.mesh25d.plan2d.imprint_circle",
                 wraps=imprint_circle,
             ) as mocked_imprint,
             patch(
-                "mesher.process_flow.pipeline.extend_circular_mesh",
+                "mesher.mesh25d.plan2d.extend_circular_mesh",
                 wraps=extend_circular_mesh,
             ) as mocked_extend,
         ):
-            build_mesh_from_structure(structure, element_size=400.0)
+            _build(structure, element_size=400.0)
 
         self.assertEqual(mocked_imprint.call_count, 3)
         self.assertEqual(mocked_extend.call_count, 0)
@@ -1160,10 +1172,10 @@ class BuilderIntegrationTests(unittest.TestCase):
         )
 
         with patch(
-            "mesher.process_flow.pipeline.extend_circular_mesh",
+            "mesher.mesh25d.plan2d.extend_circular_mesh",
             wraps=extend_circular_mesh,
         ) as mocked_extend:
-            mesh = build_mesh_from_structure(structure, element_size=500.0)
+            mesh = _build(structure, element_size=500.0)
 
         self.assertGreater(mesh.element_count, 0)
         self.assertEqual(mocked_extend.call_count, 2)
@@ -1179,14 +1191,14 @@ class BuilderIntegrationTests(unittest.TestCase):
         )
 
         with patch(
-            "mesher.process_flow.pipeline.extend_circular_mesh",
+            "mesher.mesh25d.plan2d.extend_circular_mesh",
             side_effect=ValueError("invalid retained topology"),
         ):
             with self.assertRaisesRegex(
                 ValueError,
                 r"radius=10000.*radius=12000: invalid retained topology",
             ):
-                build_mesh_from_structure(structure, element_size=500.0)
+                _build(structure, element_size=500.0)
 
     def test_rejects_intersecting_tangent_and_overlapping_circle_bands(self):
         cases = (
@@ -1205,7 +1217,7 @@ class BuilderIntegrationTests(unittest.TestCase):
                     ValueError,
                     r"center=\(0, 0\), radius=2.*center=\([345], 0\), radius=2",
                 ):
-                    build_mesh_from_structure(structure, element_size=1.0)
+                    _build(structure, element_size=1.0)
 
     def test_wraps_imprint_failure_with_circle_identity(self):
         structure = _circle_structure(
@@ -1213,14 +1225,14 @@ class BuilderIntegrationTests(unittest.TestCase):
         )
 
         with patch(
-            "mesher.process_flow.pipeline.imprint_circle",
+            "mesher.mesh25d.plan2d.imprint_circle",
             side_effect=ValueError("invalid topology"),
         ):
             with self.assertRaisesRegex(
                 ValueError,
                 r"center=\(1, -2\), radius=3: invalid topology",
             ):
-                build_mesh_from_structure(structure, element_size=1.0)
+                _build(structure, element_size=1.0)
 
 
 if __name__ == "__main__":

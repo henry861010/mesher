@@ -1,4 +1,8 @@
-"""Contract validation for the ``process_flow_2_5d`` mesher."""
+"""Uniform-coordinate JSON contract for the ``process_flow_2_5d`` mesher.
+
+Validation is syntax-only and does not import the geometry/meshing runtime.
+Reference resolution, region bounds and polygon topology are pipeline concerns.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ Z_SECTION_METHODS = (
     "Z_SECTION_BOT",
     "Z_SECTION_CENTER",
 )
+COORDINATE_MODES = ("reference", "absolute")
 REFERENCE_KINDS = ("root", "container", "body", "via", "circuit", "bump")
 
 
@@ -75,37 +80,39 @@ def _validate_mesh_control_entry(value: Any, path: str) -> None:
         raise ValueError(f"{path} must be an object.")
     method = value.get("method")
     if isinstance(method, str) and method in Z_SECTION_METHODS:
-        _require_object_keys(
-            value,
-            path,
-            required={"method", "elementSize", "startZ", "endZ"},
-            optional={"reference", "label"},
-        )
-        _positive_finite_number(value["elementSize"], f"{path}.elementSize")
-        locations = (
-            _validate_z_location(value["startZ"], f"{path}.startZ"),
-            _validate_z_location(value["endZ"], f"{path}.endZ"),
-        )
+        fields = {"elementSize", "startZ", "endZ"}
     elif method == "Z_POINT":
-        _require_object_keys(
-            value,
-            path,
-            required={"method", "z"},
-            optional={"reference", "label"},
-        )
-        locations = (_validate_z_location(value["z"], f"{path}.z"),)
+        fields = {"z"}
+    elif method == "3D_REGION":
+        fields = {"elementSize", "region"}
     else:
-        allowed = ", ".join([*Z_SECTION_METHODS, "Z_POINT"])
+        allowed = ", ".join([*Z_SECTION_METHODS, "Z_POINT", "3D_REGION"])
         raise ValueError(f"{path}.method must be one of: {allowed}.")
 
-    if "label" in value:
-        _non_blank_string(value["label"], f"{path}.label")
+    _require_object_keys(
+        value,
+        path,
+        required={"method", "coordinateMode", "label", *fields},
+        optional={"reference"},
+    )
+    _non_blank_string(value["label"], f"{path}.label")
+    mode = value["coordinateMode"]
+    if not isinstance(mode, str) or mode not in COORDINATE_MODES:
+        raise ValueError(f"{path}.coordinateMode must be 'reference' or 'absolute'.")
+    if mode == "reference":
+        if "reference" not in value:
+            raise ValueError(f"{path}.reference is required in Reference mode.")
+        _validate_mesh_control_reference(value["reference"], f"{path}.reference")
+    elif "reference" in value:
+        raise ValueError(f"{path}.reference is not allowed in Absolute mode.")
 
-    reference = value.get("reference")
-    if reference is not None:
-        _validate_mesh_control_reference(reference, f"{path}.reference")
-    if any(mode == "relative" for mode in locations) and reference is None:
-        raise ValueError(f"{path} relative Z locations require reference.")
+    if method != "Z_POINT":
+        _positive_finite_number(value["elementSize"], f"{path}.elementSize")
+    if method == "3D_REGION":
+        _validate_region(value["region"], mode, f"{path}.region")
+    else:
+        for field in (("z",) if method == "Z_POINT" else ("startZ", "endZ")):
+            _validate_coordinate(value[field], "z", mode, f"{path}.{field}")
 
 
 def _validate_mesh_control_reference(value: Any, path: str) -> None:
@@ -134,36 +141,59 @@ def _validate_mesh_control_reference(value: Any, path: str) -> None:
         )
     key = value.get("key")
     item_id = value.get("id")
-    if key is None and item_id is None:
+    if "key" not in value and "id" not in value:
         raise ValueError(f"{path} requires key or id.")
-    if key is not None:
+    if "key" in value:
         _non_blank_string(key, f"{path}.key")
-    if item_id is not None:
+    if "id" in value:
         _non_blank_string(item_id, f"{path}.id")
 
 
-def _validate_z_location(value: Any, path: str) -> str:
+def _validate_coordinate(value: Any, axis: str, mode: str, path: str) -> None:
+    if mode == "absolute":
+        _finite_number(value, path)
+        return
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must be an anchor/offset object in Reference mode.")
+    _require_object_keys(value, path, required={"anchor", "offset"})
+    if not isinstance(value["anchor"], str) or value["anchor"] not in {
+        f"{axis}_min", f"{axis}_max",
+    }:
+        raise ValueError(f"{path}.anchor must be '{axis}_min' or '{axis}_max'.")
+    _finite_number(value["offset"], f"{path}.offset")
+
+
+def _validate_region_point(value: Any, axes: str, mode: str, path: str) -> None:
     if not isinstance(value, dict):
         raise ValueError(f"{path} must be an object.")
-    mode = value.get("mode")
-    if mode == "relative":
-        _require_object_keys(
-            value,
-            path,
-            required={"mode", "anchor", "offset"},
-        )
-        if not isinstance(value["anchor"], str) or value["anchor"] not in {
-            "z_min",
-            "z_max",
-        }:
-            raise ValueError(f"{path}.anchor must be 'z_min' or 'z_max'.")
-        _finite_number(value["offset"], f"{path}.offset")
-        return mode
-    if mode == "absolute":
-        _require_object_keys(value, path, required={"mode", "value"})
-        _finite_number(value["value"], f"{path}.value")
-        return mode
-    raise ValueError(f"{path}.mode must be 'relative' or 'absolute'.")
+    _require_object_keys(value, path, required=set(axes))
+    for axis in axes:
+        _validate_coordinate(value[axis], axis, mode, f"{path}.{axis}")
+
+
+def _validate_region(value: Any, mode: str, path: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must be an object.")
+    shape = value.get("type")
+    if shape == "box":
+        _require_object_keys(value, path, required={"type", "min", "max"})
+        for bound in ("min", "max"):
+            _validate_region_point(value[bound], "xyz", mode, f"{path}.{bound}")
+    elif shape == "polygon":
+        _require_object_keys(value, path, required={"type", "loops", "startZ", "endZ"})
+        loops = value["loops"]
+        if not isinstance(loops, list) or not loops:
+            raise ValueError(f"{path}.loops must be a non-empty list.")
+        for loop_index, loop in enumerate(loops):
+            loop_path = f"{path}.loops[{loop_index}]"
+            if not isinstance(loop, list) or len(loop) < 3:
+                raise ValueError(f"{loop_path} must contain at least three vertices.")
+            for point_index, point in enumerate(loop):
+                _validate_region_point(point, "xy", mode, f"{loop_path}[{point_index}]")
+        for field in ("startZ", "endZ"):
+            _validate_coordinate(value[field], "z", mode, f"{path}.{field}")
+    else:
+        raise ValueError(f"{path}.type must be 'box' or 'polygon'.")
 
 
 def _require_object_keys(
@@ -196,9 +226,13 @@ def _positive_finite_number(value: Any, name: str) -> float:
 
 
 def _finite_number(value: Any, name: str) -> float:
+    # JSON numbers only: bool is an int subclass, and numeric strings must not
+    # silently pass as Absolute coordinates or element sizes.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite number.")
     try:
         number = float(value)
-    except (TypeError, ValueError) as error:
+    except (OverflowError, TypeError, ValueError) as error:
         raise ValueError(f"{name} must be a finite number.") from error
     if not math.isfinite(number):
         raise ValueError(f"{name} must be a finite number.")

@@ -4,8 +4,10 @@ import unittest
 import numpy as np
 from shapely.geometry import Polygon
 
-from mesher.process_flow.translation.koz import inset_face, koz_value
-from mesher.process_flow.translation.standard_v1 import StandardV1Translator
+from mesher.mesh25d.geometry.koz import inset_face, koz_value
+from mesher.mesh25d.geometry.patterns import extract_pattern
+from mesher.mesh25d.geometry.assignments import extract_assignments
+from mesher.mesh25d.plan3d import plan_layers
 
 
 CONTROL = {"globalElementSize": 1.0, "controls": []}
@@ -91,19 +93,21 @@ class KozTranslationTests(unittest.TestCase):
             {"type": "PolygonGeometry", "polys": [
                 [[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0]]], "thk": 1},
         ]
-        translator = StandardV1Translator()
+
         for field in ("bumps", "circuits", "vias"):
             for geometry in geometries:
                 with self.subTest(field=field, shape=geometry["type"]):
                     child = _container()
                     child[field] = [{"geometry": geometry, "koz": 0.5,
+                                     **({"stage": "joined"} if field == "bumps" else {}),
                                      "material": "Cu", "density": 100}]
                     container = _container()
                     container["children"] = [child]
                     before = copy.deepcopy(container)
-                    base, faces = translator.get_2D_pattern(container, CONTROL)
+                    pattern = extract_pattern(container)
+                    base, faces = pattern.base_face, pattern.faces
                     self.assertEqual(len(faces), 1)
-                    layers = translator.get_3D_pattern(copy.deepcopy(container), CONTROL)
+                    layers = plan_layers(extract_assignments(copy.deepcopy(container)), [], element_size=CONTROL["globalElementSize"]).layer_infos
                     area = layers[0]["assignments"][0]["areas"][0]
                     self.assertEqual(area["face"], faces[0])
                     self.assertEqual(inset_face(base, 0.5), faces[0])
@@ -114,10 +118,10 @@ class KozTranslationTests(unittest.TestCase):
         feature = {"geometry": {"type": "BoxGeometry", "bottom_left": [0, 0, 0],
                    "top_right": [4, 4, 0], "thk": 1}, "material": "Cu", "density": 100}
         container["vias"] = [feature, dict(feature, koz=0)]
-        translator = StandardV1Translator()
-        self.assertEqual(translator.get_2D_pattern(container, CONTROL)[1], [])
+
+        self.assertEqual(extract_pattern(container).faces, [])
         container["vias"] = [dict(feature, koz=0.5), dict(feature, koz=0.5)]
-        self.assertEqual(len(translator.get_2D_pattern(container, CONTROL)[1]), 1)
+        self.assertEqual(len(extract_pattern(container).faces), 1)
 
     def test_koz_never_replaces_original_polygon_base_with_mixed_loop_winding(self):
         container = _container()
@@ -127,7 +131,8 @@ class KozTranslationTests(unittest.TestCase):
         ]
         container["vias"] = [{"geometry": {"type": "PolygonGeometry", "polys": loops,
                                             "thk": 1}, "koz": 0.5}]
-        base, faces = StandardV1Translator().get_2D_pattern(container, CONTROL)
+        pattern = extract_pattern(container)
+        base, faces = pattern.base_face, pattern.faces
         self.assertEqual(base["dim"], [[[x, y] for x, y, _ in loop] for loop in loops])
         self.assertEqual(len(faces), 1)
 
@@ -136,12 +141,12 @@ class KozTranslationTests(unittest.TestCase):
         feature = {"geometry": {"type": "BoxGeometry", "bottom_left": [0, 0, 0],
                    "top_right": [1, 1, 0], "thk": 1}, "material": "Cu", "density": 100}
         container["vias"] = [dict(feature, koz=1e-7)]
-        translator = StandardV1Translator()
-        _, faces = translator.get_2D_pattern(container, CONTROL)
+        pattern = extract_pattern(container)
+        _, faces = pattern.base_face, pattern.faces
         np.testing.assert_allclose(faces[0]["dim"], [1e-7, 1e-7, 1-1e-7, 1-1e-7])
         container["vias"] = [dict(feature, koz=0.5)]
-        self.assertEqual(translator.get_2D_pattern(container, CONTROL)[1], [])
-        area = translator.get_3D_pattern(container, CONTROL)[0]["assignments"][0]["areas"][0]
+        self.assertEqual(extract_pattern(container).faces, [])
+        area = plan_layers(extract_assignments(container), [], element_size=CONTROL["globalElementSize"]).layer_infos[0]["assignments"][0]["areas"][0]
         self.assertEqual(area["face"], {"type": "POLYGON", "dim": []})
 
 

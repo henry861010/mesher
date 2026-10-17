@@ -1,1 +1,0 @@
-"""Geometry structure translation internals."""

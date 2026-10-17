@@ -199,10 +199,12 @@ class WorkerIntegrationTests(unittest.TestCase):
         controls = [
             {
                 "method": "Z_SECTION_AVG",
+                "coordinateMode": "reference",
+                "label": "Base die",
                 "reference": {"kind": "container", "key": "hbm"},
                 "elementSize": 0.25,
-                "startZ": {"mode": "absolute", "value": 0},
-                "endZ": {"mode": "absolute", "value": 1},
+                "startZ": {"anchor": "z_min", "offset": 0},
+                "endZ": {"anchor": "z_max", "offset": 0},
             }
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -218,6 +220,27 @@ class WorkerIntegrationTests(unittest.TestCase):
             metadata = json.loads(result.stdout)
             self.assertNotIn("warnings", metadata)
             self.assertGreater(metadata["elementCount"], 1)
+            self.assertTrue(output_path.exists())
+
+    def test_worker_applies_xy_region_cuts_and_writes_refined_cdb(self):
+        controls = [{
+            "method": "3D_REGION", "coordinateMode": "absolute", "label": "XY grid",
+            "elementSize": 0.25, "region": {"type": "box",
+                "min": {"x": 0, "y": 0, "z": -10},
+                "max": {"x": 1, "y": 1, "z": 10},
+            },
+        }]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "geometry.json"
+            output_path = Path(temp_dir) / "mesh.cdb"
+            input_path.write_text(json.dumps(_box_structure()), encoding="utf-8")
+
+            result = self._run_worker(input_path, output_path, controls=controls)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            metadata = json.loads(result.stdout)
+            self.assertEqual(metadata["elementCount"], 16)
+            self.assertEqual(metadata["nodeCount"], 50)
             self.assertTrue(output_path.exists())
 
     def test_worker_does_not_write_partial_output_for_incompatible_circles(self):

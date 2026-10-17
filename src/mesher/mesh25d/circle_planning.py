@@ -14,8 +14,6 @@ from .domain import (
     domain_center_x as _domain_center_x,
     domain_center_y as _domain_center_y,
 )
-from .translation.standard_v1 import _geometry_to_face
-from .translation.koz import inset_face, koz_value
 
 JsonObject = dict[str, Any]
 
@@ -97,44 +95,6 @@ def _collect_circle_patterns(faces: list[JsonObject]) -> list[_CirclePattern]:
     return sorted(patterns)
 
 
-def _collect_circle_source_refs(
-    container: JsonObject,
-    *,
-    koz_only: bool = False,
-) -> dict[_CirclePattern, list[str]]:
-    """Map original/KOZ circles to feature refs, optionally collecting only KOZ."""
-    refs: dict[_CirclePattern, list[str]] = {}
-
-    def visit(current: JsonObject, path: str) -> None:
-        for field in ("bodies", "vias", "circuits", "bumps"):
-            items = current.get(field, [])
-            if not isinstance(items, list):
-                continue
-            for index, item in enumerate(items):
-                if not isinstance(item, dict) or not isinstance(item.get("geometry"), dict):
-                    continue
-                face = _geometry_to_face(item["geometry"])
-                if face.get("type") != "CIRCLE":
-                    continue
-                item_faces = [] if koz_only else [face]
-                if field != "bodies" and koz_value(item) > 0:
-                    inner = inset_face(face, koz_value(item))
-                    if inner is not None:
-                        item_faces.append(inner)
-                source_ref = str(item.get("id") or f"{path}.{field}[{index}]")
-                for item_face in item_faces:
-                    pattern = _circle_pattern_from_face(item_face)
-                    pattern_refs = refs.setdefault(pattern, [])
-                    if source_ref not in pattern_refs:
-                        pattern_refs.append(source_ref)
-        children = current.get("children", [])
-        if isinstance(children, list):
-            for child_index, child in enumerate(children):
-                if isinstance(child, dict):
-                    visit(child, f"{path}.children[{child_index}]")
-
-    visit(container, "root")
-    return refs
 
 
 def _circle_pattern_from_face(face: JsonObject) -> _CirclePattern:

@@ -1,14 +1,14 @@
 import unittest
 
-from mesher.process_flow.circle_planning import (
+from mesher.mesh25d.circle_planning import (
     _CirclePattern,
     _build_circle_meshing_plan,
     _collect_pattern_segments,
-    _collect_circle_source_refs,
     _planar_element_size,
     _validate_circle_clearances,
     _segment_intersects_annulus,
 )
+from mesher.mesh25d.geometry.patterns import extract_pattern
 
 
 def _circle(x, y, radius):
@@ -41,11 +41,10 @@ class CircleMeshingPlanTests(unittest.TestCase):
             "id": "via-1", "koz": 0.2, "geometry": {"type": "CylinderGeometry",
             "center": [0, 0, 0], "bottom_radius": 1, "thk": 1},
         }]}]}
-        refs = _collect_circle_source_refs(container)
-        self.assertEqual(refs[_CirclePattern(0, 0, 1)], ["via-1"])
-        self.assertEqual(refs[_CirclePattern(0, 0, 0.8)], ["via-1"])
-        self.assertEqual(set(_collect_circle_source_refs(container, koz_only=True)),
-                         {_CirclePattern(0, 0, 0.8)})
+        pattern = extract_pattern(container)
+        self.assertEqual(pattern.circle_sources[(0, 0, 1)], ["via-1"])
+        self.assertEqual(pattern.circle_sources[(0, 0, 0.8)], ["via-1"])
+        self.assertEqual(set(pattern.koz_circle_sources), {(0, 0, 0.8)})
 
     def test_collects_box_and_polygon_segments_but_not_circles(self):
         faces = [
