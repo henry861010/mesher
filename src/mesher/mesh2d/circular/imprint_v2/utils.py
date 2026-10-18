@@ -10,10 +10,14 @@ preserved by ``_to_circle`` and inherited from the lowest-index representative
 during node equivalence.
 """
 
+from dataclasses import dataclass
+import warnings
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from ...model import Mesh2D
+from ..utils.geometry import _segments_intersect_xy
 from ..utils.pattern_segments import _PatternGuideSet, _coerce_pattern_guides
 
 
@@ -2363,7 +2367,9 @@ def _remove_redundant_element(
     or equal to ``minimum_area`` are discarded.
 
     Unreferenced nodes are removed and connectivity is compacted.  The update
-    is committed atomically, and the same mesh object is returned.
+    is committed atomically, and the same mesh object is returned. Discarded
+    inverted or self-intersecting cells produce a RuntimeWarning before commit;
+    ordinary degeneracy and area-cutoff removals do not.
 
     Args:
         mesh: Mesh to clean in place.
@@ -2412,8 +2418,10 @@ def _remove_redundant_element(
         raise ValueError("nodes must be representable as float64") from error
     working_elements = elements.astype(np.int64, copy=False)
 
+    discarded = []
     proposed_nodes, proposed_elements, _, _, _ = _cleanup_data(
         working_nodes, working_elements, merge_tolerance, minimum_area,
+        discarded=discarded,
     )
 
     nodes_unchanged = np.array_equal(
@@ -2425,12 +2433,94 @@ def _remove_redundant_element(
     if nodes_unchanged and elements_unchanged:
         return mesh
 
+    _warn_invalid_removals(discarded, stacklevel=3)
     mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
     return mesh
 
 
-def _cleanup_data(working_nodes, working_elements, merge_tolerance, minimum_area):
-    """Return clean arrays, surviving input nodes, representatives, and parent rows."""
+@dataclass(frozen=True)
+class _CleanupRemoval:
+    source: int
+    reason: str
+    xy: tuple[float, float]
+
+
+def _record_invalid_removal(nodes, element, source, discarded):
+    """Classify only discarded geometry, without changing cleanup decisions."""
+    if np.any(element < 0) or np.any(element >= len(nodes)):
+        return
+    perimeter = element[:3] if element[2] == element[3] else element
+    coordinates = nodes[perimeter]
+    if not np.all(np.isfinite(coordinates)):
+        return
+    xy = coordinates[:, :2]
+    # Adjacent coincident vertices are ordinary edge collapse, including the
+    # closing edge. Non-adjacent coincidences may instead describe a fold.
+    xy = xy[np.r_[True, np.any(xy[1:] != xy[:-1], axis=1)]]
+    if len(xy) > 1 and np.array_equal(xy[0], xy[-1]):
+        xy = xy[:-1]
+    if len(xy) < 3 or len(np.unique(xy, axis=0)) < 3:
+        return
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        local = xy - xy[:1]
+    if not np.all(np.isfinite(local)):
+        scaled = xy / np.max(np.abs(xy))
+        local = scaled - scaled[:1]
+    local /= np.max(np.abs(local))
+    tolerance = 128 * np.finfo(float).eps
+    forward = np.roll(local, -1, axis=0) - local
+    backward = np.roll(local, 1, axis=0) - local
+    corners = forward[:, 0] * backward[:, 1] - forward[:, 1] * backward[:, 0]
+    if np.all(np.abs(corners) <= tolerance):
+        return  # Collinear cells are degenerate, even with reversed edges.
+
+    reason = None
+    if len(local) == 4 and (
+        _segments_intersect_xy(local, (0, 1), (2, 3), tolerance)
+        or _segments_intersect_xy(local, (1, 2), (3, 0), tolerance)
+    ):
+        # Check crossing before signed area: the two lobes can cancel exactly.
+        reason = "self-intersecting/folded"
+    else:
+        following = np.roll(local, -1, axis=0)
+        twice_area = np.sum(
+            local[:, 0] * following[:, 1] - local[:, 1] * following[:, 0],
+        )
+        if twice_area < -tolerance:
+            reason = "inverted"
+    if reason is not None:
+        center = 0.5 * xy.min(axis=0) + 0.5 * xy.max(axis=0)
+        discarded.append(_CleanupRemoval(int(source), reason, tuple(map(float, center))))
+
+
+def _warn_invalid_removals(discarded, *, element_rows=None, stacklevel):
+    """Emit one warning with input IDs and deletion locations before commit."""
+    by_source = {
+        int(item.source if element_rows is None else element_rows[item.source]): item
+        for item in discarded
+    }
+    if not by_source:
+        return
+    details = "; ".join(
+        f"element {source} ({item.reason}) at XY=({item.xy[0]:.17g}, {item.xy[1]:.17g})"
+        for source, item in sorted(by_source.items())
+    )
+    warnings.warn(
+        f"Circular imprint cleanup removed {len(by_source)} invalid element(s). "
+        "The mesh may contain holes and requires manual inspection and repair. "
+        "Element IDs are zero-based rows in the input mesh before this call, "
+        "not IDs in the renumbered output mesh. Locations are XY bounding-box "
+        f"centers at deletion. Removed elements: {details}",
+        RuntimeWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def _cleanup_data(
+    working_nodes, working_elements, merge_tolerance, minimum_area, *, discarded=None,
+):
+    """Return clean arrays and provenance; optionally collect abnormal removals."""
     old_to_representative = np.arange(len(working_nodes), dtype=np.int64)
     source_rows = np.empty(0, dtype=np.int64)
     retained = _candidate_element_mask(
@@ -2438,6 +2528,11 @@ def _cleanup_data(working_nodes, working_elements, merge_tolerance, minimum_area
         working_elements,
         minimum_area,
     )
+    if discarded is not None:
+        for source in np.flatnonzero(~retained):
+            _record_invalid_removal(
+                working_nodes, working_elements[source], source, discarded,
+            )
     candidate_elements = working_elements[retained]
 
     if candidate_elements.size:
@@ -2457,7 +2552,16 @@ def _cleanup_data(working_nodes, working_elements, merge_tolerance, minimum_area
             candidate_is_triangle,
             minimum_area,
         )
-        source_rows = np.flatnonzero(retained)[repair_sources]
+        candidate_sources = np.flatnonzero(retained)
+        source_rows = candidate_sources[repair_sources]
+        if discarded is not None:
+            repaired = np.zeros(len(candidate_elements), dtype=np.bool_)
+            repaired[repair_sources] = True
+            for source in np.flatnonzero(~repaired):
+                _record_invalid_removal(
+                    working_nodes, remapped_elements[source],
+                    candidate_sources[source], discarded,
+                )
     else:
         proposed_elements = np.empty((0, 4), dtype=np.int64)
 

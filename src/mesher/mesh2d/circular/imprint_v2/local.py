@@ -22,6 +22,7 @@ from .utils import (
     _normalize_nonnegative,
     _project_circle,
     _split_circle,
+    _warn_invalid_removals,
 )
 
 _BATCH_SIZE = 65_536
@@ -256,8 +257,10 @@ def _run_local_imprint(
             working_nodes[node_ids], inverse.reshape(-1, 4),
         )
         cleanup_started = perf_counter()
+        discarded = []
         cleanup = _cleanup_data(
             working_nodes[node_ids], projected_elements, merge_tolerance, minimum_area,
+            discarded=discarded,
         )
         clean_nodes, clean_elements, surviving, representatives, cleanup_sources = cleanup
         cleanup_seconds += perf_counter() - cleanup_started
@@ -328,6 +331,7 @@ def _run_local_imprint(
     if observer is not None:
         observer("split", result, metadata)
     commit_started = perf_counter()
+    _warn_invalid_removals(discarded, element_rows=rows, stacklevel=4)
     if not (np.array_equal(result.nodes, nodes) and np.array_equal(result.elements, elements)):
         mesh.replace_data(nodes=result.nodes, elements=result.elements)
     data["commit_seconds"] = perf_counter() - commit_started

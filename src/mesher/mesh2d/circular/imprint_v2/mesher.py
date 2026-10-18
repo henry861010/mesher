@@ -59,6 +59,14 @@ def imprint_circle(
         TypeError: If ``mesh`` is not a :class:`Mesh2D`.
         ValueError: If circle, tolerance, guide, or mesh data is invalid, or a
             generated element is unusable.
+
+    Warns:
+        RuntimeWarning: Cleanup discarded inverted or self-intersecting cells.
+            The message lists zero-based input element IDs and XY deletion
+            locations for manual inspection and repair of possible holes.
+            Ordinary degeneracy and area-cutoff removals are silent. Warnings
+            are emitted before commit, so treating a warning as an error leaves
+            the input mesh unchanged.
     """
     return _run_local_imprint(
         mesh, center=center, radius=radius,
