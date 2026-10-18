@@ -347,12 +347,14 @@ def draw_mesh(ax, mesh, missing, parameters, *, label_rows=(), bounds=None):
     ax.tick_params(labelsize=7)
 
 
-def write_plots(output, replays):
+def write_overview(output, replays):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    figure, axes = plt.subplots(2, 5, figsize=(18, 9.2), squeeze=False,
+    columns = min(5, len(replays))
+    rows = (len(replays) + columns - 1) // columns
+    figure, axes = plt.subplots(rows, columns, figsize=(3.6 * columns, 4.6 * rows), squeeze=False,
                                 layout="constrained")
     for ax, (result, snapshots, missing) in zip(axes.flat, replays):
         draw_mesh(ax, snapshots["split"], missing["split"], result["parameters"],
@@ -370,6 +372,12 @@ def write_plots(output, replays):
                    fontsize=14)
     figure.savefig(output / "overview.png", dpi=160)
     plt.close(figure)
+
+
+def write_plots(output, replays):
+    write_overview(output, replays)
+    import matplotlib.pyplot as plt
+
     for result, snapshots, missing in replays:
         figure, axes = plt.subplots(1, 4, figsize=(16, 4.6))
         for ax, name in zip(axes, STAGES, strict=True):

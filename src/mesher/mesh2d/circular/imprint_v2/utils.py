@@ -663,6 +663,108 @@ def _commit_circle_update(
     return mesh
 
 
+def _blocked_radial_paths(
+    candidate_xy, target_xy, radial_movable, guides, tolerances,
+    numerical_tolerance, extension_length,
+):
+    """Find extended finite guides intersecting open, unmerged radial paths.
+
+    Each guide is extended by ``extension_length`` at both ends for this check
+    alone; the shared guide metadata and finite node constraints are unchanged.
+    Guide tolerance decides whether a line intersection lies on the extended
+    segment, including near an endpoint. Only numerical tolerance excludes
+    path endpoints, so reaching a guide on the circle is allowed. Collinear
+    paths are blocked when they overlap the extended segment in their interior.
+    No mesh node or circle intersection is required on the blocking guide.
+
+    Sorted fixed coordinates restrict each path to plausible guides. Flattened
+    pairs are processed in bounded batches even when one path spans many guides.
+    """
+    result = np.zeros(len(candidate_xy), dtype=np.bool_)
+    moving = np.flatnonzero(radial_movable)
+    starts = candidate_xy[moving]
+    ends = target_xy[moving]
+    with np.errstate(over="ignore", invalid="ignore"):
+        deltas = ends - starts
+        lengths = np.hypot(deltas[:, 0], deltas[:, 1])
+    usable = np.isfinite(lengths) & (lengths > 2.0 * numerical_tolerance)
+    moving, starts, ends, deltas, lengths = (
+        values[usable] for values in (moving, starts, ends, deltas, lengths)
+    )
+    if not len(moving):
+        return result
+
+    with np.errstate(over="ignore"):
+        lower_bounds = guides.lower_bounds - extension_length
+        upper_bounds = guides.upper_bounds + extension_length
+    endpoint_fractions = numerical_tolerance / lengths
+    for fixed_axis in (0, 1):
+        varying_axis = 1 - fixed_axis
+        positions = np.flatnonzero(guides.fixed_axes == fixed_axis)
+        if not len(positions):
+            continue
+        order = positions[np.argsort(guides.fixed_values[positions], kind="stable")]
+        fixed_values = guides.fixed_values[order]
+        lookup_tolerance = max(
+            numerical_tolerance, float(np.max(guides.fixed_tolerances[order])),
+        )
+        lower = np.searchsorted(
+            fixed_values,
+            np.minimum(starts[:, fixed_axis], ends[:, fixed_axis]) - lookup_tolerance,
+            side="left",
+        )
+        upper = np.searchsorted(
+            fixed_values,
+            np.maximum(starts[:, fixed_axis], ends[:, fixed_axis]) + lookup_tolerance,
+            side="right",
+        )
+        prefix = np.r_[0, np.cumsum(upper - lower, dtype=np.int64)]
+        for begin in range(0, int(prefix[-1]), _GUIDE_PAIR_BATCH_SIZE):
+            pairs = np.arange(begin, min(begin + _GUIDE_PAIR_BATCH_SIZE, prefix[-1]))
+            nodes = np.searchsorted(prefix, pairs, side="right") - 1
+            paired_guides = order[lower[nodes] + pairs - prefix[nodes]]
+            active = ~result[moving[nodes]]
+            nodes, paired_guides = nodes[active], paired_guides[active]
+            fixed_delta = deltas[nodes, fixed_axis]
+            fixed_offset = (
+                guides.fixed_values[paired_guides] - starts[nodes, fixed_axis]
+            )
+            nonparallel = fixed_delta != 0.0
+            fractions = np.full(len(nodes), np.inf)
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                np.divide(fixed_offset, fixed_delta, out=fractions, where=nonparallel)
+            interior = (
+                nonparallel
+                & (fractions > endpoint_fractions[nodes])
+                & (fractions < 1.0 - endpoint_fractions[nodes])
+            )
+            hits, hit_guides = nodes[interior], paired_guides[interior]
+            intersections = (
+                starts[hits, varying_axis]
+                + fractions[interior] * deltas[hits, varying_axis]
+            )
+            endpoint_distances = np.maximum(
+                np.maximum(lower_bounds[hit_guides] - intersections, 0.0),
+                intersections - upper_bounds[hit_guides],
+            )
+            on_segment = endpoint_distances <= tolerances[hit_guides]
+            result[moving[hits[on_segment]]] = True
+
+            collinear = (~nonparallel) & (
+                np.abs(fixed_offset)
+                <= np.maximum(numerical_tolerance, guides.fixed_tolerances[paired_guides])
+            )
+            hits, hit_guides = nodes[collinear], paired_guides[collinear]
+            path_lower = np.minimum(starts[hits, varying_axis], ends[hits, varying_axis])
+            path_upper = np.maximum(starts[hits, varying_axis], ends[hits, varying_axis])
+            overlap = (
+                np.maximum(path_lower + numerical_tolerance, lower_bounds[hit_guides])
+                < np.minimum(path_upper - numerical_tolerance, upper_bounds[hit_guides])
+            )
+            result[moving[hits[overlap]]] = True
+    return result
+
+
 def _blocked_guide_paths(
     candidate_xy, target_xy, guided_movable, guides, tolerances,
     roots, valid_roots, root_tolerances, numerical_tolerance, constraint_nodes,
@@ -782,7 +884,7 @@ def _to_circle(
     projection_tolerance: float, guide_tolerance: float, guide_segments,
     indices: ArrayLike | None = None,
 ) -> Mesh2D:
-    """Project circle-band nodes without crossing fixed guide junctions.
+    """Project circle-band nodes with radial and fixed-junction guide barriers.
 
     Element selections limit movable nodes, not the read-only blocker search.
     All orientable element rows are normalized counter-clockwise.
@@ -809,7 +911,14 @@ def _project_circle(
     while ``guide_tolerance`` is an absolute distance tolerance for deciding
     whether a candidate lies on a finite pattern segment. It is an on-segment
     membership tolerance, not a radius for finding nearby nodes.
-    Unconstrained nodes move radially. A
+    Unconstrained nodes move radially unless the open path to their radial
+    circle target intersects a guide extended by ``projection_tolerance`` at
+    each end. This extension is used only for the radial path check; guide
+    membership and constrained targets still use the original finite segments.
+    Intersection membership on the extended guide uses
+    ``guide_tolerance``; numerical tolerance excludes the path endpoints, so
+    reaching a guide at the target is allowed. Blocked nodes retain their
+    coordinates and do not participate in target merging. A
     constrained node moves to the nearest finite-segment/circle intersection
     only when every segment touching it agrees on the same target; otherwise
     that node is left alone. Paths crossing stationary two-axis guide nodes
@@ -817,7 +926,7 @@ def _project_circle(
     clockwise from the positive X axis. A target strictly closer than
     ``projection_tolerance`` to the current representative receives the same
     XY coordinate.  Guide targets remain fixed and take precedence over nearby
-    unconstrained targets.
+    unconstrained targets. The merged paths are not rechecked for crossings.
 
     When ``indices`` is provided it contains element-row indices, and only
     nodes referenced by those elements are considered for projection.  ``None``
@@ -832,7 +941,8 @@ def _project_circle(
         center: Two finite coordinates for the circle center.
         radius: Strictly positive circle radius.
         projection_tolerance: Non-negative radial distance from the circle to
-            process and merge distance between projected circle targets.
+            process, merge distance between projected circle targets, and
+            extension at each guide endpoint for radial path barriers.
         guide_tolerance: Non-negative absolute Euclidean point-to-segment
             tolerance, in model coordinate units, for on-segment membership,
             not for finding nodes in the segment's neighborhood.
@@ -859,8 +969,9 @@ def _project_circle(
         3. Precompute guide/circle roots and accumulate sparse guide matches.
         4. Radially project free nodes; accept a constrained target only when
            every touching guide agrees.  Missing, ambiguous, or conflicting
-           constraints leave that node unchanged. A guided path crossing a
-           stationary two-axis junction also leaves the node unchanged.
+           constraints leave that node unchanged. A radial path intersecting a
+           extended finite guide, or a guided path crossing a stationary two-axis
+           junction, also leaves the node unchanged and out of target merging.
         5. Merge nearby movable targets in a clockwise circular sweep while
            preserving guide anchors.
         6. Validate every proposed target.
@@ -1060,6 +1171,16 @@ def _project_circle(
             / candidate_distances[radial_positions, None]
         )
     target_xy[guided_movable] = reference_targets[guided_movable]
+
+    if len(pattern_guides) and np.any(radial_movable):
+        path_blocked = _blocked_radial_paths(
+            candidate_xy, target_xy, radial_movable, pattern_guides,
+            effective_guide_tolerances, numerical_tolerance,
+            extension_length=radial_tolerance,
+        )
+        radial_movable[path_blocked] = False
+        movable[path_blocked] = False
+        target_xy[path_blocked] = candidate_xy[path_blocked]
 
     if np.any(guided_movable):
         path_blocked = _blocked_guide_paths(

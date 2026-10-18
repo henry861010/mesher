@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Ten full-circle imprint_v2 inspection cases at radius 300000 and target element size 5000, using current pipeline parameters. Entire input grids have edge spacing at most 5000; local fine spacing is retained. Cases remain available for inspection even when they pass.",
+  "description": "Twenty full-circle imprint_v2 inspection cases at radius 300000 and target element size 5000, using current pipeline parameters. case_01 through case_10 are preserved resolved cases; case_11 through case_20 reproduce newly discovered internal holes. Entire input grids have edge spacing at most 5000; local fine spacing is retained.",
   "context": {
     "circle_radius": 300000.0,
     "planar_element_size": 5000.0,
@@ -814,6 +814,1264 @@
         -205600.69509666666,
         216157.53405
       ]
+    },
+    {
+      "id": "case_11",
+      "source_seed": 100014,
+      "angle_degrees": 30.24190000362466,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          237172.01477,
+          246852.25052,
+          251573.49523,
+          251673.49523,
+          253943.55358,
+          265518.18036,
+          271223.17116,
+          273750.55149,
+          281172.01477,
+          281182.01477,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          129095.55506,
+          137175.69597,
+          139279.7861,
+          139279.8861,
+          141364.59748,
+          141366.59748,
+          147083.096,
+          152477.4492,
+          152527.4492,
+          173095.55506,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              251573.49523,
+              129095.55506
+            ],
+            [
+              251573.49523,
+              173095.55506
+            ]
+          ],
+          [
+            [
+              265518.18036,
+              141364.59748
+            ],
+            [
+              265518.18036,
+              152477.4492
+            ]
+          ],
+          [
+            [
+              271223.17116,
+              139279.8861
+            ],
+            [
+              281182.01477,
+              139279.8861
+            ]
+          ],
+          [
+            [
+              237172.01477,
+              152477.4492
+            ],
+            [
+              281182.01477,
+              152477.4492
+            ]
+          ],
+          [
+            [
+              253943.55358,
+              137175.69597
+            ],
+            [
+              281172.01477,
+              137175.69597
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 0.10000000000582077,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18224
+      },
+      "inspection_bounds": [
+        250073.49523,
+        159254.691544,
+        253173.49523,
+        170481.933888
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 2,
+        "closed_hole_area": 56703.76962326554,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_12",
+      "source_seed": 100017,
+      "angle_degrees": 74.95923139122397,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          55851.88419,
+          70436.06532,
+          76421.34084,
+          79806.70021,
+          81311.13944,
+          83020.97567,
+          90239.22333,
+          90248.22333,
+          90838.2746,
+          99851.88419,
+          99851.98419,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          267722.426,
+          275909.29214,
+          277109.93349,
+          279195.56273,
+          284690.41056,
+          284790.41056,
+          284795.41056,
+          293657.47317,
+          293757.47317,
+          300000.0,
+          311722.426,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              90248.22333,
+              267722.426
+            ],
+            [
+              90248.22333,
+              311722.426
+            ]
+          ],
+          [
+            [
+              79806.70021,
+              267722.426
+            ],
+            [
+              79806.70021,
+              311722.426
+            ]
+          ],
+          [
+            [
+              55851.88419,
+              293657.47317
+            ],
+            [
+              99851.98419,
+              293657.47317
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 0.10000000000582077,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18496
+      },
+      "inspection_bounds": [
+        68409.3461927249,
+        292157.47317,
+        71936.06532,
+        295257.47317
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 1,
+        "closed_hole_area": 26335.956363754667,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_13",
+      "source_seed": 100059,
+      "angle_degrees": 1.6986667339680463,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          277868.16505,
+          284534.71318,
+          289996.16929,
+          294762.71799,
+          298694.43353,
+          298695.43353,
+          298696.43353,
+          300000.0,
+          300240.80661,
+          305840.14739,
+          306158.29667,
+          306408.29667,
+          308091.71549,
+          313820.2605,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          -13107.10467,
+          -3872.29984,
+          -3862.29984,
+          6531.05906,
+          6532.05906,
+          7370.85158,
+          15381.17681,
+          20935.651,
+          21435.651,
+          21485.651,
+          30892.89533,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              313820.2605,
+              -13107.10467
+            ],
+            [
+              313820.2605,
+              30892.89533
+            ]
+          ],
+          [
+            [
+              284534.71318,
+              15381.17681
+            ],
+            [
+              284534.71318,
+              30892.89533
+            ]
+          ],
+          [
+            [
+              305840.14739,
+              -13107.10467
+            ],
+            [
+              305840.14739,
+              -3862.29984
+            ]
+          ],
+          [
+            [
+              298696.43353,
+              -3862.29984
+            ],
+            [
+              300240.80661,
+              -3862.29984
+            ]
+          ],
+          [
+            [
+              277868.16505,
+              6532.05906
+            ],
+            [
+              321968.16505,
+              6532.05906
+            ]
+          ],
+          [
+            [
+              277868.16505,
+              21435.651
+            ],
+            [
+              298694.43353,
+              21435.651
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 1.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18904
+      },
+      "inspection_bounds": [
+        293262.71799,
+        19435.651,
+        300056.83519806317,
+        22935.651
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 1,
+        "closed_hole_area": 948529.3020157987,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_14",
+      "source_seed": 100094,
+      "angle_degrees": 224.62474990396097,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          -235516.80172,
+          -224448.478,
+          -222937.32918,
+          -222932.32918,
+          -222266.21762,
+          -217309.9585,
+          -209118.06439,
+          -208225.73345,
+          -204631.22376,
+          -204428.50744,
+          -191516.80172,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          -232738.16784,
+          -225998.05162,
+          -213826.64476,
+          -212747.25538,
+          -208490.01176,
+          -205654.62442,
+          -203096.51549,
+          -202100.80363,
+          -199545.24853,
+          -199495.24853,
+          -188738.16784,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              -222932.32918,
+              -202100.80363
+            ],
+            [
+              -222932.32918,
+              -199545.24853
+            ]
+          ],
+          [
+            [
+              -224448.478,
+              -232738.16784
+            ],
+            [
+              -224448.478,
+              -188738.16784
+            ]
+          ],
+          [
+            [
+              -222937.32918,
+              -212747.25538
+            ],
+            [
+              -222937.32918,
+              -188738.16784
+            ]
+          ],
+          [
+            [
+              -209118.06439,
+              -208490.01176
+            ],
+            [
+              -209118.06439,
+              -205654.62442
+            ]
+          ],
+          [
+            [
+              -235516.80172,
+              -199495.24853
+            ],
+            [
+              -224448.478,
+              -199495.24853
+            ]
+          ],
+          [
+            [
+              -235516.80172,
+              -225998.05162
+            ],
+            [
+              -224448.478,
+              -225998.05162
+            ]
+          ],
+          [
+            [
+              -235516.80172,
+              -205654.62442
+            ],
+            [
+              -191516.80172,
+              -205654.62442
+            ]
+          ],
+          [
+            [
+              -235516.80172,
+              -208490.01176
+            ],
+            [
+              -191516.80172,
+              -208490.01176
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 5.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18225
+      },
+      "inspection_bounds": [
+        -225948.478,
+        -201045.24853,
+        -220766.21762,
+        -197995.24853
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 2,
+        "closed_hole_area": 2180.989454234077,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_15",
+      "source_seed": 100098,
+      "angle_degrees": 30.43651408785796,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          236657.30099,
+          252417.40007,
+          254167.15093,
+          255678.42103,
+          255687.42103,
+          256983.41127,
+          259382.587,
+          264513.22159,
+          265860.22737,
+          269023.7067,
+          269273.7067,
+          269412.71845,
+          280657.30099,
+          280658.30099,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          129975.00007,
+          136724.3588,
+          136774.3588,
+          143350.46866,
+          150419.5781,
+          150919.5781,
+          162473.97507,
+          162478.97507,
+          173975.00007,
+          173975.10007,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              269273.7067,
+              129975.00007
+            ],
+            [
+              269273.7067,
+              173975.10007
+            ]
+          ],
+          [
+            [
+              269023.7067,
+              162473.97507
+            ],
+            [
+              269023.7067,
+              162478.97507
+            ]
+          ],
+          [
+            [
+              264513.22159,
+              136774.3588
+            ],
+            [
+              264513.22159,
+              173975.10007
+            ]
+          ],
+          [
+            [
+              269412.71845,
+              136724.3588
+            ],
+            [
+              269412.71845,
+              162473.97507
+            ]
+          ],
+          [
+            [
+              236657.30099,
+              162473.97507
+            ],
+            [
+              280658.30099,
+              162473.97507
+            ]
+          ],
+          [
+            [
+              255678.42103,
+              150919.5781
+            ],
+            [
+              265860.22737,
+              150919.5781
+            ]
+          ],
+          [
+            [
+              255678.42103,
+              150419.5781
+            ],
+            [
+              264513.22159,
+              150419.5781
+            ]
+          ],
+          [
+            [
+              259382.587,
+              143350.46866
+            ],
+            [
+              265860.22737,
+              143350.46866
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 0.09999999997671694,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18904
+      },
+      "inspection_bounds": [
+        267773.7067,
+        134443.99465498346,
+        270912.71845,
+        138224.3588
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 1,
+        "closed_hole_area": 54239.89271800284,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_16",
+      "source_seed": 100119,
+      "angle_degrees": 4.825989947669843,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          276936.43988,
+          283979.26163,
+          284079.26163,
+          284193.81535,
+          284243.81535,
+          290030.66061,
+          299029.09297,
+          299129.09297,
+          300000.0,
+          300322.25082,
+          313337.01067,
+          313587.01067,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          3238.9562,
+          14393.31305,
+          22032.44879,
+          27183.75927,
+          30235.92041,
+          30485.92041,
+          40796.82445,
+          47238.9562,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              299029.09297,
+              30235.92041
+            ],
+            [
+              299029.09297,
+              30485.92041
+            ]
+          ],
+          [
+            [
+              284243.81535,
+              3238.9562
+            ],
+            [
+              284243.81535,
+              47238.9562
+            ]
+          ],
+          [
+            [
+              284193.81535,
+              3238.9562
+            ],
+            [
+              284193.81535,
+              47238.9562
+            ]
+          ],
+          [
+            [
+              284079.26163,
+              30235.92041
+            ],
+            [
+              284079.26163,
+              40796.82445
+            ]
+          ],
+          [
+            [
+              284079.26163,
+              22032.44879
+            ],
+            [
+              299129.09297,
+              22032.44879
+            ]
+          ],
+          [
+            [
+              276936.43988,
+              30235.92041
+            ],
+            [
+              283979.26163,
+              30235.92041
+            ]
+          ],
+          [
+            [
+              276936.43988,
+              14393.31305
+            ],
+            [
+              320936.43988,
+              14393.31305
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 50.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18492
+      },
+      "inspection_bounds": [
+        296588.0228038367,
+        30168.35177315991,
+        300629.09297,
+        35422.88842333333
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 1,
+        "closed_hole_area": 1150391.4991985746,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_17",
+      "source_seed": 100131,
+      "angle_degrees": 30.323887215513572,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          236955.53981,
+          244108.29975,
+          244724.37212,
+          256827.98973,
+          256836.98973,
+          259958.71836,
+          260258.22528,
+          260260.22528,
+          261752.79799,
+          262252.79799,
+          280955.53981,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          129466.2616,
+          145485.25898,
+          146666.97014,
+          146667.07014,
+          146875.88884,
+          150775.72612,
+          155534.50151,
+          155634.50151,
+          159554.44063,
+          159554.54063,
+          173466.2616,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              256827.98973,
+              129466.2616
+            ],
+            [
+              256827.98973,
+              173466.2616
+            ]
+          ],
+          [
+            [
+              256836.98973,
+              146666.97014
+            ],
+            [
+              256836.98973,
+              146875.88884
+            ]
+          ],
+          [
+            [
+              236955.53981,
+              155534.50151
+            ],
+            [
+              280955.53981,
+              155534.50151
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 0.10000000000582077,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18360
+      },
+      "inspection_bounds": [
+        256363.4373677765,
+        154034.50151,
+        261458.71836,
+        157134.50151
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 1,
+        "closed_hole_area": 104764.04961117514,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_18",
+      "source_seed": 100138,
+      "angle_degrees": 90.06834661332033,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          -22357.86195,
+          -14822.07459,
+          -11508.23166,
+          -11499.23166,
+          -8250.6548,
+          -8250.6448,
+          -7289.18738,
+          -6202.43813,
+          10382.75681,
+          10846.22854,
+          10891.54983,
+          10991.54983,
+          15596.8093,
+          21642.13805,
+          21742.13805,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          277999.78656,
+          300000.0,
+          300196.90388,
+          300205.90388,
+          304786.87687,
+          305383.04571,
+          315835.08471,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              21642.13805,
+              300196.90388
+            ],
+            [
+              21642.13805,
+              304786.87687
+            ]
+          ],
+          [
+            [
+              10846.22854,
+              277999.78656
+            ],
+            [
+              10846.22854,
+              321999.78656
+            ]
+          ],
+          [
+            [
+              -22357.86195,
+              304786.87687
+            ],
+            [
+              21742.13805,
+              304786.87687
+            ]
+          ],
+          [
+            [
+              -22357.86195,
+              300196.90388
+            ],
+            [
+              21742.13805,
+              300196.90388
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 0.010000000000218279,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18487
+      },
+      "inspection_bounds": [
+        20142.13805,
+        299722.11096524185,
+        23242.13805,
+        306286.87687
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 1,
+        "closed_hole_area": 178238.29523790628,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_19",
+      "source_seed": 100142,
+      "angle_degrees": 14.17105166811366,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          268870.74985,
+          275984.31039,
+          275984.41039,
+          288719.03034,
+          288794.59601,
+          289411.06872,
+          289929.28501,
+          289934.28501,
+          300000.0,
+          312870.74985,
+          312870.75985,
+          312879.74985,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          51445.26453,
+          66977.94377,
+          66987.94377,
+          67477.94377,
+          70241.86389,
+          71066.2451,
+          73382.74834,
+          95445.26453,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              312870.75985,
+              67477.94377
+            ],
+            [
+              312870.75985,
+              95445.26453
+            ]
+          ],
+          [
+            [
+              275984.31039,
+              51445.26453
+            ],
+            [
+              275984.31039,
+              95445.26453
+            ]
+          ],
+          [
+            [
+              288794.59601,
+              51445.26453
+            ],
+            [
+              288794.59601,
+              95445.26453
+            ]
+          ],
+          [
+            [
+              275984.41039,
+              51445.26453
+            ],
+            [
+              275984.41039,
+              95445.26453
+            ]
+          ],
+          [
+            [
+              268870.74985,
+              70241.86389
+            ],
+            [
+              312879.74985,
+              70241.86389
+            ]
+          ],
+          [
+            [
+              268870.74985,
+              73382.74834
+            ],
+            [
+              312879.74985,
+              73382.74834
+            ]
+          ],
+          [
+            [
+              268870.74985,
+              67477.94377
+            ],
+            [
+              312879.74985,
+              67477.94377
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 0.009999999951105565,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18492
+      },
+      "inspection_bounds": [
+        287219.03034,
+        71882.74834,
+        290294.59601,
+        75254.17651589446
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 1,
+        "closed_hole_area": 14033.60948416783,
+        "invalid_element_count": 0
+      }
+    },
+    {
+      "id": "case_20",
+      "source_seed": 100170,
+      "angle_degrees": 45.29538479154873,
+      "parameters": {
+        "grid_x_list": [
+          -320000.0,
+          -300000.0,
+          189035.58675,
+          196450.85326,
+          196459.85326,
+          200888.83956,
+          201460.06409,
+          206117.35638,
+          208659.91545,
+          209386.7002,
+          216944.16617,
+          216949.16617,
+          233035.58675,
+          300000.0,
+          320000.0
+        ],
+        "y_list": [
+          -320000.0,
+          -300000.0,
+          191222.84381,
+          197445.30298,
+          197695.30298,
+          199639.89947,
+          199739.89947,
+          200809.5774,
+          210154.6436,
+          211616.87607,
+          217165.48899,
+          218559.66768,
+          218568.66768,
+          221744.83431,
+          222244.83431,
+          223235.78727,
+          235222.84381,
+          300000.0,
+          320000.0
+        ],
+        "grid_circler_center_coordinate": [
+          0.0,
+          0.0
+        ],
+        "circle_radius": 300000.0,
+        "target_edge_size": 5000.0,
+        "coordinate_tolerance": 0.001,
+        "projection_tolerance": 1000.0,
+        "guide_tolerance": 5.0,
+        "merge_tolerance": 10.0,
+        "minimum_area": 10000.0,
+        "guide_segments": [
+          [
+            [
+              189035.58675,
+              197695.30298
+            ],
+            [
+              233035.58675,
+              197695.30298
+            ]
+          ],
+          [
+            [
+              189035.58675,
+              211616.87607
+            ],
+            [
+              233035.58675,
+              211616.87607
+            ]
+          ],
+          [
+            [
+              189035.58675,
+              222244.83431
+            ],
+            [
+              233035.58675,
+              222244.83431
+            ]
+          ]
+        ]
+      },
+      "mesh_profile": {
+        "radius_to_target_edge_size": 60.0,
+        "minimum_grid_spacing": 5.0,
+        "maximum_grid_spacing": 5000.0,
+        "original_element_count": 18765
+      },
+      "inspection_bounds": [
+        194950.85326,
+        220244.83431,
+        199634.3639269128,
+        223744.83431
+      ],
+      "discovery": {
+        "method": "seeded fine-grid and finite-guide fuzzing; public imprint_circle; independent Shapely coverage",
+        "closed_hole_count": 1,
+        "closed_hole_area": 420877.6667282,
+        "invalid_element_count": 0
+      }
     }
   ]
 }

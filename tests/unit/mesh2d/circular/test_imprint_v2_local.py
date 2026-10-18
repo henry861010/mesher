@@ -10,7 +10,8 @@ from mesher import Mesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.circular.imprint_v2 import imprint_circle
 from mesher.mesh2d.circular.imprint_v2.local import _circle_patch_rows, _run_local_imprint
-from mesher.mesh2d.circular.imprint_v2.utils import _to_circle
+from mesher.mesh2d.circular.imprint_v2.utils import _blocked_radial_paths, _to_circle
+from mesher.mesh2d.circular.utils.pattern_segments import _PatternGuideSet
 
 
 def run(mesh, **overrides):
@@ -100,6 +101,187 @@ class GuideBarrierTests(unittest.TestCase):
         self.assertEqual(stats['patch_elements'], 1)
         self.assertTrue(np.any(np.all(mesh.nodes[:, :2] == [.95, 0.], axis=1)))
         np.testing.assert_array_equal(mesh.nodes[mesh.elements[1]], remote)
+
+
+class RadialGuideBarrierTests(unittest.TestCase):
+    @staticmethod
+    def project(
+        nodes, guides, guide_tolerance=0., elements=None, indices=None,
+        projection_tolerance=.1,
+    ):
+        if elements is None:
+            elements = np.empty((0, 4), dtype=np.int32)
+        mesh = Mesh2D(nodes, elements)
+        _to_circle(mesh, [0., 0.], 1., projection_tolerance, guide_tolerance, guides, indices)
+        return mesh
+
+    def test_blocks_both_axes_inward_and_outward_without_a_guide_node(self):
+        for axis in (0, 1):
+            for sign in (-1, 1):
+                for distance in (.95, 1.05):
+                    with self.subTest(axis=axis, sign=sign, distance=distance):
+                        source = np.array([0., 0., 7.])
+                        source[axis] = sign * distance
+                        guide = np.zeros((2, 2))
+                        guide[:, axis] = sign * (1. + distance) / 2.
+                        guide[:, 1-axis] = [-.2, .2]
+                        mesh = self.project([source], [guide])
+                        np.testing.assert_array_equal(mesh.nodes, [source])
+
+    def test_diagonal_path_checks_finite_guides_without_circle_roots(self):
+        source = [0.63, 0.84, 8.]
+        # This entire segment is outside the circle; the radial path crosses it.
+        guides = [[[.615, .81], [.615, .83]]]
+        mesh = self.project([source], guides)
+        np.testing.assert_array_equal(mesh.nodes, [source])
+
+    def test_extended_endpoints_use_guide_tolerance_on_both_axes_and_ends(self):
+        extension, tolerance = .125, .0078125
+        for offset, blocked in (
+            (0., True), (extension, True), (extension + tolerance / 2., True),
+            (extension + tolerance, True), (extension + 2. * tolerance, False),
+        ):
+            for axis in (0, 1):
+                for sign in (-1, 1):
+                    with self.subTest(offset=offset, axis=axis, sign=sign):
+                        source = np.array([0., 0., 7.])
+                        source[axis] = 1.05
+                        guide = np.zeros((2, 2))
+                        guide[:, axis] = 1.025
+                        guide[:, 1-axis] = [sign * offset, sign * .5]
+                        # Duplicates and reversed endpoints have the same effect.
+                        mesh = self.project(
+                            [source], [guide[::-1], guide], tolerance,
+                            projection_tolerance=extension,
+                        )
+                        expected = source.copy()
+                        if not blocked:
+                            expected[axis] = 1.
+                        np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
+
+    def test_extension_tracks_projection_tolerance(self):
+        source = [1.01, 0., 7.]
+        guide = [[[1.005, .05], [1.005, .06]]]
+        for tolerance, blocked in ((.02, False), (.1, True)):
+            with self.subTest(projection_tolerance=tolerance):
+                mesh = self.project([source], guide, projection_tolerance=tolerance)
+                expected = source if blocked else [1., 0., 7.]
+                np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
+
+    def test_zero_extension_retains_finite_barriers_and_shared_metadata(self):
+        starts, ends = np.array([[1.01, 0.]]), np.array([[1., 0.]])
+        for lower, blocked in ((-.01, True), (.05, False)):
+            with self.subTest(lower=lower):
+                guides = _PatternGuideSet.from_values(
+                    [[[1.005, lower], [1.005, .1]]], coordinate_scale=1.,
+                )
+                segments = guides.segments.copy()
+                bounds = guides.lower_bounds.copy(), guides.upper_bounds.copy()
+                actual = _blocked_radial_paths(
+                    starts, ends, np.array([True]), guides, np.array([1e-12]),
+                    1e-12, extension_length=0.,
+                )
+                np.testing.assert_array_equal(actual, [blocked])
+                actual = _blocked_radial_paths(
+                    starts, ends, np.array([True]), guides, np.array([1e-12]),
+                    1e-12, extension_length=.1,
+                )
+                np.testing.assert_array_equal(actual, [True])
+                np.testing.assert_array_equal(guides.segments, segments)
+                np.testing.assert_array_equal(guides.lower_bounds, bounds[0])
+                np.testing.assert_array_equal(guides.upper_bounds, bounds[1])
+
+    def test_diagonal_crossing_beyond_original_endpoint_is_blocked(self):
+        source = [0.63, 0.84, 8.]
+        mesh = self.project([source], [[[.615, .90], [.615, 1.]]])
+        np.testing.assert_array_equal(mesh.nodes, [source])
+
+    def test_extended_barriers_do_not_extend_node_membership_or_circle_roots(self):
+        source = [1.05, 0., 8.]
+        guides = _PatternGuideSet.from_values(
+            [[[.95, 0.], [.96, 0.]]], coordinate_scale=1.,
+        )
+        # The start lies only on the extension, so it remains a free node.
+        # Its radial path overlaps the extended guide and must be blocked,
+        # rather than acquiring the extended segment's circle root [1, 0].
+        mesh = self.project([source], guides)
+        np.testing.assert_array_equal(mesh.nodes, [source])
+
+    def test_only_numerical_tolerance_excludes_path_endpoints(self):
+        for fixed, blocked in ((1., False), (1. + 1e-14, False), (1.001, True)):
+            with self.subTest(fixed=fixed):
+                source = [1.05, 0., 9.]
+                mesh = self.project([source], [[[fixed, -.2], [fixed, .2]]], .005)
+                expected = source if blocked else [1., 0., 9.]
+                np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
+
+    def test_guides_beyond_the_path_and_parallel_segments_do_not_block(self):
+        source = [1.05, 0., 7.]
+        guides = [
+            [[.98, -.1], [.98, .1]], [[1.1, -.1], [1.1, .1]],
+            [[1.01, .03], [1.03, .03]],
+        ]
+        mesh = self.project([source], guides, .005)
+        np.testing.assert_allclose(mesh.nodes, [[1., 0., 7.]], rtol=0, atol=1e-15)
+
+    def test_collinear_overlap_uses_extended_bounds_and_allows_target_contact(self):
+        for source_x, bounds, blocked in (
+            (1.05, [1.01, 1.03], True), (.95, [.97, .99], True),
+            (1.05, [1.1, 1.13], True), (1.05, [.7, .9], False),
+            (.95, [1.1, 1.3], False),
+        ):
+            with self.subTest(source_x=source_x, bounds=bounds):
+                source = [source_x, 0., 6.]
+                mesh = self.project([source], [[[bounds[0], 0.], [bounds[1], 0.]]], .005)
+                expected = source if blocked else [1., 0., 6.]
+                np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
+
+    def test_blocked_node_cannot_participate_in_target_merging(self):
+        source = [1.05, 0., 7.]
+        neighbour = [1.05 * np.cos(-.03), 1.05 * np.sin(-.03), 9.]
+        mesh = self.project([source, neighbour], [[[1.025, .09], [1.025, .1]]])
+        np.testing.assert_array_equal(mesh.nodes[0], source)
+        np.testing.assert_allclose(mesh.nodes[1], [np.cos(-.03), np.sin(-.03), 9.])
+
+    def test_selection_limits_movement_and_repeated_projection_is_stable(self):
+        nodes = [[1.05, 0., 7.], [1.04, .1, 8.],
+                 [1.05 * np.cos(-.03), 1.05 * np.sin(-.03), 9.], [2., 2., 10.]]
+        guides = [[[1.025, .09], [1.025, .1]]]
+        mesh = self.project(nodes, guides, elements=[[0, 2, 3, 3]], indices=[0])
+        np.testing.assert_array_equal(mesh.nodes[[0, 1, 3]], np.asarray(nodes)[[0, 1, 3]])
+        np.testing.assert_allclose(mesh.nodes[2], [np.cos(-.03), np.sin(-.03), 9.])
+        projected = mesh.nodes.copy()
+        _to_circle(mesh, [0., 0.], 1., .1, 0., guides, indices=[0])
+        np.testing.assert_array_equal(mesh.nodes, projected)
+
+    def test_original_radial_path_is_checked_before_target_merging_only(self):
+        anchor = [np.cos(.02), np.sin(.02)]
+        guides = [
+            [[.9999, .005], [.9999, .03]],
+            [[.998, anchor[1]], [.99985, anchor[1]]],
+        ]
+        mesh = self.project([[1.05, 0.], anchor], guides)
+        # The radial target [1, 0] is safe. The existing merge to the guide
+        # anchor crosses the vertical guide and is deliberately not rechecked.
+        np.testing.assert_allclose(mesh.nodes[:, :2], [anchor, anchor])
+
+    def test_sparse_pairs_are_batched_even_when_one_path_spans_many_guides(self):
+        guides = [[[x, .13], [x, .14]] for x in np.linspace(1.01, 1.04, 9)]
+        guides.append([[1.025, .09], [1.025, .1]])
+        nodes = [[1.05, 0.], [0., 1.05], [1.05 * np.cos(-.02), 1.05 * np.sin(-.02)]]
+        with patch('mesher.mesh2d.circular.imprint_v2.utils._GUIDE_PAIR_BATCH_SIZE', 2):
+            mesh = self.project(nodes, guides)
+        np.testing.assert_array_equal(mesh.nodes[0, :2], nodes[0])
+        np.testing.assert_allclose(mesh.nodes[1, :2], [0., 1.])
+        np.testing.assert_allclose(mesh.nodes[2, :2], [np.cos(-.02), np.sin(-.02)])
+
+    def test_large_offset_circle_uses_local_path_geometry(self):
+        center = np.array([1e9, -1e9])
+        source = center + [1.05, 0.]
+        mesh = Mesh2D([source], np.empty((0, 4), dtype=np.int32))
+        guide = center + [[1.025, -.2], [1.025, .2]]
+        _to_circle(mesh, center, 1., .1, 0., [guide])
+        np.testing.assert_array_equal(mesh.nodes[:, :2], [source])
 
 
 class LocalPatchTests(unittest.TestCase):
@@ -215,6 +397,48 @@ class LocalPatchTests(unittest.TestCase):
         snapshots = diagnostics.execute_stages(case['parameters'])
         np.testing.assert_array_equal(snapshots['projection'].nodes[[12496, 12497]], snapshots['original'].nodes[[12496, 12497]])
         metrics, _ = diagnostics.measure(snapshots['split'], diagnostics.box(-320000., -320000., 320000., 320000.), 40.96)
+        self.assertEqual(metrics['invalid_element_rows'], [])
+        self.assertEqual(metrics['closed_hole_count'], 0)
+        self.assertLessEqual(metrics['missing_area'], 40.96)
+        self.assertLessEqual(metrics['overlap_area'], 40.96)
+
+    def test_case_12_radial_crossing_is_blocked_and_preserves_coverage(self):
+        if not importlib.util.find_spec('shapely'):
+            self.skipTest('requires optional Shapely diagnostics')
+        filename = Path(__file__).resolve().parents[4] / 'examples/failures/imprint_v2_holes/diagnose.py'
+        spec = importlib.util.spec_from_file_location('radial_diagnostics', filename)
+        diagnostics = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(diagnostics)
+        case = next(case for case in diagnostics.load_cases() if case['id'] == 'case_12')
+        snapshots = diagnostics.execute_stages(case['parameters'])
+        projected = snapshots['projection']
+        np.testing.assert_array_equal(projected.nodes[17751], snapshots['original'].nodes[17751])
+        element = projected.elements[17486]
+        self.assertTrue(diagnostics.Polygon(projected.nodes[element, :2]).is_valid)
+        metrics, _ = diagnostics.measure(
+            snapshots['split'], diagnostics.box(-320000., -320000., 320000., 320000.), 40.96,
+        )
+        self.assertEqual(metrics['invalid_element_rows'], [])
+        self.assertEqual(metrics['closed_hole_count'], 0)
+        self.assertLessEqual(metrics['missing_area'], 40.96)
+        self.assertLessEqual(metrics['overlap_area'], 40.96)
+
+    def test_case_16_crossing_beyond_guide_endpoint_is_blocked(self):
+        if not importlib.util.find_spec('shapely'):
+            self.skipTest('requires optional Shapely diagnostics')
+        filename = Path(__file__).resolve().parents[4] / 'examples/failures/imprint_v2_holes/diagnose.py'
+        spec = importlib.util.spec_from_file_location('extended_radial_diagnostics', filename)
+        diagnostics = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(diagnostics)
+        case = next(case for case in diagnostics.load_cases() if case['id'] == 'case_16')
+        snapshots = diagnostics.execute_stages(case['parameters'])
+        projected = snapshots['projection']
+        np.testing.assert_array_equal(projected.nodes[10277], snapshots['original'].nodes[10277])
+        element = projected.elements[10203]
+        self.assertTrue(diagnostics.Polygon(projected.nodes[element, :2]).is_valid)
+        metrics, _ = diagnostics.measure(
+            snapshots['split'], diagnostics.box(-320000., -320000., 320000., 320000.), 40.96,
+        )
         self.assertEqual(metrics['invalid_element_rows'], [])
         self.assertEqual(metrics['closed_hole_count'], 0)
         self.assertLessEqual(metrics['missing_area'], 40.96)

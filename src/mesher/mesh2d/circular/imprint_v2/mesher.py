@@ -23,7 +23,8 @@ def imprint_circle(
     """Project and split a mesh along a circular feature.
 
     The operation extracts a conservative circle-band patch, projects nearby
-    nodes without crossing fixed guide junctions, cleans local topology, and
+    nodes with extended finite-guide barriers on radial paths and fixed-junction
+    barriers on guided paths, cleans local topology, and
     splits crossed elements, then replaces local quads having an interior
     angle of at least ``flat_quad_angle`` degrees with two positive-area
     triangles, choosing the diagonal that maximizes the pair's smallest angle.
@@ -36,7 +37,8 @@ def imprint_circle(
         center: Two finite coordinates for the circle center.
         radius: Strictly positive circle radius.
         projection_tolerance: Non-negative radial projection and projected-node
-            merge distance.
+            merge distance. Also extends each finite guide endpoint by this
+            distance for radial path barriers only.
         guide_tolerance: Non-negative absolute distance tolerance, in model
             coordinate units, for deciding whether a node lies on a finite
             guide segment. This is an on-segment membership tolerance, not a

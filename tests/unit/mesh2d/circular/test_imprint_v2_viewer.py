@@ -25,14 +25,14 @@ spec.loader.exec_module(viewer)
 class CaseSelectionTests(unittest.TestCase):
     def test_selects_every_case_by_id_and_number(self):
         cases = viewer.load_cases()
-        self.assertEqual(len(cases), 10)
+        self.assertEqual(len(cases), 20)
         for index, case in enumerate(cases, 1):
             with self.subTest(case=case["id"]):
                 self.assertIs(viewer.select_case(cases, str(index)), case)
                 self.assertIs(viewer.select_case(cases, case["id"]), case)
 
     def test_unknown_case_reports_available_ids_before_creating_mesh(self):
-        for identifier in ("0", "11", "case_99", "invalid"):
+        for identifier in ("0", "21", "case_99", "invalid"):
             with self.subTest(case=identifier):
                 with contextlib.redirect_stderr(io.StringIO()) as stderr:
                     with patch.object(viewer, "prepare_meshes") as prepare:
@@ -136,7 +136,7 @@ class MeshReplayTests(unittest.TestCase):
 
         np.testing.assert_allclose(mesh.nodes[3696, :2], expected, rtol=0, atol=1e-8)
 
-    def test_all_ten_cases_keep_the_input_unchanged_and_call_public_v2(self):
+    def test_all_cases_keep_the_input_unchanged_and_call_public_v2(self):
         from mesher.mesh2d.circular import imprint_v2
         from mesher.mesh2d.generators import generate_rectilinear_mesh
 
