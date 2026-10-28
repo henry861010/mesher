@@ -58,6 +58,58 @@ store component, element-type, real-constant, and section ids, while `comps`,
 `types`, `reals`, and `sections` hold their definition tables. The process-flow
 extruder currently emits SOLID185 connectivity with eight effective slots.
 
+## 2D mesh editing
+
+`EditorMesh2D` is a stateless NumPy-only API: every call receives a `Mesh2D`.
+
+```python
+from mesher.mesh2d import EditorMesh2D
+
+# Select elements whose vertices are all inside this inclusive XY rectangle.
+indices = EditorMesh2D.search_element(mesh, 0.0, 0.0, 1.0, 1.0)
+EditorMesh2D.delete_element(mesh, indices)  # In place; keeps all node IDs.
+
+combined = EditorMesh2D.merge(mesh, other_mesh)  # New mesh; sources unchanged.
+EditorMesh2D.equivalence(combined, tol=0.001)  # Weld explicitly, in place.
+outlines = EditorMesh2D.outline(combined)  # Ordered int64 node-ID arrays.
+outlines_by_edge = EditorMesh2D.outlines_by_edge(combined)  # Loops -> edges -> node IDs.
+```
+
+Deletion and equivalence return the input mesh. Merge preserves source order,
+owns independent arrays, and does not weld coincident nodes. Equivalence uses
+transitive XY distance groups and retains the lowest original node ID's complete
+XYZ coordinate. It converts adjacent-vertex Quad4 collapses to padded Tri3,
+removes unusable or zero-area cells, and removes unreferenced nodes; winding,
+concave cells, and duplicate elements are retained. Tolerance must be finite and
+non-negative; zero merges only identical XY coordinates. Referenced XYZ values
+must be finite. Deletion renumbers element rows, and equivalence can renumber
+both nodes and elements, so obtain fresh selections after editing.
+
+Outlines include exterior, hole, and disconnected-component loops with implicit
+closure (the first node is not repeated). Winding is preserved; loops start at
+their lowest directed edge and are sorted deterministically. Invalid topology,
+non-manifold edges, or inconsistent shared-edge winding raise `ValueError`.
+
+`outlines_by_edge(mesh, angle_tolerance=1e-8)` groups consecutive collinear XY
+segments into logical edges, retaining every intermediate node and including
+both endpoints on each edge. The tolerance is an angle in radians. It orients
+exteriors clockwise and holes counterclockwise so existing mesh stays on the
+right, including for clockwise input elements. Each loop starts at its lowest
+directed corner edge. For near-axis Quad4 meshes, pass one loop directly to
+`extend_quad_layer(mesh, outlines_by_edge[0], element_size)`.
+
+Operations use batched masks, spatial-cell grouping, and index lookups without a
+global node-pair distance matrix or cross-call caches. Run the 25k/50k/100k
+performance checks, including 100k disconnected loops, with:
+
+```bash
+PYTHONPATH=src venv/bin/python benchmarks/mesh2d/benchmark_editor.py
+```
+
+Each case runs in an isolated process and reports the median of three timed
+calls after warm-up, plus peak process RSS (including fixtures and results).
+The default time budget is 10 seconds per case.
+
 ## 2D generation and circular features
 
 ```python
@@ -100,6 +152,72 @@ As a final step, local quads with an interior angle of at least `flat_quad_angle
 triangles using the diagonal that maximizes their smallest angle; the original
 nodes and cell boundary are preserved.
 The case collection includes a reproducible 100,000-element performance comparison.
+
+## Single-layer direct Quad4 extension
+
+```python
+import numpy as np
+from mesher import Mesh2D
+from mesher.mesh2d.adapter import extend_quad_layer
+
+mesh = Mesh2D(
+    [[0, 0], [4, 0], [4, 3], [0, 3]],
+    np.array([[0, 1, 2, 3]], dtype=np.int32),
+)
+result = extend_quad_layer(
+    mesh,
+    outline=[[0, 3], [3, 2], [2, 1], [1, 0]],  # clockwise exterior
+    element_size=0.8,
+    pattern_lines=[[[4.2, 3.4], [4.6, 3.4]], [[4.4, 3.2], [4.4, 3.6]]],
+    expand_ratio=1.0,
+)
+assert result.mesh is mesh
+# result.outline can be passed into a later, separate single-layer call.
+```
+
+This adapter requires a planar Quad4 input and produces strictly convex, CCW
+Quad4 cells throughout construction, including temporary meshes. It does not
+triangulate or convert triangles. It preserves all existing node values, node
+IDs, elements, and source segments, then commits the entire layer atomically.
+
+Each logical outline edge is an ordered node chain near global X or Y;
+consecutive edges are perpendicular. Exterior loops are clockwise and holes
+counterclockwise. Growth is to the left of each directed edge. A finite parallel
+pattern with overlapping edge projection and nearest positive distance `d`
+sets that whole edge's expansion when `d <= element_size * expand_ratio`;
+otherwise the expansion is `element_size`. Coincident guides do not stop growth.
+`axis_tolerance` (default `1e-3`) limits transverse deviation relative to each
+logical edge's length. The new front is axis aligned; old coordinates never move.
+
+Finite horizontal/vertical patterns support internal endpoints, T/X junctions,
+overlaps, and closed loops. Only portions inside the resulting mesh must be
+covered by mesh edges. A pattern crossing a fixed source segment or an existing
+element is rejected unless it already follows existing edges. Closed pattern
+loops remain filled. Auxiliary seams may extend beyond finite pattern endpoints.
+
+Construction uses convex strips/corner blocks, or a thin source collar plus
+locally partitioned rectangles inside the same layer. Shared interfaces are
+noded once and their subdivision parity is coordinated before direct unit or
+inner-ring quad filling. `result.diagnostics` records the path, section counts,
+parity solver, builders, expansion distances, and added node/element counts.
+Section names annotate blocks; a concave corner can use two incident strips.
+
+This is a conservative direct-quad algorithm, not universal quadrangulation.
+`element_size` is a target; topology, frozen boundaries, and finite constraints
+take priority over size and aspect ratio. Input cells must be nondegenerate
+convex Quad4 cells (either orientation), and all nodes must share one constant Z.
+Topology changes, collisions, or incompatible old boundaries raise
+`QuadLayerError`. If no certified source collar or valid direct quad fill can
+be constructed, including almost-tangent near-axis configurations, it raises
+`UnmeshableDirectQuadLayout`. Both exceptions leave the original arrays unchanged.
+
+Run [the visual example](examples/extend_quad_layer.py) with
+`python examples/extend_quad_layer.py`. It opens a Matplotlib window and saves
+`examples/output/extend_quad_layer.png`, showing input, output, and enlarged
+details for a cross, a cross with finite patterns, and a hole. Use `--case pattern`
+to focus on finite guides, `--element-size 0.25` to change the target size, or
+`--no-show --plot output.png` to save without opening a window. Matplotlib is
+provided by the optional `visualization` dependency.
 
 ## Process-flow 3D extrusion
 

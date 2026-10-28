@@ -1,0 +1,504 @@
+"""Direct Quad4 growth preserves fixed boundaries and finite constraints."""
+
+import unittest
+from collections import Counter
+from unittest.mock import patch
+
+import numpy as np
+
+from mesher import Mesh2D
+from mesher.mesh2d.adapter import UnmeshableDirectQuadLayout, extend_quad_layer
+
+
+def _rectangle():
+    mesh = Mesh2D(
+        [[0, 0], [4, 0], [4, 3], [0, 3]],
+        np.array([[0, 1, 2, 3]], dtype=np.int32),
+    )
+    return mesh, [[0, 3], [3, 2], [2, 1], [1, 0]]
+
+
+def _polyomino(cells):
+    coordinates = sorted({(x + dx, y + dy) for x, y in cells
+                          for dx, dy in ((0, 0), (1, 0), (1, 1), (0, 1))})
+    lookup = {point: index for index, point in enumerate(coordinates)}
+    elements = np.array([
+        [lookup[x, y], lookup[x + 1, y], lookup[x + 1, y + 1], lookup[x, y + 1]]
+        for x, y in sorted(cells)
+    ], dtype=np.int32)
+    mesh = Mesh2D(coordinates, elements)
+    directed = Counter((int(a), int(b)) for cell in elements
+                       for a, b in zip(cell, np.roll(cell, -1)))
+    clockwise = {b: a for (a, b) in directed if (b, a) not in directed}
+    start = min(clockwise)
+    loop = [start]
+    while clockwise[loop[-1]] != start:
+        loop.append(clockwise[loop[-1]])
+    # Rotate to a turn so the first and last chains are separate logical edges.
+    xy = mesh.nodes[loop, :2]
+    vectors = np.roll(xy, -1, axis=0) - xy
+    turn = next(i for i in range(len(loop))
+                if not np.array_equal(vectors[i - 1], vectors[i]))
+    loop = loop[turn:] + loop[:turn]
+    outline = []
+    current = [loop[0]]
+    for i, node in enumerate(loop):
+        following = loop[(i + 1) % len(loop)]
+        current.append(following)
+        vector = mesh.nodes[following, :2] - mesh.nodes[node, :2]
+        after = loop[(i + 2) % len(loop)]
+        next_vector = mesh.nodes[after, :2] - mesh.nodes[following, :2]
+        if not np.array_equal(vector, next_vector):
+            outline.append(current)
+            current = [following]
+    return mesh, outline, lookup
+
+
+def _cross(first, second):
+    return first[0] * second[1] - first[1] * second[0]
+
+
+def _area(points):
+    points = np.asarray(points)
+    points = points - points[0]
+    return 0.5 * sum(_cross(a, b) for a, b in zip(points, np.roll(points, -1, axis=0)))
+
+
+def _outline_nodes(outline):
+    return np.concatenate([np.asarray(edge, dtype=int)[:-1] for edge in outline])
+
+
+def _segments(outline):
+    return {frozenset((int(a), int(b))) for edge in outline
+            for a, b in zip(edge[:-1], edge[1:])}
+
+
+def _overlap_area(first, second):
+    """Independent convex clipping; no mesh implementation helpers are used."""
+    polygon = list(first)
+    for start, end in zip(second, np.roll(second, -1, axis=0)):
+        if not polygon:
+            return 0.0
+        clipped = []
+        previous = polygon[-1]
+        previous_side = _cross(end - start, previous - start)
+        for current in polygon:
+            side = _cross(end - start, current - start)
+            if (side >= 0) != (previous_side >= 0):
+                t = previous_side / (previous_side - side)
+                clipped.append(previous + t * (current - previous))
+            if side >= 0:
+                clipped.append(current)
+            previous, previous_side = current, side
+        polygon = clipped
+    return abs(_area(polygon)) if len(polygon) >= 3 else 0.0
+
+
+class ExtendQuadLayerTests(unittest.TestCase):
+    def assert_layer(self, mesh, source, result, old_nodes, old_elements):
+        self.assertIs(result.mesh, mesh)
+        self.assertIsNotNone(result.diagnostics)
+        np.testing.assert_array_equal(mesh.nodes[:len(old_nodes)], old_nodes)
+        np.testing.assert_array_equal(mesh.elements[:len(old_elements)], old_elements)
+        self.assertTrue(np.all(mesh.element_types == 4))
+        self.assertTrue(np.all(np.isfinite(mesh.nodes)))
+
+        front = result.outline
+        self.assertGreaterEqual(len(front), 4)
+        for edge, following in zip(front, [*front[1:], front[0]]):
+            self.assertGreaterEqual(len(edge), 2)
+            self.assertEqual(edge[-1], following[0])
+            self.assertTrue(np.all(np.asarray(edge) >= 0))
+            self.assertTrue(np.all(np.asarray(edge) < mesh.node_count))
+
+        quads = mesh.elements[len(old_elements):]
+        self.assertGreater(len(quads), 0)
+        self.assertTrue(all(len(set(cell)) == 4 for cell in quads))
+        self.assertTrue(set(range(len(old_nodes), mesh.node_count)) <= set(quads.ravel()))
+
+        incidence = Counter((int(cell[i]), int(cell[(i + 1) % 4]))
+                            for cell in quads for i in range(4))
+        expected_boundary = _segments(source) | _segments(front)
+        actual = {frozenset(pair) for pair in incidence}
+        self.assertTrue(expected_boundary <= actual)
+        for pair in actual:
+            a, b = pair
+            expected_count = 1 if pair in expected_boundary else 2
+            self.assertEqual(incidence[a, b] + incidence[b, a], expected_count)
+            if expected_count == 2:
+                self.assertEqual(incidence[a, b], 1)
+                self.assertEqual(incidence[b, a], 1)
+
+        # Normalize independently so tiny and translated coordinates are checked
+        # by the same convexity, area, and overlap assertions.
+        front_ids, source_ids = _outline_nodes(front), _outline_nodes(source)
+        scale = max(np.ptp(mesh.nodes[np.r_[front_ids, source_ids], :2], axis=0))
+        xy = (mesh.nodes[:, :2] - mesh.nodes[source_ids[0], :2]) / scale
+        cells = xy[quads]
+        vectors = np.roll(cells, -1, axis=1) - cells
+        following = np.roll(vectors, -1, axis=1)
+        turns = vectors[..., 0] * following[..., 1] - vectors[..., 1] * following[..., 0]
+        self.assertTrue(np.all(turns > 0), "every added quad must be strictly convex and CCW")
+        source_area, front_area = _area(xy[source_ids]), _area(xy[front_ids])
+        self.assertGreater(source_area * front_area, 0)
+        expected_area = source_area - front_area
+        self.assertGreater(expected_area, 0)
+        self.assertAlmostEqual(sum(_area(cell) for cell in cells), expected_area, places=9)
+
+        # Only clip cells whose bounding boxes overlap in both dimensions.
+        all_cells = xy[mesh.elements]
+        mins, maxs = all_cells.min(axis=1), all_cells.max(axis=1)
+        for index in range(len(old_elements), len(all_cells)):
+            candidates = np.flatnonzero(np.all(
+                np.minimum(maxs[:index], maxs[index])
+                - np.maximum(mins[:index], mins[index]) > 1e-12, axis=1))
+            for other in candidates:
+                self.assertLess(_overlap_area(all_cells[index], all_cells[other]), 1e-10)
+
+    def assert_pattern_covered(self, mesh, pattern):
+        start, end = np.asarray(pattern, dtype=float)
+        direction = end - start
+        length = np.linalg.norm(direction)
+        direction /= length
+        intervals = []
+        for cell in mesh.elements:
+            for first, second in zip(cell, np.roll(cell, -1)):
+                a, b = mesh.nodes[[first, second], :2] - start
+                if abs(_cross(a, direction)) < 1e-9 and abs(_cross(b, direction)) < 1e-9:
+                    low, high = sorted((np.dot(a, direction), np.dot(b, direction)))
+                    if high >= 0 and low <= length:
+                        intervals.append((max(0, low), min(length, high)))
+        covered_to = 0.0
+        for low, high in sorted(intervals):
+            if high <= covered_to:
+                continue
+            self.assertLessEqual(low, covered_to + 1e-9, "pattern has a gap in mesh-edge coverage")
+            covered_to = high
+        self.assertAlmostEqual(covered_to, length, places=9)
+
+    @staticmethod
+    def _snapshot(mesh):
+        return mesh.nodes, mesh.elements, mesh.nodes.copy(), mesh.elements.copy()
+
+    def assert_unchanged(self, mesh, snapshot):
+        nodes, elements, node_values, element_values = snapshot
+        self.assertIs(mesh.nodes, nodes)
+        self.assertIs(mesh.elements, elements)
+        np.testing.assert_array_equal(mesh.nodes, node_values)
+        np.testing.assert_array_equal(mesh.elements, element_values)
+
+    def run_layer(self, mesh, outline, h=0.5, **kwargs):
+        old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
+        source = [np.asarray(edge).copy() for edge in outline]
+        result = extend_quad_layer(mesh, outline, h, **kwargs)
+        self.assert_layer(mesh, source, result, old_nodes, old_elements)
+        for before, after in zip(source, outline):
+            np.testing.assert_array_equal(before, after)
+        return result
+
+    def test_rectangle_is_quad_only_and_returns_reusable_outline(self):
+        mesh, outline = _rectangle()
+        result = self.run_layer(mesh, outline)
+        xy = mesh.nodes[_outline_nodes(result.outline), :2]
+        np.testing.assert_allclose(xy.min(axis=0), [-0.5, -0.5])
+        np.testing.assert_allclose(xy.max(axis=0), [4.5, 3.5])
+        second = self.run_layer(mesh, result.outline, h=0.35)
+        xy = mesh.nodes[_outline_nodes(second.outline), :2]
+        np.testing.assert_allclose(xy.min(axis=0), [-0.85, -0.85])
+        np.testing.assert_allclose(xy.max(axis=0), [4.85, 3.85])
+
+    def test_temporary_mesh_objects_also_contain_only_quads(self):
+        mesh, outline = _rectangle()
+        original_init, original_replace = Mesh2D.__init__, Mesh2D.replace_data
+        inspected = []
+
+        def inspect(candidate):
+            inspected.append(candidate.element_count)
+            self.assertTrue(np.all(candidate.element_types == 4))
+            self.assertTrue(all(len(set(cell)) == 4 for cell in candidate.elements))
+
+        def checked_init(candidate, *args, **kwargs):
+            original_init(candidate, *args, **kwargs)
+            inspect(candidate)
+
+        def checked_replace(candidate, *args, **kwargs):
+            original_replace(candidate, *args, **kwargs)
+            inspect(candidate)
+
+        patterns = [[[4.2, 3.4], [4.6, 3.4]], [[4.4, 3.2], [4.4, 3.6]]]
+        with patch.object(Mesh2D, "__init__", checked_init), \
+                patch.object(Mesh2D, "replace_data", checked_replace):
+            self.run_layer(mesh, outline, h=0.8, pattern_lines=patterns)
+        self.assertTrue(inspected)
+
+    def test_concave_l_and_cross_keep_all_fixed_collinear_segments(self):
+        for cells in (
+            {(0, 0), (1, 0), (0, 1)},
+            {(0, 1), (1, 0), (1, 1), (1, 2), (2, 1)},
+        ):
+            with self.subTest(cells=cells):
+                mesh, outline, _ = _polyomino(cells)
+                self.run_layer(mesh, outline, h=0.2)
+
+    def test_counterclockwise_hole_grows_toward_hole_interior(self):
+        cells = {(x, y) for x in range(3) for y in range(3)} - {(1, 1)}
+        mesh, _, lookup = _polyomino(cells)
+        loop = [lookup[1, 1], lookup[2, 1], lookup[2, 2], lookup[1, 2]]
+        outline = [[loop[i], loop[(i + 1) % 4]] for i in range(4)]
+        result = self.run_layer(mesh, outline, h=0.2)
+        xy = mesh.nodes[_outline_nodes(result.outline), :2]
+        np.testing.assert_allclose(xy.min(axis=0), [1.2, 1.2])
+        np.testing.assert_allclose(xy.max(axis=0), [1.8, 1.8])
+
+    def test_partial_parallel_pattern_snaps_whole_edge_within_ratio(self):
+        for distance, ratio, expected in ((0.3, 1.0, 3.3), (0.75, 1.5, 3.75),
+                                           (0.75, 1.4, 3.5)):
+            with self.subTest(distance=distance, ratio=ratio):
+                mesh, outline = _rectangle()
+                pattern = [[1, 3 + distance], [2, 3 + distance]]
+                result = self.run_layer(mesh, outline, pattern_lines=[pattern], expand_ratio=ratio)
+                top = mesh.nodes[np.asarray(result.outline[1]), :2]
+                np.testing.assert_allclose(top[:, 1], expected)
+                if distance <= 0.5 * ratio:
+                    self.assert_pattern_covered(mesh, pattern)
+
+    def test_nearest_pattern_wins_and_coincident_pattern_does_not_stall(self):
+        mesh, outline = _rectangle()
+        patterns = [[[1, 3], [2, 3]], [[1, 3.25], [2, 3.25]], [[1, 3.4], [2, 3.4]]]
+        result = self.run_layer(mesh, outline, pattern_lines=patterns)
+        self.assertAlmostEqual(mesh.nodes[_outline_nodes(result.outline), 1].max(), 3.25)
+        self.assert_pattern_covered(mesh, patterns[0])
+        self.assert_pattern_covered(mesh, patterns[1])
+
+    def test_finite_interior_endpoint_and_perpendicular_source_node(self):
+        mesh, outline, _ = _polyomino({(x, y) for x in range(4) for y in range(3)})
+        patterns = [[[1, 3], [1, 3.35]], [[2.5, 3.1], [2.5, 3.4]]]
+        self.run_layer(mesh, outline, pattern_lines=patterns)
+        for pattern in patterns:
+            self.assert_pattern_covered(mesh, pattern)
+
+    def test_corner_only_t_cross_overlap_and_closed_patterns(self):
+        cases = {
+            "T": [[[4.2, 3.4], [4.6, 3.4]], [[4.4, 3.2], [4.4, 3.4]]],
+            "cross": [[[4.2, 3.4], [4.6, 3.4]], [[4.4, 3.2], [4.4, 3.6]]],
+            "overlap": [[[4.2, 3.4], [4.5, 3.4]], [[4.6, 3.4], [4.3, 3.4]]],
+            "closed": [[[4.2, 3.2], [4.6, 3.2]], [[4.6, 3.2], [4.6, 3.6]],
+                       [[4.6, 3.6], [4.2, 3.6]], [[4.2, 3.6], [4.2, 3.2]]],
+        }
+        for name, patterns in cases.items():
+            with self.subTest(name=name):
+                mesh, outline = _rectangle()
+                self.run_layer(mesh, outline, h=0.8, pattern_lines=patterns)
+                for pattern in patterns:
+                    self.assert_pattern_covered(mesh, pattern)
+                    for endpoint in pattern:
+                        matches = np.linalg.norm(mesh.nodes[:, :2] - endpoint, axis=1) < 1e-9
+                        self.assertEqual(np.count_nonzero(matches), 1)
+                if name in {"T", "cross"}:
+                    matches = np.linalg.norm(mesh.nodes[:, :2] - [4.4, 3.4], axis=1) < 1e-9
+                    self.assertEqual(np.count_nonzero(matches), 1,
+                                     "all incident pattern edges must share one node ID")
+
+    def test_approximately_axis_aligned_nodes_are_never_moved(self):
+        mesh, outline = _rectangle()
+        mesh.nodes[2:, 0] += 1e-4
+        result = self.run_layer(mesh, outline)
+        for edge in result.outline:
+            xy = mesh.nodes[np.asarray(edge), :2]
+            self.assertLess(min(np.ptp(xy, axis=0)), 1e-12)
+
+    def test_source_spacing_can_coarsen_on_the_new_front(self):
+        mesh, outline, _ = _polyomino({(x, y) for x in range(12) for y in range(8)})
+        result = self.run_layer(mesh, outline, h=3.0)
+        self.assertLess(len(_outline_nodes(result.outline)), len(_outline_nodes(outline)))
+
+    def test_odd_hole_boundary_count_is_balanced_by_new_front_parity(self):
+        inner = np.array([[1, 1], [2, 1], [3, 1], [3, 3], [1, 3]], dtype=float)
+        outer = (inner - [2, 2]) * 2 + [2, 2]
+        elements = np.array([[i, 5 + i, 5 + (i + 1) % 5, (i + 1) % 5]
+                             for i in range(5)], dtype=np.int32)
+        mesh = Mesh2D(np.vstack((inner, outer)), elements)
+        outline = [[0, 1, 2], [2, 3], [3, 4], [4, 0]]
+        result = self.run_layer(mesh, outline, h=0.25)
+        self.assertEqual(len(_outline_nodes(outline)), 5)
+        self.assertEqual(len(_outline_nodes(result.outline)) % 2, 1)
+
+    def test_near_tangent_pattern_has_typed_atomic_direct_layout_failure(self):
+        mesh, outline = _rectangle()
+        mesh.nodes[2:, 0] += 5e-4
+        # Strictly outside the sloping source edge, but inside its axis-aligned
+        # support. No positive straight collar can contain it as a boundary.
+        pattern = [[4.0002, 0.5], [4.0002, 1.0]]
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(UnmeshableDirectQuadLayout):
+            extend_quad_layer(mesh, outline, 0.5, pattern_lines=[pattern])
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_translation_scaling_rotation_and_loop_start(self):
+        for scale, shift, turns, start in (
+            (1e-4, [0, 0], 0, 0), (1.0, [1e7, -2e7], 0, 0),
+            (1.0, [0, 0], 1, 2),
+        ):
+            with self.subTest(scale=scale, shift=shift, turns=turns, start=start):
+                mesh, outline = _rectangle()
+                rotation = np.array([[0, -1], [1, 0]]) if turns else np.eye(2)
+                mesh.nodes[:, :2] = (mesh.nodes[:, :2] @ rotation.T) * scale + shift
+                outline = outline[start:] + outline[:start]
+                self.run_layer(mesh, outline, h=0.5 * scale)
+
+    def test_invalid_scalars_and_patterns_are_atomic(self):
+        invalid = (
+            {"element_size": 0}, {"element_size": -1}, {"element_size": np.nan},
+            {"element_size": np.inf}, {"expand_ratio": 0.9}, {"expand_ratio": np.inf},
+            {"axis_tolerance": -1}, {"axis_tolerance": np.nan},
+            {"pattern_lines": [[[1, 4], [1, 4]]]},
+            {"pattern_lines": [[[1, 4], [2, 5]]]},
+            {"pattern_lines": [[[1, np.nan], [2, np.nan]]]},
+        )
+        for kwargs in invalid:
+            with self.subTest(kwargs=kwargs):
+                mesh, outline = _rectangle()
+                snapshot = self._snapshot(mesh)
+                with self.assertRaises((ValueError, TypeError)):
+                    extend_quad_layer(mesh, outline, **{"element_size": 0.5, **kwargs})
+                self.assert_unchanged(mesh, snapshot)
+
+    def test_invalid_outline_and_nonquad_input_are_atomic(self):
+        bad_outlines = (
+            [[0, 3], [3, 2], [2, 1]],
+            [[0, 3], [2, 3], [2, 1], [1, 0]],
+            [[0, 0, 3], [3, 2], [2, 1], [1, 0]],
+            [[0, 99], [99, 2], [2, 1], [1, 0]],
+            [[0, -1], [-1, 2], [2, 1], [1, 0]],
+            [[0, 2], [2, 3], [3, 1], [1, 0]],
+            [[0, 1], [1, 2], [2, 3], [3, 0]],
+        )
+        for outline in bad_outlines:
+            with self.subTest(outline=outline):
+                mesh, _ = _rectangle()
+                snapshot = self._snapshot(mesh)
+                with self.assertRaises(ValueError):
+                    extend_quad_layer(mesh, outline, 0.5)
+                self.assert_unchanged(mesh, snapshot)
+        mesh, outline = _rectangle()
+        mesh.elements = np.array([[0, 1, 2, 2], [0, 2, 3, 3]], dtype=np.int32)
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(ValueError):
+            extend_quad_layer(mesh, outline, 0.5)
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_pattern_cannot_split_frozen_source_or_cross_existing_element(self):
+        for pattern in ([[1.5, 3], [1.5, 3.4]], [[1.5, 2.8], [1.5, 3.4]]):
+            with self.subTest(pattern=pattern):
+                mesh, outline = _rectangle()
+                snapshot = self._snapshot(mesh)
+                with self.assertRaises(ValueError):
+                    extend_quad_layer(mesh, outline, 0.5, pattern_lines=[pattern])
+                self.assert_unchanged(mesh, snapshot)
+
+    def test_hole_collapse_is_atomic(self):
+        cells = {(x, y) for x in range(3) for y in range(3)} - {(1, 1)}
+        mesh, _, lookup = _polyomino(cells)
+        loop = [lookup[1, 1], lookup[2, 1], lookup[2, 2], lookup[1, 2]]
+        outline = [[loop[i], loop[(i + 1) % 4]] for i in range(4)]
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(ValueError):
+            extend_quad_layer(mesh, outline, 0.5)
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_narrow_u_slot_closure_is_an_atomic_topology_error(self):
+        cells = {(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (2, 2)}
+        mesh, outline, _ = _polyomino(cells)
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(ValueError):
+            extend_quad_layer(mesh, outline, 0.5)
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_collision_with_other_mesh_is_atomic(self):
+        mesh, outline = _rectangle()
+        remote = [[4.2, 0, 0], [5.2, 0, 0], [5.2, 1, 0], [4.2, 1, 0]]
+        mesh.replace_data(nodes=np.vstack((mesh.nodes, remote)),
+                          elements=np.vstack((mesh.elements, [4, 5, 6, 7])))
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(ValueError):
+            extend_quad_layer(mesh, outline, 0.5)
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_late_generated_patch_validation_failure_is_atomic(self):
+        from mesher.mesh2d.adapter.layer import _mesher
+
+        mesh, outline = _rectangle()
+        snapshot = self._snapshot(mesh)
+        with patch.object(_mesher, "_validate_patch",
+                          side_effect=ValueError("injected final patch rejection")) as validate:
+            with self.assertRaisesRegex(ValueError, "injected final patch rejection"):
+                extend_quad_layer(mesh, outline, 0.5)
+        self.assertTrue(validate.called)
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_structured_failure_retries_direct_with_fresh_staging(self):
+        from mesher.mesh2d.adapter.layer import _mesher
+
+        mesh, outline = _rectangle()
+        fill = _mesher.fill_blocks
+        attempt_inputs = []
+
+        def fail_after_first_fill(nodes, *args, **kwargs):
+            attempt_inputs.append(nodes.copy())
+            staged = fill(nodes, *args, **kwargs)
+            if len(attempt_inputs) == 1:
+                self.assertGreater(len(staged[0]), len(nodes))
+                self.assertGreater(len(staged[1]), 0)
+                raise UnmeshableDirectQuadLayout("injected completed structured rejection")
+            return staged
+
+        with patch.object(_mesher, "fill_blocks", side_effect=fail_after_first_fill) as builder:
+            result = self.run_layer(mesh, outline)
+
+        self.assertEqual(builder.call_count, 2)
+        np.testing.assert_array_equal(attempt_inputs[0], attempt_inputs[1])
+        self.assertEqual(len(attempt_inputs[1]), 4)
+        self.assertEqual(result.diagnostics["path"], "direct")
+        self.assertTrue(result.diagnostics["structured_retry"])
+
+    def test_shallow_unequal_length_segments_cross_in_either_order(self):
+        from mesher.mesh2d.adapter.layer._geometry import segment_contacts
+
+        a, b = np.array([0.4999995, 0.0]), np.array([0.5000005, 0.0])
+        c, d = np.array([0.0, -1e-8]), np.array([1.0, 1e-8])
+        tolerance = 128 * np.finfo(float).eps
+        for segments in ((a, b, c, d), (c, d, a, b)):
+            with self.subTest(segments=segments):
+                contacts = segment_contacts(*segments, tolerance)
+                self.assertEqual(len(contacts), 1)
+                np.testing.assert_allclose(contacts[0], [0.5, 0.0], rtol=0, atol=tolerance)
+
+    def test_thousand_source_nodes_with_hundred_local_pattern_segments(self):
+        mesh, outline, _ = _polyomino({(x, y) for x in range(500) for y in range(2)})
+        patterns = [
+            [[2.5 + 4 * i, 2.1 + 0.001 * i],
+             [2.5 + 4 * i, 2.21 + 0.001 * i]]
+            for i in range(100)
+        ]
+        original_nodes, original_elements = mesh.nodes.copy(), mesh.elements.copy()
+        result = extend_quad_layer(mesh, outline, 0.5, pattern_lines=patterns)
+        self.assertIs(result.mesh, mesh)
+        self.assertGreaterEqual(len(_outline_nodes(outline)), 1000)
+        np.testing.assert_array_equal(mesh.nodes[:len(original_nodes)], original_nodes)
+        np.testing.assert_array_equal(mesh.elements[:len(original_elements)], original_elements)
+        self.assertTrue(np.all(mesh.element_types == 4))
+        added = mesh.nodes[mesh.elements[len(original_elements):], :2]
+        sides = np.roll(added, -1, axis=1) - added
+        following = np.roll(sides, -1, axis=1)
+        self.assertTrue(np.all(sides[..., 0] * following[..., 1]
+                               - sides[..., 1] * following[..., 0] > 0))
+        self.assertAlmostEqual(sum(_area(cell) for cell in added), 503.0, places=7)
+        # Finite vertical constraints have many distinct endpoint heights. A
+        # global Cartesian product of all X/Y events would inflate this case.
+        self.assertLess(mesh.element_count - len(original_elements), 25_000)
+        for pattern in (patterns[0], patterns[49], patterns[-1]):
+            self.assert_pattern_covered(mesh, pattern)
+
+
+if __name__ == "__main__":
+    unittest.main()

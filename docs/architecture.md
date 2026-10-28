@@ -23,6 +23,15 @@ dimension-specific algorithms. They never import `mesh25d`, `meshcontrol`, or
 `process_flow`. Control methods decide their own mesher-specific constraints;
 their shared factory resolves Standard V1 references without loading algorithms.
 
+Within `mesh2d`, `editor/` exposes the stateless `EditorMesh2D` API and owns its
+element cleanup rules. `utils/` holds NumPy-only node-equivalence and topology
+algorithms shared by the editor and circular features. Shared utilities depend
+on the mesh model, without importing feature packages. The editor remains
+available from both `mesher.mesh2d` and `mesher.mesh2d.editor`; circular modules
+retain their existing private helper imports. Editor and utility tests mirror
+these packages under `tests/unit/mesh2d/`, and editor performance checks live in
+`benchmarks/mesh2d/`.
+
 `mesh25d` exposes `build_mesh(geometry_structure, mesh_control, progress=...)`.
 Internally, geometry extraction supplies footprint patterns, KOZ boundaries,
 source provenance, priorities, and material assignments. The 2D stage in
