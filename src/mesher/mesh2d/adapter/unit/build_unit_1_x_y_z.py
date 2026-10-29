@@ -246,24 +246,29 @@ def _stage_inner_ring(nodes: np.ndarray, edges: _Edges) -> _Patch:
     return _checked_patch(np.vstack((nodes, inner_nodes)), np.vstack((strips, fan)), edges)
 
 
-def _stage_patch(nodes: np.ndarray, edges: _Edges) -> _Patch:
+def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = None) -> _Patch:
+    def selected(patch: _Patch, method: str) -> _Patch:
+        if diagnostics is not None:
+            diagnostics["method"] = method
+        return patch
+
     try:
-        return _stage_template(nodes, edges)
+        return selected(_stage_template(nodes, edges), "template")
     except ValueError:
         pass
     for index, edge in enumerate(edges):
         if len(edge) != 2:
             continue
         try:
-            return _stage_sweep(nodes, edges[index:] + edges[:index])
+            return selected(_stage_sweep(nodes, edges[index:] + edges[:index]), "sweep")
         except ValueError:
             pass
     try:
-        return _stage_layers(nodes, edges)
+        return selected(_stage_layers(nodes, edges), "layers")
     except ValueError:
         pass
     try:
-        return _stage_inner_ring(nodes, edges)
+        return selected(_stage_inner_ring(nodes, edges), "inner_ring")
     except ValueError as error:
         raise ValueError("the available strategies could not construct a valid Quad4 patch") from error
 
@@ -274,6 +279,8 @@ def build_unit_1_x_y_z(
     edge2: np.ndarray,
     edge3: np.ndarray,
     edge4: np.ndarray,
+    *,
+    _diagnostics: dict | None = None,
 ) -> Mesh2D:
     """Append convex Quad4 cells inside four cyclic boundary chains.
 
@@ -306,9 +313,12 @@ def build_unit_1_x_y_z(
     if _polygon_area_twice(mesh.nodes[boundary]) < 0.0:
         edges = tuple(edge[::-1] for edge in edges[::-1])
 
-    nodes, quads = _stage_patch(mesh.nodes, edges)
+    staged_diagnostics: dict = {}
+    nodes, quads = _stage_patch(mesh.nodes, edges, staged_diagnostics)
     _checked_patch(nodes, quads, (edge1, edge2, edge3, edge4))
     mesh.replace_data(nodes=nodes, elements=np.vstack((mesh.elements, quads)))
+    if _diagnostics is not None:
+        _diagnostics.update(staged_diagnostics)
     return mesh
 
 

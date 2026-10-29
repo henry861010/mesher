@@ -164,60 +164,133 @@ mesh = Mesh2D(
     [[0, 0], [4, 0], [4, 3], [0, 3]],
     np.array([[0, 1, 2, 3]], dtype=np.int32),
 )
+outline = [[0, 3], [3, 2], [2, 1], [1, 0]]  # clockwise exterior
+patterns = [[[0, 3.4], [4, 3.4]]]             # finite parallel guide
 result = extend_quad_layer(
-    mesh,
-    outline=[[0, 3], [3, 2], [2, 1], [1, 0]],  # clockwise exterior
-    element_size=0.8,
-    pattern_lines=[[[4.2, 3.4], [4.6, 3.4]], [[4.4, 3.2], [4.4, 3.6]]],
-    expand_ratio=1.0,
+    mesh, outline, element_size=0.8,
+    pattern_lines=patterns, expand_ratio=1.0,
 )
 assert result.mesh is mesh
 # result.outline can be passed into a later, separate single-layer call.
 ```
 
-This adapter requires a planar Quad4 input and produces strictly convex, CCW
-Quad4 cells throughout construction, including temporary meshes. It does not
-triangulate or convert triangles. It preserves all existing node values, node
-IDs, elements, and source segments, then commits the entire layer atomically.
+The adapter requires a planar Quad4 input and adds strictly convex, CCW Quad4
+cells. Existing coordinates, node IDs, elements, and source segments stay
+unchanged. The complete layer is validated before an atomic commit; errors
+leave the input mesh unchanged.
 
 Each logical outline edge is an ordered node chain near global X or Y;
 consecutive edges are perpendicular. Exterior loops are clockwise and holes
-counterclockwise. Growth is to the left of each directed edge. A finite parallel
-pattern with overlapping edge projection and nearest positive distance `d`
-sets that whole edge's expansion when `d <= element_size * expand_ratio`;
+counterclockwise. Growth is to the left, with XY normal `(-dy, dx)`. A finite
+parallel pattern with overlapping edge projection and nearest positive distance
+`d` sets the whole edge's expansion when `d <= element_size * expand_ratio`;
 otherwise the expansion is `element_size`. Coincident guides do not stop growth.
 `axis_tolerance` (default `1e-3`) limits transverse deviation relative to each
 logical edge's length. The new front is axis aligned; old coordinates never move.
 
-Finite horizontal/vertical patterns support internal endpoints, T/X junctions,
-overlaps, and closed loops. Only portions inside the resulting mesh must be
-covered by mesh edges. A pattern crossing a fixed source segment or an existing
-element is rejected unless it already follows existing edges. Closed pattern
-loops remain filled. Auxiliary seams may extend beyond finite pattern endpoints.
+`extend_quad_layer()` performs both levels internally in one call:
 
-Construction uses convex strips/corner blocks, or a thin source collar plus
-locally partitioned rectangles inside the same layer. Shared interfaces are
-noded once and their subdivision parity is coordinated before direct unit or
-inner-ring quad filling. `result.diagnostics` records the path, section counts,
-parity solver, builders, expansion distances, and added node/element counts.
-Section names annotate blocks; a concave corner can use two incident strips.
+1. **Sections describe geometry.** Determine `OUTER`, `INNER`, `INNER_LEFT`,
+   `INNER_RIGHT`, and `INNER_BOTH` corners first. Their reserved ranges and
+   complete pattern chords delimit the remaining `LINE` sections. A long LINE
+   stays intact; source-edge count and target size do not split it at this stage.
+2. **Units build each section.** Coordinate left/right seam node counts around
+   the entire loop, then subdivide each section into feasible `build_unit_*`
+   calls. Ordinary seams use 2 or 3 nodes, meaning 1 or 2 segments. Mandatory
+   seam points are preserved, and neighboring sections share the same node IDs.
 
-This is a conservative direct-quad algorithm, not universal quadrangulation.
-`element_size` is a target; topology, frozen boundaries, and finite constraints
-take priority over size and aspect ratio. Input cells must be nondegenerate
-convex Quad4 cells (either orientation), and all nodes must share one constant Z.
-Topology changes, collisions, or incompatible old boundaries raise
-`QuadLayerError`. If no certified source collar or valid direct quad fill can
-be constructed, including almost-tangent near-axis configurations, it raises
-`UnmeshableDirectQuadLayout`. Both exceptions leave the original arrays unchanged.
+For a `LINE`, the outer edge is sampled **before pairing**: endpoints and finite
+pattern intersections stay fixed, and additional nodes fill the intervals as
+close to `element_size` as parity permits. At most two nearest legal total
+segment counts are considered, ordered by outer size error, then fewer segments.
+The first feasible count is accepted. From alternating ends, each segment on
+the shorter chain is paired with the nearest allowed node on the longer chain
+along the main axis, reserving enough nodes for the remaining units. Internal
+connectors contain one or two segments to keep each unit's boundary count even.
+
+A valid unit is accepted immediately. Only an invalid unit tries the adjacent
+`-1` and `+1` cut indices. If the center cannot close, the last committed cut
+may move by one node, rebuilding only its two neighboring units. There is no
+recursive backtracking or global LINE quality search. Exhausting these repairs
+and the other legal outer count reports a layout error; this does not prove
+that every possible quadrangulation is infeasible.
+
+`plan_quad_sections()` is an optional read-only preview of the first level,
+importable from `mesher.mesh2d.adapter`. It is not a required step before
+`extend_quad_layer()`. Its `QuadSectionPlan` contains `sections`, `seams`, `front`, and `edge_expansion`.
+Sections retain their source node chains, outer boundary, and left/right seam
+IDs; seam coordinates run from source to front. This preview verifies geometric
+partitioning; full unit feasibility is determined during `extend_quad_layer()`.
+`result.diagnostics` records section details, seam states, units and their global
+element ranges, construction methods, quality, expansion distances, and added
+node/element counts. The construction path is `sections`.
+
+Finite horizontal/vertical patterns must coincide with a source/front boundary
+or form complete chords from an existing source node to the corresponding
+front. Parallel guides may partially overlap the source edge's projection.
+Overlapping or repeated guides are combined for geometry classification.
+Patterns crossing frozen source segments or existing cell interiors are
+rejected. Internal endpoints, interior T/X junctions, closed pattern loops,
+and chords to an unrelated front are unsupported in this version and report
+`unsupported_pattern_layout`. Finite guides are never silently extended.
+
+Among the constructed section candidates, the seam solver minimizes the sum of
+the sections' mean squared normalized
+outer-edge size errors: each section averages `(edge_length / element_size - 1)²`.
+For equal size error, it minimizes the worst `max(edge_aspect_ratio,
+1 / corner_scaled_jacobian)` across new cells. Edge aspect ratio is a cell's
+longest edge divided by its shortest; the corner scaled Jacobian is the
+normalized cross product of consecutive edge vectors. A score closer to 1 is
+better. This tie-break never triggers additional LINE trials. There is no new
+aspect-ratio or scaled-Jacobian rejection threshold.
+Large coarsening can therefore retain thin cells or multiple transition rows
+inside a unit, while the separate whole-layer thin collar has been removed.
+
+Input cells must be nondegenerate convex Quad4
+cells (either orientation), and all nodes must share one constant Z. Corner
+reservations that overlap, a short/coarse source edge, incompatible seam counts,
+collisions, or topology changes can make a layer infeasible. `QuadLayerError`
+and `UnmeshableDirectQuadLayout` include the failure context. Expansion is fixed:
+there is no thin-collar retry or automatic shrinking on failure.
+
+For each sampled outer configuration and seam pair, LINE uses at most
+`8 * min(source_segments, outer_segments)` unit trials; ordinary cases build
+each unit once. This bounds trial construction, while runtime still includes
+the generated cells and geometric validation. A long LINE remains one geometric
+section. `diagnostics.elapsed_seconds` measures the extension call, including
+validation, but excludes the separate preview call and rendering.
+`line_planner` is `outer_first`; `line_unit_trial_count` and
+`line_local_repair_count` include all attempted seam pairs and outer counts,
+including rejected configurations. LINE section details expose
+`unit_trial_count`, `local_repair_count`, and `outer_count_attempts`.
+Repair counts measure attempted alternative cut positions, including failures.
+The [LINE benchmark](benchmarks/mesh2d/benchmark_adapter_line.py) reports unit
+trial counts, runtime, memory, and final quality for configurable source counts
+and seam states. Use `--timeout-seconds 30` to bound exploratory measurements.
+The [full-layer benchmark](benchmarks/mesh2d/benchmark_adapter_layer.py) repeats
+the test2 L-shaped case with source spacing 5 and target size 50. It excludes
+fixture preparation and rendering, performs one warmup and five measurements,
+and requires the median full extension call to be below one second by default:
+`venv/bin/python benchmarks/mesh2d/benchmark_adapter_layer.py`.
+
+The implementation lives in `src/mesher/mesh2d/adapter/`; files in `examples/`
+only demonstrate its public API. Each example calls `extend_quad_layer()` once,
+then `mesher.mesh2d.adapter.visualization.plot_quad_layer()` draws the returned
+section, unit, and element diagnostics without planning or generating another mesh.
 
 Run [the visual example](examples/extend_quad_layer.py) with
 `python examples/extend_quad_layer.py`. It opens a Matplotlib window and saves
-`examples/output/extend_quad_layer.png`, showing input, output, and enlarged
-details for a cross, a cross with finite patterns, and a hole. Use `--case pattern`
-to focus on finite guides, `--element-size 0.25` to change the target size, or
-`--no-show --plot output.png` to save without opening a window. Matplotlib is
-provided by the optional `visualization` dependency.
+`examples/output/extend_quad_layer.png`, comparing **sections, selected units,
+and the final mesh** for a cross, finite pattern chords, and a hole. Use
+`--case pattern` to focus on guides or `--no-show --plot output.png` to save
+without opening a window. [The L-shaped regression example](examples/test2.py)
+uses source spacing 5 and expansion 50: it shows 6 LINE, 5 OUTER, and 1 INNER
+section, with `(0, 0) → (0, 100)` retained as a single LINE. Each example prints
+elapsed time and the final quality summary, also shown in the mesh panel.
+Use `--diagnostics output.json` to retain the section/unit records, chosen seam
+counts, global element ranges, quality, and timing from the same run as the PNG.
+Run `test2.py` with `--view-mesh` to also open the PyVista viewer. Matplotlib and PyVista are provided
+by the optional `visualization` dependency.
 
 ## Process-flow 3D extrusion
 

@@ -2,16 +2,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from time import perf_counter
 
 import numpy as np
 
 from ...model import Mesh2D
 from ._geometry import (BoxIndex, area, collinear_interval, cross, intervals_cover,
-                        on_segment, point_location, segment_contacts, segment_convex_interval)
-from ._partition import partition_layer
-from ._registry import fill_blocks
-from ._types import QuadLayerError, QuadLayerResult, UnmeshableDirectQuadLayout
+                        point_location, segment_contacts, segment_convex_interval)
+from ._sections import partition_sections
+from ._section_mesh import fill_sections
+from ._types import QuadLayerError, QuadLayerResult, QuadSectionPlan, UnmeshableDirectQuadLayout
 
 
 def _fail(message, code="invalid_input", **context):
@@ -61,10 +62,8 @@ def _normalize_patterns(pattern_lines, origin, scale, tol):
         if delta[axis] < 0:
             segment = segment[::-1]
         result.append(segment)
-    # Keep overlap endpoints as anchors, while dropping exact duplicates.
-    values = np.asarray(result)
-    _, first = np.unique(values.reshape(-1, 4), axis=0, return_index=True)
-    return values[np.sort(first)]
+    # Geometric classification merges duplicates later, retaining original IDs.
+    return np.asarray(result)
 
 
 def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance):
@@ -242,32 +241,51 @@ def _validate_old_patterns(mesh, data):
             _fail("pattern cuts through an existing element", "fixed_boundary_conflict", pattern_index=i)
 
 
-def _anchors(data):
-    patterns, tol = data["patterns"], data["tol"]
-    candidates = list(patterns.reshape(-1, 2))
-    if len(patterns):
-        index = BoxIndex(patterns.min(axis=1), patterns.max(axis=1), tol)
-        for i, (a, b) in enumerate(patterns):
-            for j in index.query(np.minimum(a, b) - tol, np.maximum(a, b) + tol):
-                if j > i:
-                    candidates.extend(segment_contacts(a, b, *patterns[j], tol))
-    frozen = data["xy"][data["frozen"]]
-    index = BoxIndex(frozen.min(axis=1), frozen.max(axis=1), tol)
-    result = []
-    for p in candidates:
-        # A covered subsegment of an old edge needs no endpoint insertion.
-        interior = any(on_segment(p, a, b, tol)
-                       and min(np.linalg.norm(p - a), np.linalg.norm(p - b)) > tol
-                       for a, b in frozen[index.query(p - tol, p + tol)])
-        if not interior:
-            result.append(p)
-    return np.asarray(result).reshape(-1, 2)
-
-
 def _validate_patch(*args):
     # Isolated validator is also an injectable final transaction boundary.
     from ._validation import validate_patch
     return validate_patch(*args)
+
+
+def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance):
+    try:
+        data = _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
+    except QuadLayerError as error:
+        error.context.setdefault("stage", "input_validation")
+        raise
+    for stage, action in (("pattern_validation", lambda: _validate_old_patterns(mesh, data)),
+                          ("expansion", lambda: _front(data)),
+                          ("section_partition", lambda: partition_sections(data))):
+        try:
+            result = action()
+        except QuadLayerError as error:
+            error.context.setdefault("stage", stage)
+            raise
+    return data, result
+
+
+def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
+                       expand_ratio: float = 1.0,
+                       axis_tolerance: float = 1e-3) -> QuadSectionPlan:
+    """Inspect the corner-first section geometry without generating elements.
+
+    All returned coordinates and expansion distances use the caller's frame.
+    Source chains retain original node IDs. This preview validates geometric
+    partitioning; the subsequent seam/unit search may still find no solution.
+    """
+    data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
+
+    def world(points):
+        result = points * data["scale"] + data["origin"]
+        result.setflags(write=False)
+        return result
+
+    return replace(plan,
+                   sections=tuple(replace(section, outer_boundary=world(section.outer_boundary))
+                                  for section in plan.sections),
+                   seams=tuple(replace(seam, points=world(seam.points)) for seam in plan.seams),
+                   front=world(plan.front),
+                   edge_expansion=tuple(d * data["scale"] for d in plan.edge_expansion))
 
 
 def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
@@ -281,50 +299,44 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     edge. A parallel pattern within ``element_size * expand_ratio`` determines
     that whole edge's expansion; otherwise the expansion is ``element_size``.
 
-    Source nodes, segments, and elements are immutable. Size is a target,
-    not an upper bound. Unsupported direct-quad layouts raise
-    :class:`UnmeshableDirectQuadLayout`; failures leave ``mesh`` untouched.
+    Corners are reserved before straight LINE sections. Finite patterns may
+    follow boundaries or form complete source-to-front section interfaces;
+    interior endpoints and interior pattern junctions are unsupported.
+    Source nodes, segments, and elements are immutable. Size is a target.
+    Unsupported sections or incompatible seam states raise :class:`QuadLayerError`;
+    failures leave ``mesh`` untouched. There is no thin-collar retry.
     No triangular mesh is constructed, including inside temporary builders.
     """
     start = perf_counter()
-    data = _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
-    _validate_old_patterns(mesh, data)
-    _front(data)
-    blocks, partition_diagnostics = partition_layer(
-        data["chains"], data["front"], data["patterns"], data["h"], data["tol"])
+    data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
     local_nodes = mesh.nodes.copy()
     local_nodes[:, :2] = data["xy"]
-    anchors = _anchors(data)
     try:
-        nodes, quads, new_outline, registry_diagnostics = fill_blocks(
-            local_nodes, blocks, data["frozen"], data["h"], data["tol"],
-            anchors=anchors, front=data["front"],
-            prefer_cycle=partition_diagnostics.get("path") == "structured")
-    except UnmeshableDirectQuadLayout:
-        if partition_diagnostics.get("path") != "structured":
-            raise
-        # Staged nodes from the first attempt are discarded in their entirety.
-        blocks, partition_diagnostics = partition_layer(
-            data["chains"], data["front"], data["patterns"], data["h"], data["tol"],
-            force_direct=True)
-        nodes, quads, new_outline, registry_diagnostics = fill_blocks(
-            local_nodes, blocks, data["frozen"], data["h"], data["tol"],
-            anchors=anchors, front=data["front"])
-        registry_diagnostics["structured_retry"] = True
-    _validate_patch(mesh, nodes, quads, new_outline, data)
+        nodes, quads, new_outline, registry_diagnostics = fill_sections(
+            local_nodes, plan, data, element_offset=len(mesh.elements))
+    except QuadLayerError as error:
+        error.context.setdefault("stage", "section_assembly")
+        raise
+    try:
+        _validate_patch(mesh, nodes, quads, new_outline, data)
+    except QuadLayerError as error:
+        error.context.setdefault("stage", "final_validation")
+        raise
     world_nodes = nodes.copy()
     world_nodes[len(mesh.nodes):, :2] = nodes[len(mesh.nodes):, :2] * data["scale"] + data["origin"]
     world_nodes[:len(mesh.nodes)] = mesh.nodes
     restored_xy = (world_nodes[len(mesh.nodes):, :2] - data["origin"]) / data["scale"]
     if np.any(np.abs(restored_xy - nodes[len(mesh.nodes):, :2]) > data["tol"]):
-        raise UnmeshableDirectQuadLayout("mapping new nodes back exceeds the geometric tolerance")
+        raise UnmeshableDirectQuadLayout("mapping new nodes back exceeds the geometric tolerance",
+                                        stage="world_coordinates")
     # Verify strict convexity again after restoring the caller's coordinate frame.
     represented = (world_nodes[quads, :2] - data["origin"]) / data["scale"]
     vectors = np.roll(represented, -1, axis=1) - represented
     if not np.all(np.isfinite(world_nodes)) or np.any(cross(vectors, np.roll(vectors, -1, axis=1)) <= 0):
-        raise UnmeshableDirectQuadLayout("new quads cannot be represented at the input coordinate scale")
+        raise UnmeshableDirectQuadLayout("new quads cannot be represented at the input coordinate scale",
+                                        stage="world_coordinates")
     elements = np.vstack((mesh.elements, quads))
-    diagnostics = {**partition_diagnostics, **registry_diagnostics,
+    diagnostics = {**plan.diagnostics, **registry_diagnostics,
                    "added_nodes": len(nodes) - len(mesh.nodes), "added_elements": len(quads),
                    "edge_expansion": [d * data["scale"] for d in data["expansion"]],
                    "snapped_patterns": data["snapped"], "elapsed_seconds": perf_counter() - start}

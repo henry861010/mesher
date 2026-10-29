@@ -1,8 +1,8 @@
-"""Public results and internal geometric blocks for a direct Quad4 layer."""
+"""Public results and geometric section plans for a direct Quad4 layer."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -35,15 +35,44 @@ class QuadLayerResult:
     diagnostics: dict[str, Any]
 
 
-@dataclass
-class Block:
-    """A positively oriented polygon filled directly with Quad4 cells.
+@dataclass(frozen=True)
+class Seam:
+    """A shared section interface, ordered from the source to the new front."""
 
-    Coordinates are in the orchestrator's normalized XY frame. Source nodes
-    on its sides are retained by the shared-interface registry.
+    id: int
+    points: np.ndarray
+    owners: tuple[int, ...]
+    pattern_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class Section:
+    """A geometric section; unit subdivision is a separate planning step.
+
+    Source chains follow the input outline. The outer boundary follows the
+    same traversal, from the left interface to the right interface. A plain
+    INNER section can have a one-point outer boundary. An OUTER section has
+    a one-node source chain. Neither representation is a degenerate element:
+    sections are allowed to contain several eventual quadrilateral units.
     """
 
-    vertices: np.ndarray
-    kind: str = "LINE"
+    id: int
+    kind: str
+    source_chains: tuple[tuple[int, ...], ...]
+    outer_boundary: np.ndarray
+    left_seam: int
+    right_seam: int
     source_edge: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    corner: int | None = None
+    pattern_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class QuadSectionPlan:
+    """A complete cyclic section partition, without creating mesh elements."""
+
+    sections: tuple[Section, ...]
+    seams: tuple[Seam, ...]
+    front: np.ndarray
+    edge_expansion: tuple[float, ...]
+    diagnostics: dict[str, Any]

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import UnmeshableDirectQuadLayout, extend_quad_layer
+from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer
 
 
 def _rectangle():
@@ -208,7 +208,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
         np.testing.assert_allclose(xy.max(axis=0), [4.85, 3.85])
 
     def test_temporary_mesh_objects_also_contain_only_quads(self):
-        mesh, outline = _rectangle()
+        mesh, outline, _ = _polyomino({(x, y) for x in range(4) for y in range(3)})
         original_init, original_replace = Mesh2D.__init__, Mesh2D.replace_data
         inspected = []
 
@@ -225,7 +225,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
             original_replace(candidate, *args, **kwargs)
             inspect(candidate)
 
-        patterns = [[[4.2, 3.4], [4.6, 3.4]], [[4.4, 3.2], [4.4, 3.6]]]
+        patterns = [[[1, 3], [1, 3.8]], [[3, 3], [3, 3.8]]]
         with patch.object(Mesh2D, "__init__", checked_init), \
                 patch.object(Mesh2D, "replace_data", checked_replace):
             self.run_layer(mesh, outline, h=0.8, pattern_lines=patterns)
@@ -237,14 +237,21 @@ class ExtendQuadLayerTests(unittest.TestCase):
             {(0, 1), (1, 0), (1, 1), (1, 2), (2, 1)},
         ):
             with self.subTest(cells=cells):
-                mesh, outline, _ = _polyomino(cells)
+                refined = {(3*x+dx, 3*y+dy) for x,y in cells
+                           for dx in range(3) for dy in range(3)}
+                mesh, outline, _ = _polyomino(refined)
+                mesh.nodes[:, :2] /= 3
                 self.run_layer(mesh, outline, h=0.2)
 
     def test_counterclockwise_hole_grows_toward_hole_interior(self):
-        cells = {(x, y) for x in range(3) for y in range(3)} - {(1, 1)}
+        cells = {(x, y) for x in range(12) for y in range(12)
+                 if x < 4 or x >= 8 or y < 4 or y >= 8}
         mesh, _, lookup = _polyomino(cells)
-        loop = [lookup[1, 1], lookup[2, 1], lookup[2, 2], lookup[1, 2]]
-        outline = [[loop[i], loop[(i + 1) % 4]] for i in range(4)]
+        mesh.nodes[:, :2] /= 4
+        outline = [[lookup[x, 4] for x in range(4, 9)],
+                   [lookup[8, y] for y in range(4, 9)],
+                   [lookup[x, 8] for x in range(8, 3, -1)],
+                   [lookup[4, y] for y in range(8, 3, -1)]]
         result = self.run_layer(mesh, outline, h=0.2)
         xy = mesh.nodes[_outline_nodes(result.outline), :2]
         np.testing.assert_allclose(xy.min(axis=0), [1.2, 1.2])
@@ -270,15 +277,17 @@ class ExtendQuadLayerTests(unittest.TestCase):
         self.assert_pattern_covered(mesh, patterns[0])
         self.assert_pattern_covered(mesh, patterns[1])
 
-    def test_finite_interior_endpoint_and_perpendicular_source_node(self):
+    def test_complete_transverse_patterns_share_existing_source_nodes(self):
         mesh, outline, _ = _polyomino({(x, y) for x in range(4) for y in range(3)})
-        patterns = [[[1, 3], [1, 3.35]], [[2.5, 3.1], [2.5, 3.4]]]
-        self.run_layer(mesh, outline, pattern_lines=patterns)
+        patterns = [[[1, 3], [1, 3.5]], [[3, 3], [3, 3.5]]]
+        result = self.run_layer(mesh, outline, pattern_lines=patterns)
+        self.assertEqual(result.diagnostics["sections"]["LINE"], 6)
         for pattern in patterns:
             self.assert_pattern_covered(mesh, pattern)
 
-    def test_corner_only_t_cross_overlap_and_closed_patterns(self):
+    def test_unsupported_finite_patterns_are_typed_atomic_rejections(self):
         cases = {
+            "endpoint": [[[1, 3.1], [1, 3.4]]],
             "T": [[[4.2, 3.4], [4.6, 3.4]], [[4.4, 3.2], [4.4, 3.4]]],
             "cross": [[[4.2, 3.4], [4.6, 3.4]], [[4.4, 3.2], [4.4, 3.6]]],
             "overlap": [[[4.2, 3.4], [4.5, 3.4]], [[4.6, 3.4], [4.3, 3.4]]],
@@ -288,16 +297,11 @@ class ExtendQuadLayerTests(unittest.TestCase):
         for name, patterns in cases.items():
             with self.subTest(name=name):
                 mesh, outline = _rectangle()
-                self.run_layer(mesh, outline, h=0.8, pattern_lines=patterns)
-                for pattern in patterns:
-                    self.assert_pattern_covered(mesh, pattern)
-                    for endpoint in pattern:
-                        matches = np.linalg.norm(mesh.nodes[:, :2] - endpoint, axis=1) < 1e-9
-                        self.assertEqual(np.count_nonzero(matches), 1)
-                if name in {"T", "cross"}:
-                    matches = np.linalg.norm(mesh.nodes[:, :2] - [4.4, 3.4], axis=1) < 1e-9
-                    self.assertEqual(np.count_nonzero(matches), 1,
-                                     "all incident pattern edges must share one node ID")
+                snapshot = self._snapshot(mesh)
+                with self.assertRaises(QuadLayerError) as caught:
+                    extend_quad_layer(mesh, outline, 0.8, pattern_lines=patterns)
+                self.assertEqual(caught.exception.code, "unsupported_pattern_layout")
+                self.assert_unchanged(mesh, snapshot)
 
     def test_approximately_axis_aligned_nodes_are_never_moved(self):
         mesh, outline = _rectangle()
@@ -313,14 +317,17 @@ class ExtendQuadLayerTests(unittest.TestCase):
         self.assertLess(len(_outline_nodes(result.outline)), len(_outline_nodes(outline)))
 
     def test_odd_hole_boundary_count_is_balanced_by_new_front_parity(self):
-        inner = np.array([[1, 1], [2, 1], [3, 1], [3, 3], [1, 3]], dtype=float)
+        inner = np.array([[1, 1], [1.5, 1], [2, 1], [2.5, 1], [3, 1],
+                          [3, 1.75], [3, 2.4], [3, 3], [2.4, 3], [1.7, 3],
+                          [1, 3], [1, 2.4], [1, 1.7]], dtype=float)
+        count = len(inner)
         outer = (inner - [2, 2]) * 2 + [2, 2]
-        elements = np.array([[i, 5 + i, 5 + (i + 1) % 5, (i + 1) % 5]
-                             for i in range(5)], dtype=np.int32)
+        elements = np.array([[i, count+i, count+(i+1)%count, (i+1)%count]
+                             for i in range(count)], dtype=np.int32)
         mesh = Mesh2D(np.vstack((inner, outer)), elements)
-        outline = [[0, 1, 2], [2, 3], [3, 4], [4, 0]]
+        outline = [[0, 1, 2, 3, 4], [4, 5, 6, 7], [7, 8, 9, 10], [10, 11, 12, 0]]
         result = self.run_layer(mesh, outline, h=0.25)
-        self.assertEqual(len(_outline_nodes(outline)), 5)
+        self.assertEqual(len(_outline_nodes(outline)), 13)
         self.assertEqual(len(_outline_nodes(result.outline)) % 2, 1)
 
     def test_near_tangent_pattern_has_typed_atomic_direct_layout_failure(self):
@@ -330,8 +337,9 @@ class ExtendQuadLayerTests(unittest.TestCase):
         # support. No positive straight collar can contain it as a boundary.
         pattern = [[4.0002, 0.5], [4.0002, 1.0]]
         snapshot = self._snapshot(mesh)
-        with self.assertRaises(UnmeshableDirectQuadLayout):
+        with self.assertRaises(QuadLayerError) as caught:
             extend_quad_layer(mesh, outline, 0.5, pattern_lines=[pattern])
+        self.assertEqual(caught.exception.code, "unsupported_pattern_layout")
         self.assert_unchanged(mesh, snapshot)
 
     def test_translation_scaling_rotation_and_loop_start(self):
@@ -436,30 +444,25 @@ class ExtendQuadLayerTests(unittest.TestCase):
         self.assertTrue(validate.called)
         self.assert_unchanged(mesh, snapshot)
 
-    def test_structured_failure_retries_direct_with_fresh_staging(self):
+    def test_section_failure_does_not_retry_with_a_thin_collar(self):
         from mesher.mesh2d.adapter.layer import _mesher
 
         mesh, outline = _rectangle()
-        fill = _mesher.fill_blocks
-        attempt_inputs = []
+        snapshot = self._snapshot(mesh)
+        fill = _mesher.fill_sections
 
-        def fail_after_first_fill(nodes, *args, **kwargs):
-            attempt_inputs.append(nodes.copy())
+        def fail_after_fill(nodes, *args, **kwargs):
             staged = fill(nodes, *args, **kwargs)
-            if len(attempt_inputs) == 1:
-                self.assertGreater(len(staged[0]), len(nodes))
-                self.assertGreater(len(staged[1]), 0)
-                raise UnmeshableDirectQuadLayout("injected completed structured rejection")
-            return staged
+            self.assertGreater(len(staged[0]), len(nodes))
+            self.assertGreater(len(staged[1]), 0)
+            raise QuadLayerError("injected completed section rejection",
+                                 code="unmeshable_section_layout", stage="section_builder")
 
-        with patch.object(_mesher, "fill_blocks", side_effect=fail_after_first_fill) as builder:
-            result = self.run_layer(mesh, outline)
-
-        self.assertEqual(builder.call_count, 2)
-        np.testing.assert_array_equal(attempt_inputs[0], attempt_inputs[1])
-        self.assertEqual(len(attempt_inputs[1]), 4)
-        self.assertEqual(result.diagnostics["path"], "direct")
-        self.assertTrue(result.diagnostics["structured_retry"])
+        with patch.object(_mesher, "fill_sections", side_effect=fail_after_fill) as builder:
+            with self.assertRaisesRegex(QuadLayerError, "injected completed section rejection"):
+                extend_quad_layer(mesh, outline, 0.5)
+        self.assertEqual(builder.call_count, 1)
+        self.assert_unchanged(mesh, snapshot)
 
     def test_shallow_unequal_length_segments_cross_in_either_order(self):
         from mesher.mesh2d.adapter.layer._geometry import segment_contacts
@@ -473,31 +476,18 @@ class ExtendQuadLayerTests(unittest.TestCase):
                 self.assertEqual(len(contacts), 1)
                 np.testing.assert_allclose(contacts[0], [0.5, 0.0], rtol=0, atol=tolerance)
 
-    def test_thousand_source_nodes_with_hundred_local_pattern_segments(self):
+    def test_thousand_source_nodes_reject_local_interior_pattern_endpoints(self):
         mesh, outline, _ = _polyomino({(x, y) for x in range(500) for y in range(2)})
         patterns = [
             [[2.5 + 4 * i, 2.1 + 0.001 * i],
              [2.5 + 4 * i, 2.21 + 0.001 * i]]
             for i in range(100)
         ]
-        original_nodes, original_elements = mesh.nodes.copy(), mesh.elements.copy()
-        result = extend_quad_layer(mesh, outline, 0.5, pattern_lines=patterns)
-        self.assertIs(result.mesh, mesh)
-        self.assertGreaterEqual(len(_outline_nodes(outline)), 1000)
-        np.testing.assert_array_equal(mesh.nodes[:len(original_nodes)], original_nodes)
-        np.testing.assert_array_equal(mesh.elements[:len(original_elements)], original_elements)
-        self.assertTrue(np.all(mesh.element_types == 4))
-        added = mesh.nodes[mesh.elements[len(original_elements):], :2]
-        sides = np.roll(added, -1, axis=1) - added
-        following = np.roll(sides, -1, axis=1)
-        self.assertTrue(np.all(sides[..., 0] * following[..., 1]
-                               - sides[..., 1] * following[..., 0] > 0))
-        self.assertAlmostEqual(sum(_area(cell) for cell in added), 503.0, places=7)
-        # Finite vertical constraints have many distinct endpoint heights. A
-        # global Cartesian product of all X/Y events would inflate this case.
-        self.assertLess(mesh.element_count - len(original_elements), 25_000)
-        for pattern in (patterns[0], patterns[49], patterns[-1]):
-            self.assert_pattern_covered(mesh, pattern)
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(QuadLayerError) as caught:
+            extend_quad_layer(mesh, outline, 0.5, pattern_lines=patterns)
+        self.assertEqual(caught.exception.code, "unsupported_pattern_layout")
+        self.assert_unchanged(mesh, snapshot)
 
 
 if __name__ == "__main__":

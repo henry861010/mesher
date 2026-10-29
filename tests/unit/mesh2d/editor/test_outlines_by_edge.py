@@ -136,7 +136,21 @@ class EditorOutlinesByEdgeTests(unittest.TestCase):
         self.assertIs(result.mesh, mesh)
         np.testing.assert_array_equal(mesh.nodes[:len(nodes)], nodes)
         np.testing.assert_array_equal(mesh.elements[:len(elements)], elements)
-        self.assertEqual(mesh.element_count, 1080)
+        # The adapter's pairing policy may change the transition cell count.
+        # Its contract is a complete, convex Quad4 layer with a reusable front.
+        self.assertGreater(result.diagnostics["added_elements"], 0)
+        self.assertEqual(mesh.element_count, len(elements) + result.diagnostics["added_elements"])
+        added = mesh.nodes[mesh.elements[len(elements):], :2]
+        vectors = np.roll(added, -1, axis=1) - added
+        following = np.roll(vectors, -1, axis=1)
+        self.assertTrue(np.all(vectors[..., 0] * following[..., 1]
+                               - vectors[..., 1] * following[..., 0] > 0))
+        rolled = np.roll(added, -1, axis=1)
+        new_area = .5 * np.sum(added[..., 0] * rolled[..., 1]
+                                - added[..., 1] * rolled[..., 0])
+        self.assertAlmostEqual(new_area, 250 ** 2 - 150 ** 2)
+        self.assert_closed_on_right(mesh, [np.asarray(edge, dtype=np.int64)
+                                           for edge in result.outline])
         np.testing.assert_allclose(mesh.nodes[:, :2].min(axis=0), [0, 0])
         np.testing.assert_allclose(mesh.nodes[:, :2].max(axis=0), [250, 250])
 

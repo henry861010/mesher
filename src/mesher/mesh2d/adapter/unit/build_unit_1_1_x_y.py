@@ -211,8 +211,16 @@ def _validate_patch(
     unique_edges = [tuple(edge) for edge in incidence]
     length_tolerance = 64.0 * np.finfo(float).eps * scale
     area_tolerance = length_tolerance * scale
+    endpoints = nodes[np.asarray(unique_edges, dtype=np.int64), :2]
+    lower, upper = endpoints.min(axis=1), endpoints.max(axis=1)
     for first, (a, b) in enumerate(unique_edges):
-        for c, d in unique_edges[first + 1:]:
+        candidates = np.flatnonzero(np.all(
+            np.maximum(lower[first], lower[first + 1:])
+            <= np.minimum(upper[first], upper[first + 1:]) + length_tolerance,
+            axis=1,
+        )) + first + 1
+        for second in candidates:
+            c, d = unique_edges[second]
             shared = {a, b} & {c, d}
             if shared:
                 common = shared.pop()

@@ -99,9 +99,19 @@ def _validate_cyclic_boundary(
         if np.any(np.sign(area_twice) * turns < -area_tolerance):
             raise ValueError("boundary must be convex")
 
+    ends = np.roll(xy, -1, axis=0)
+    lower, upper = np.minimum(xy, ends), np.maximum(xy, ends)
     for first in range(len(boundary)):
         a, b = xy[first], xy[(first + 1) % len(boundary)]
-        for second in range(first + 1, len(boundary)):
+        # This is exactly the early bounding-box test in _segments_intersect,
+        # evaluated for all remaining edges at once. Candidate pairs keep the
+        # original order and receive the same tolerant intersection predicate.
+        candidates = np.flatnonzero(np.all(
+            np.maximum(lower[first], lower[first + 1:])
+            <= np.minimum(upper[first], upper[first + 1:]) + length_tolerance,
+            axis=1,
+        )) + first + 1
+        for second in candidates:
             if second == first + 1 or (first == 0 and second == len(boundary) - 1):
                 continue
             c, d = xy[second], xy[(second + 1) % len(boundary)]
