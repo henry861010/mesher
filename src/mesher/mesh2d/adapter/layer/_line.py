@@ -4,26 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from heapq import heappop, heappush
-from math import ceil, floor
 
 import numpy as np
 
+from ._limits import (ElementLimitExceeded, bounded_outer_counts, check_element_limit,
+                      outer_segment_counts)
 from ._unit_plan import SectionPatch, UnitPlan, assemble_section, build_unit_patch, xyz_chain
 
 
 def outer_count_candidates(source_segments: int, left_nodes: int, right_nodes: int,
                            length: float, h: float, mandatory_intervals: int) -> list[int]:
     """The closest admissible count below and above the target, at most two."""
-    parity = (source_segments + left_nodes + right_nodes) % 2
-    minimum = max(1, mandatory_intervals)
-    target = length / h
-    lower = floor(target)
-    lower -= (lower - parity) % 2
-    upper = ceil(max(target, minimum))
-    upper += (parity - upper) % 2
-    result = {upper}
-    if lower >= minimum:
-        result.add(lower)
+    result = outer_segment_counts(source_segments, left_nodes, right_nodes,
+                                  length, h, max(1, mandatory_intervals))
     return sorted(result, key=lambda count: (abs(length / count - h), count))
 
 
@@ -76,7 +69,8 @@ def _nearest_index(values: np.ndarray, target: float, low: int, high: int) -> in
 def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
                 right: np.ndarray, size_error: float, tol: float,
                 build_cache: dict | None = None,
-                stats: dict | None = None) -> SectionPatch | None:
+                stats: dict | None = None,
+                max_added_elements: int | None = None) -> SectionPatch | None:
     """Alternate from both ends, with three cut choices and one closing repair.
 
     The shorter chain advances exactly one segment per unit. Only invalid
@@ -96,6 +90,7 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
         raise ValueError("LINE nodes must be strictly ordered along the main axis")
     cuts = {0: _Cut(0, left), short_count: _Cut(long_count, right)}
     units: dict[int, UnitPlan] = {}
+    quad_count = 0
 
     def indices(position, long_index):
         return (long_index, position) if coarsening else (position, long_index)
@@ -114,6 +109,8 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
         stats["unit_trial_count"] += 1
         try:
             return build_unit_patch(sides, tol, _cache=build_cache)
+        except ElementLimitExceeded:
+            raise
         except ValueError:
             return None
 
@@ -136,6 +133,8 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
             unit = (trial(low, position, fixed, cut) if from_left
                     else trial(position, high, cut, fixed))
             if unit is not None:
+                quad_count += len(unit.quads)
+                check_element_limit(quad_count, max_added_elements, stage="section_builder")
                 cuts[position] = cut
                 units[low if from_left else position] = unit
                 break
@@ -168,11 +167,17 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
             closing = (trial(low, high, cut, cuts[high]) if neighbor_on_left
                        else trial(low, high, cuts[low], cut))
             if closing is not None:
+                owner = far if neighbor_on_left else shared
+                quad_count += len(neighbor.quads) - len(units[owner].quads)
+                check_element_limit(quad_count + len(closing.quads), max_added_elements,
+                                    stage="section_builder")
                 cuts[shared] = cut
                 units[far if neighbor_on_left else shared] = neighbor
                 break
     if closing is None:
         return None
+    check_element_limit(quad_count + len(closing.quads), max_added_elements,
+                        stage="section_builder")
     units[low] = closing
     return assemble_section([units[i] for i in range(short_count)],
                             source, outer, left, right, size_error, tol)
@@ -181,7 +186,8 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
 def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
               right: np.ndarray, h: float, tol: float, *,
               best_only: bool = False,
-              _diagnostics: dict | None = None) -> list[SectionPatch]:
+              _diagnostics: dict | None = None,
+              max_added_elements: int | None = None) -> list[SectionPatch]:
     """Return up to two feasible target-size candidates for a LINE section.
 
     Source and outer run in the same section-travel direction. Both seams run
@@ -212,6 +218,8 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
     length = float(np.linalg.norm(np.diff(outer[:, :2], axis=0), axis=1).sum())
     counts = outer_count_candidates(len(source) - 1, len(left), len(right),
                                     length, h, len(outer) - 1)
+    counts, limit_error = bounded_outer_counts(
+        counts, len(source) - 1, len(left), len(right), max_added_elements)
     sampled_candidates = [(*sample_outer(outer, count, h, tol), count) for count in counts]
     sampled_candidates.sort(key=lambda item: (item[1], item[2]))
     candidates = []
@@ -221,13 +229,20 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
                  local_repair_count=0, outer_count_attempts=0)
     for sampled, error, _ in sampled_candidates:
         stats["outer_count_attempts"] += 1
-        patch = _plan_count(source, sampled, left, right, error, tol, build_cache, stats)
+        try:
+            patch = _plan_count(source, sampled, left, right, error, tol,
+                                build_cache, stats, max_added_elements)
+        except ElementLimitExceeded as error:
+            limit_error = error
+            continue
         if patch is not None:
             candidates.append(patch)
             if best_only:
                 break
     for patch in candidates:
         patch.diagnostics.update(stats)
+    if not candidates and limit_error is not None:
+        raise limit_error
     return candidates
 
 

@@ -72,6 +72,32 @@ There is no thin-collar fallback. Patterns with interior endpoints, T/X
 junctions, or closed internal loops are deliberately outside this version's
 supported section layouts.
 
+Both layer entry points require existing Quad4 elements; boundary nodes alone
+are not an initialization mode. This check does not affect the empty temporary
+meshes used by unit builders. Pattern input has a fixed range: its length and
+each endpoint's L-infinity distance from the source bounding box cannot exceed
+one million times that box's largest XY span. The input stage checks this range
+before pattern arithmetic or spatial queries and reports `numeric_range_exceeded`.
+Shared axis-pattern primitives express contacts and occupied/covered intervals
+in absolute axial coordinates in the normalized frame. Cell clipping and edge
+intersections use local coordinates, retaining canonical source points and
+original pattern IDs. Old-cell constraints cover the entire finite pattern,
+including other components of the input mesh. Non-pattern geometry retains the
+general segment predicates and its existing tolerances.
+
+Layer construction accepts `max_added_elements` (default one million positive
+integer elements), counting only the new layer. A count-only preflight computes
+the minimum section lower bounds across seam/outer-count candidates before any
+sampling or unit construction. Candidate guards exclude proven oversized
+boundaries and stop assembly when actual counts exceed the limit. The selected
+ring's actual count is checked before global node mapping and before commit.
+Limit failures retain `element_limit_exceeded` rather than being swallowed by
+geometry fallbacks. Candidate retries do not consume a cumulative budget. The
+solver does not add a count-constrained optimization dimension: if its chosen
+ring is too large, construction fails atomically. This guard does not promise
+bounded execution time or memory consumption. The geometry-only preview has no
+element-budget parameter and makes no budget-feasibility promise.
+
 LINE construction samples the outer boundary first, preserving mandatory
 pattern contacts and distributing nodes between anchors for at most two nearest
 parity-compatible counts. Counts are ordered by size error, then fewer segments;

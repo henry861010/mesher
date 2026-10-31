@@ -7,6 +7,7 @@ from collections import defaultdict
 import numpy as np
 
 from ._geometry import BoxIndex, area, cross, intervals_cover, segment_contacts
+from ._patterns import covered_intervals, occupied_intervals
 from ._types import QuadLayerError, UnmeshableDirectQuadLayout
 
 
@@ -135,49 +136,15 @@ def _check_edge_geometry(new_keys, new_edges, old_keys, old_edges, new_index, ol
                 )
 
 
-def _clip_pattern(start, end, cells, tol):
-    """Occupied intervals of a finite pattern in convex CCW cells."""
-    if not len(cells):
-        return []
-    edges = np.roll(cells, -1, axis=1) - cells
-    offsets = cross(edges, start - cells)
-    slopes = cross(edges, end - start)
-    epsilon = tol * np.linalg.norm(edges, axis=2)
-    parallel = slopes == 0
-    valid = ~np.any(parallel & (offsets < -epsilon), axis=1)
-    ratios = np.zeros_like(slopes)
-    np.divide(-offsets, slopes, out=ratios, where=~parallel)
-    lower = np.maximum(0.0, np.max(np.where(slopes > 0, ratios, 0.0), axis=1))
-    upper = np.minimum(1.0, np.min(np.where(slopes < 0, ratios, 1.0), axis=1))
-    good = valid & (upper > lower)
-    return list(zip(lower[good].tolist(), upper[good].tolist()))
-
-
-def _covered_pattern(start, end, edges, tol):
-    if not len(edges):
-        return []
-    delta = end - start
-    length = float(np.linalg.norm(delta))
-    relative = edges - start
-    collinear = np.all(np.abs(cross(delta, relative)) <= tol * length, axis=1)
-    projections = relative[collinear] @ delta / (length * length)
-    if not len(projections):
-        return []
-    lower = np.maximum(0.0, projections.min(axis=1))
-    upper = np.minimum(1.0, projections.max(axis=1))
-    good = upper > lower
-    return list(zip(lower[good].tolist(), upper[good].tolist()))
-
-
 def _check_patterns(patterns, new_cells, old_cells, new_cell_index, old_cell_index,
                     new_edges, old_edges, new_edge_index, old_edge_index, tol):
-    for i, (start, end) in enumerate(patterns):
-        lower, upper = np.minimum(start, end) - tol, np.maximum(start, end) + tol
-        required = _clip_pattern(start, end, new_cells[new_cell_index.query(lower, upper)], tol)
-        required += _clip_pattern(start, end, old_cells[old_cell_index.query(lower, upper)], tol)
-        covering = _covered_pattern(start, end, new_edges[new_edge_index.query(lower, upper)], tol)
-        covering += _covered_pattern(start, end, old_edges[old_edge_index.query(lower, upper)], tol)
-        if not intervals_cover(required, covering, tol / np.linalg.norm(end - start)):
+    for i, pattern in enumerate(patterns):
+        lower, upper = pattern.bounds(tol)
+        required = occupied_intervals(pattern, new_cells[new_cell_index.query(lower, upper)], tol)
+        required += occupied_intervals(pattern, old_cells[old_cell_index.query(lower, upper)], tol)
+        covering = covered_intervals(pattern, new_edges[new_edge_index.query(lower, upper)], tol)
+        covering += covered_intervals(pattern, old_edges[old_edge_index.query(lower, upper)], tol)
+        if not intervals_cover(required, covering, tol):
             _failure("a finite pattern cuts through a mesh element", pattern_index=i)
 
 
@@ -278,7 +245,7 @@ def validate_patch(mesh, nodes, quads, outline, data):
     new_cell_index = BoxIndex(new_cells.min(axis=1), new_cells.max(axis=1), tol)
     old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
     _check_overlaps(new_cells, old_cells, new_cell_index, old_cell_index, tol)
-    _check_patterns(data["patterns"], new_cells, old_cells, new_cell_index, old_cell_index,
+    _check_patterns(data["pattern_records"], new_cells, old_cells, new_cell_index, old_cell_index,
                     new_edges, old_edges, new_edge_index, old_edge_index, tol)
 
 

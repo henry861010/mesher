@@ -185,9 +185,11 @@ assert result.mesh is mesh
 # result.outline can be passed into a later, separate single-layer call.
 ```
 
-The adapter requires a planar Quad4 input and adds strictly convex, CCW Quad4
-cells. Existing coordinates, node IDs, elements, and source segments stay
-unchanged. The complete layer is validated before an atomic commit; errors
+The adapter requires at least one existing planar Quad4 and adds strictly convex,
+CCW Quad4 cells. Both `extend_quad_layer()` and `plan_quad_sections()` reject an
+empty element array with `QuadLayerError(code="empty_mesh")`; they do not initialize
+a layer from boundary nodes alone. Existing coordinates, node IDs, elements, and
+source segments stay unchanged. The complete layer is validated before an atomic commit; errors
 leave the input mesh unchanged.
 
 Each logical outline edge is an ordered node chain near global X or Y;
@@ -198,6 +200,17 @@ parallel pattern with overlapping edge projection and nearest positive distance
 otherwise the expansion is `element_size`. Coincident guides do not stop growth.
 `axis_tolerance` (default `1e-3`) limits transverse deviation relative to each
 logical edge's length. The new front is axis aligned; old coordinates never move.
+
+Patterns have a fixed numeric support range. Let `S` be the largest XY span of
+the source outline's bounding box. Each pattern's length and each endpoint's
+L-infinity distance to that box must be at most `1_000_000 * S`, inclusive.
+The endpoint distance is the largest amount by which either coordinate lies
+outside the box (zero for an endpoint inside it). These are algorithm limits,
+independent of the chosen physical units; exceeding either reports
+`numeric_range_exceeded` at `input_validation`, with the original `pattern_index`,
+the offending quantity, and the normalized limit. There is no override for this
+range. Within it, pattern intersections and coverage use local axis coordinates
+so extending a guide's remote tails does not reduce precision near the mesh.
 
 `extend_quad_layer()` performs both levels internally in one call:
 
@@ -232,6 +245,8 @@ importable from `mesher.mesh2d.adapter`. It is not a required step before
 Sections retain their source node chains, outer boundary, and left/right seam
 IDs; seam coordinates run from source to front. This preview verifies geometric
 partitioning; full unit feasibility is determined during `extend_quad_layer()`.
+It has no element-budget argument and does not guarantee that construction fits
+within the budget of a later extension call.
 `result.diagnostics` records section details, seam states, units and their global
 element ranges, construction methods, quality, expansion distances, and added
 node/element counts. The construction path is `sections`.
@@ -263,6 +278,24 @@ reservations that overlap, a short/coarse source edge, incompatible seam counts,
 collisions, or topology changes can make a layer infeasible. `QuadLayerError`
 and `UnmeshableDirectQuadLayout` include the failure context. Expansion is fixed:
 there is no thin-collar retry or automatic shrinking on failure.
+
+`extend_quad_layer(..., max_added_elements=1_000_000)` limits the number of new
+Quad4 elements in this call, not the existing mesh size or the sum of candidate
+trials. The argument accepts positive Python or NumPy integers; booleans,
+floating-point values, `None`, and nonpositive values are invalid. A result
+exactly at the limit is allowed. Each call, including a subsequent layer, has
+its own limit; successful diagnostics record `max_added_elements`.
+
+Before sampling or unit construction, a count-only pass checks a lower bound
+over all sections. Oversized candidates are excluded before sampling or further
+assembly. The actual chosen layer is checked before global node mapping and
+again before commit. A refusal caused by the limit reports
+`QuadLayerError(code="element_limit_exceeded")`, with the limit, a known lower
+bound or actual count, and the stage. Failures leave the mesh unchanged.
+The seam solver does not search for another, smaller assignment when its chosen
+layer exceeds the budget, and the target size is never automatically increased.
+This is an output-count guard, not a time or memory guarantee: transient builder
+data and alternative candidates can exceed the final output size.
 
 For each sampled outer configuration and seam pair, LINE uses at most
 `8 * min(source_segments, outer_segments)` unit trials; ordinary cases build

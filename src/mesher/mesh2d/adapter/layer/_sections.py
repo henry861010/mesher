@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from ._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
+from ._patterns import AxisPattern, covered_intervals, pattern_contacts
 from ._types import QuadLayerError, QuadSectionPlan, Seam, Section
 
 
@@ -39,14 +40,6 @@ def _readonly(points):
     return result
 
 
-def _unique(values, epsilon):
-    result = []
-    for value in sorted(values):
-        if not result or value - result[-1] > epsilon:
-            result.append(float(value))
-    return result
-
-
 def _segments(points):
     return zip(points[:-1], points[1:])
 
@@ -66,16 +59,10 @@ def _band_location(point, data):
 def _pattern_ids(points, patterns, tol):
     found = set()
     for a, b in _segments(points):
-        length = float(np.linalg.norm(b - a))
-        if length <= tol:
-            continue
-        for index, (c, d) in enumerate(patterns):
-            if max(abs(float(cross(b - a, c - a))), abs(float(cross(b - a, d - a)))) > tol * length:
-                continue
-            values = sorted((float((c - a) @ (b - a)) / length,
-                             float((d - a) @ (b - a)) / length))
-            if min(length, values[1]) - max(0., values[0]) > tol:
-                found.add(index)
+        for pattern in patterns:
+            intervals = covered_intervals(pattern, np.asarray(((a, b),)), tol)
+            if any(hi - lo > tol for lo, hi in intervals):
+                found.update(pattern.ids)
     return tuple(sorted(found))
 
 
@@ -106,54 +93,60 @@ class _Chord:
 def _union_patterns(patterns, tol):
     """Merge finite collinear intervals, retaining their original identities."""
     records = []
-    for index, segment in enumerate(patterns):
-        axis = int(np.argmax(np.abs(segment[1] - segment[0])))
-        records.append((axis, float(segment[0, 1 - axis]),
-                        float(np.min(segment[:, axis])), float(np.max(segment[:, axis])), index))
+    for pattern in patterns:
+        records.append((pattern.axis, pattern.support, pattern.lo, pattern.hi, pattern.ids))
     records.sort()
     groups = []
-    for axis, support, low, high, index in records:
+    for axis, support, low, high, indices in records:
         if groups and axis == groups[-1][0] and abs(support - groups[-1][1]) <= tol:
-            groups[-1][2].append((low, high, index))
+            groups[-1][2].append((low, high, indices))
         else:
-            groups.append((axis, support, [(low, high, index)]))
+            groups.append((axis, support, [(low, high, indices)]))
     result = []
     for axis, support, intervals in groups:
         merged = []
-        for low, high, index in sorted(intervals):
+        for low, high, indices in sorted(intervals):
             if merged and low <= merged[-1][1] + tol:
                 merged[-1][1] = max(high, merged[-1][1])
-                merged[-1][2].add(index)
+                merged[-1][2].update(indices)
             else:
-                merged.append([low, high, {index}])
+                merged.append([low, high, set(indices)])
         for low, high, indices in merged:
-            points = np.full((2, 2), support)
-            points[:, axis] = (low, high)
-            result.append((points, tuple(sorted(indices))))
+            result.append(AxisPattern(axis, support, low, high, tuple(sorted(indices))))
     return result
 
 
 def _admit_patterns(data):
     """Return complete local transverse chords and mandatory pattern anchors."""
-    tol, patterns = data["tol"], data["patterns"]
+    tol, patterns = data["tol"], data["pattern_records"]
     source, front, ids, chains = data["source"], data["front"], data["ids"], data["chains"]
     boundaries = list(_loop_segments(source)) + list(_loop_segments(front))
     boundary_points = np.asarray(boundaries)
     boundary_index = BoxIndex(boundary_points.min(axis=1), boundary_points.max(axis=1), tol)
-    chords, anchors = [], list(patterns.reshape((-1, 2)))
-    for segment, pattern_ids in _union_patterns(patterns, tol):
-        a, b = segment
-        delta, length = b - a, float(np.linalg.norm(b - a))
-        values = [0., 1.]
-        for j in boundary_index.query(np.minimum(a, b), np.maximum(a, b)):
-            for contact in segment_contacts(a, b, *boundaries[j], tol):
-                values.append(float(np.clip((contact - a) @ delta / length**2, 0., 1.)))
+    chords, anchors = [], list(data["patterns"].reshape((-1, 2)))
+    for pattern in _union_patterns(patterns, tol):
+        pattern_ids = pattern.ids
+        events = [(pattern.lo, pattern.point(pattern.lo), 0),
+                  (pattern.hi, pattern.point(pattern.hi), 0)]
+        for j in boundary_index.query(*pattern.bounds()):
+            for contact in pattern_contacts(pattern, *boundaries[j], tol):
+                # Keep exact boundary coordinates, preferring frozen source
+                # contacts when a finite endpoint represents the same point.
+                priority = 2 if j < len(source) else 1
+                events.append((float(contact[pattern.axis]), contact, priority))
                 anchors.append(contact)
-        values = _unique(values, tol / length)
-        for low, high in zip(values, values[1:]):
-            if (high - low) * length <= tol or _band_location(a + (low + high) * .5 * delta, data) != 1:
+        ordered = []
+        for event in sorted(events, key=lambda event: event[0]):
+            if not ordered or event[0] - ordered[-1][0] > tol:
+                ordered.append(event)
+            elif event[2] > ordered[-1][2]:
+                ordered[-1] = event
+        for first, last in zip(ordered, ordered[1:]):
+            low, high = first[0], last[0]
+            if (high - low <= tol
+                    or _band_location(pattern.point(low + (high - low) * .5), data) != 1):
                 continue
-            endpoints = np.asarray((a + low * delta, a + high * delta))
+            endpoints = np.asarray((first[1], last[1])).copy()
             source_ends = [point_location(point, source, tol) == 0 for point in endpoints]
             front_ends = [point_location(point, front, tol) == 0 for point in endpoints]
             if source_ends == [False, True] and front_ends == [True, False]:
@@ -216,7 +209,7 @@ class _Seams:
                 return seam.id
         seam_id = len(self.items)
         self.items.append(Seam(seam_id, _readonly(points), (),
-                               _pattern_ids(points, self.data["patterns"], self.data["tol"])))
+                               _pattern_ids(points, self.data["pattern_records"], self.data["tol"])))
         return seam_id
 
 
@@ -354,8 +347,8 @@ def partition_sections(data) -> QuadSectionPlan:
         section = Section(len(sections), kind, source_chains, _readonly(outer), left, right,
                           source_edge, corner)
         pattern_ids = set(registry.items[left].pattern_ids) | set(registry.items[right].pattern_ids)
-        pattern_ids.update(_pattern_ids(outer, data["patterns"], data["tol"]))
-        pattern_ids.update(_pattern_ids(_source_points(section, data), data["patterns"], data["tol"]))
+        pattern_ids.update(_pattern_ids(outer, data["pattern_records"], data["tol"]))
+        pattern_ids.update(_pattern_ids(_source_points(section, data), data["pattern_records"], data["tol"]))
         sections.append(replace(section, pattern_ids=tuple(sorted(pattern_ids))))
 
     for edge, corner in enumerate(corners):

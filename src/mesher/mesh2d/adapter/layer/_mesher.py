@@ -8,8 +8,11 @@ from time import perf_counter
 import numpy as np
 
 from ...model import Mesh2D, _validate_zero_z
-from ._geometry import (BoxIndex, area, collinear_interval, cross, intervals_cover,
-                        point_location, segment_contacts, segment_convex_interval)
+from ._geometry import (BoxIndex, area, cross, intervals_cover,
+                        point_location, segment_contacts)
+from ._patterns import (PATTERN_RANGE_LIMIT, AxisPattern, covered_intervals,
+                        occupied_intervals, pattern_contacts)
+from ._limits import check_element_limit
 from ._sections import partition_sections
 from ._section_mesh import fill_sections
 from ._types import QuadLayerError, QuadLayerResult, QuadSectionPlan, UnmeshableDirectQuadLayout
@@ -39,9 +42,16 @@ def _simple_loop(polygon, tol, name):
                 _fail(f"{name} intersects or touches itself", "topology_change", edges=(i, int(j)))
 
 
-def _normalize_patterns(pattern_lines, origin, scale, tol):
+def _normalize_patterns(pattern_lines, origin, scale, tol, source):
+    def range_failure(reason, index=None):
+        raise QuadLayerError("patterns exceed the source-relative numeric range",
+                             code="numeric_range_exceeded", stage="input_validation",
+                             pattern_index=index, limit=PATTERN_RANGE_LIMIT, reason=reason)
+
     try:
         patterns = np.asarray(pattern_lines, dtype=float)
+    except OverflowError:
+        range_failure("coordinate_conversion")
     except (ValueError, TypeError) as exc:
         raise QuadLayerError("patterns must have shape (n, 2, 2)") from exc
     if patterns.size == 0:
@@ -50,12 +60,21 @@ def _normalize_patterns(pattern_lines, origin, scale, tol):
         _fail("patterns must be finite XY segments with shape (n, 2, 2)")
     with np.errstate(over="ignore", invalid="ignore"):
         patterns = (patterns - origin) / scale
-    if not np.all(np.isfinite(patterns)):
-        _fail("patterns and source have incompatible numeric scales")
+    # Source coordinates are within one unit of the chosen source-node origin.
+    # Bound endpoints before subtraction, lengths, or spatial-index queries.
+    lower, upper = source.min(axis=0), source.max(axis=0)
     result = []
     for i, segment in enumerate(patterns):
+        if (not np.all(np.isfinite(segment))
+                or np.any(np.abs(segment) > PATTERN_RANGE_LIMIT + 1.0)):
+            range_failure("endpoint_distance", i)
+        distance = np.maximum(lower - segment, segment - upper)
+        if np.any(distance > PATTERN_RANGE_LIMIT):
+            range_failure("endpoint_distance", i)
         delta = segment[1] - segment[0]
         axis = int(np.argmax(np.abs(delta)))
+        if abs(delta[axis]) > PATTERN_RANGE_LIMIT:
+            range_failure("length", i)
         if abs(delta[axis]) <= tol or abs(delta[1 - axis]) > tol:
             _fail("patterns must be nonzero horizontal or vertical segments", pattern_index=i)
         segment[:, 1 - axis] = segment[:, 1 - axis].mean()
@@ -73,6 +92,8 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
         _validate_zero_z(mesh.nodes)
     except ValueError as exc:
         raise QuadLayerError(str(exc)) from exc
+    if not len(mesh.elements):
+        _fail("layer extension requires at least one existing Quad4 element", "empty_mesh")
     try:
         h, ratio, axis_tol = float(element_size), float(expand_ratio), float(axis_tolerance)
     except (TypeError, ValueError) as exc:
@@ -158,9 +179,12 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
             centroid = cells[owners[0][0]].mean(axis=0)
             if cross(xy[b] - xy[a], centroid - xy[a]) >= -tol * np.linalg.norm(xy[b] - xy[a]):
                 _fail("outline direction must place existing mesh on its right", "outline_orientation")
-    patterns = _normalize_patterns(pattern_lines, origin, scale, tol)
+    patterns = _normalize_patterns(pattern_lines, origin, scale, tol, source)
+    pattern_records = tuple(AxisPattern.from_points(points, (i,))
+                            for i, points in enumerate(patterns))
     return dict(xy=xy, ids=ids, source=source, chains=chains, normals=normals,
                 directions=directions, frozen=frozen, patterns=patterns,
+                pattern_records=pattern_records,
                 h=h, ratio=ratio, tol=tol, origin=origin, scale=scale,
                 old_incidence=incidence)
 
@@ -173,13 +197,14 @@ def _front(data):
         support = float(np.max(chain @ normal))
         lo, hi = min(chain @ tangent), max(chain @ tangent)
         nearest, pattern_id = float("inf"), None
-        for j, pattern in enumerate(data["patterns"]):
-            if abs(float((pattern[1] - pattern[0]) @ normal)) > tol:
+        for j, pattern in enumerate(data["pattern_records"]):
+            if normal[pattern.axis] != 0:
                 continue
-            interval = sorted(pattern @ tangent)
+            interval = sorted((pattern.lo * tangent[pattern.axis],
+                               pattern.hi * tangent[pattern.axis]))
             if interval[1] < lo - tol or interval[0] > hi + tol:
                 continue
-            distance = float(pattern[0] @ normal) - support
+            distance = float(pattern.support * normal[1 - pattern.axis]) - support
             if tol < distance < nearest:
                 nearest, pattern_id = distance, j
         distance = nearest if np.isfinite(nearest) and nearest / h <= data["ratio"] + tol else h
@@ -213,17 +238,17 @@ def _front(data):
 
 
 def _validate_old_patterns(mesh, data):
-    patterns, xy, tol = data["patterns"], data["xy"], data["tol"]
+    patterns, xy, tol = data["pattern_records"], data["xy"], data["tol"]
     if not len(patterns):
         return
     frozen_points = xy[data["frozen"]]
     index = BoxIndex(frozen_points.min(axis=1), frozen_points.max(axis=1), tol)
-    for i, (a, b) in enumerate(patterns):
-        for j in index.query(np.minimum(a, b) - tol, np.maximum(a, b) + tol):
+    for i, pattern in enumerate(patterns):
+        for j in index.query(*pattern.bounds(tol)):
             c, d = frozen_points[j]
-            if collinear_interval(a, b, c, d, tol) is not None:
+            if covered_intervals(pattern, frozen_points[j:j + 1], tol):
                 continue
-            for point in segment_contacts(a, b, c, d, tol):
+            for point in pattern_contacts(pattern, c, d, tol):
                 if min(np.linalg.norm(point - c), np.linalg.norm(point - d)) > tol:
                     _fail("pattern would split a frozen source segment", "fixed_boundary_conflict", pattern_index=i)
     if not len(mesh.elements):
@@ -233,13 +258,11 @@ def _validate_old_patterns(mesh, data):
     keys = np.asarray(list(data["old_incidence"]), dtype=int)
     edge_points = xy[keys]
     edge_index = BoxIndex(edge_points.min(axis=1), edge_points.max(axis=1), tol)
-    for i, (a, b) in enumerate(patterns):
-        lo, hi = np.minimum(a, b) - tol, np.maximum(a, b) + tol
-        required = [interval for j in cell_index.query(lo, hi)
-                    if (interval := segment_convex_interval(a, b, cells[j], tol)) is not None]
-        covering = [interval for j in edge_index.query(lo, hi)
-                    if (interval := collinear_interval(a, b, *edge_points[j], tol)) is not None]
-        if not intervals_cover(required, covering, tol / np.linalg.norm(b - a)):
+    for i, pattern in enumerate(patterns):
+        lo, hi = pattern.bounds(tol)
+        required = occupied_intervals(pattern, cells[cell_index.query(lo, hi)], tol)
+        covering = covered_intervals(pattern, edge_points[edge_index.query(lo, hi)], tol)
+        if not intervals_cover(required, covering, tol):
             _fail("pattern cuts through an existing element", "fixed_boundary_conflict", pattern_index=i)
 
 
@@ -274,6 +297,10 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
     All returned coordinates and expansion distances use the caller's frame.
     Source chains retain original node IDs. This preview validates geometric
     partitioning; the subsequent seam/unit search may still find no solution.
+    At least one existing Quad4 is required. Pattern lengths and endpoint
+    L-infinity distances from the source bounding box cannot exceed one million
+    times its largest XY span. This preview has no element budget and makes no
+    guarantee that construction fits a later call's ``max_added_elements``.
     """
     data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
 
@@ -292,7 +319,8 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
 
 def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
                       expand_ratio: float = 1.0,
-                      axis_tolerance: float = 1e-3) -> QuadLayerResult:
+                      axis_tolerance: float = 1e-3,
+                      max_added_elements: int = 1_000_000) -> QuadLayerResult:
     """Append one conforming Quad4 layer, committing only after validation.
 
     ``outline`` is a closed chain of near-axis logical edges, CW for an
@@ -300,6 +328,19 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     XY segments of shape ``(n, 2, 2)``. Growth is to the left of each directed
     edge. A parallel pattern within ``element_size * expand_ratio`` determines
     that whole edge's expansion; otherwise the expansion is ``element_size``.
+
+    At least one existing Quad4 is required. Each pattern's length and each
+    endpoint's L-infinity distance from the source bounding box must be at most
+    one million times that box's largest XY span, inclusive. Out-of-range
+    patterns raise ``QuadLayerError`` with code ``numeric_range_exceeded``.
+
+    ``max_added_elements`` is a positive Python or NumPy integer limiting only
+    the new Quad4 cells in this call; bool, float and None are not accepted.
+    The default is one million, and equality is allowed. A count-only preflight
+    and actual candidate/layer checks raise ``element_limit_exceeded`` before
+    committing an oversized result. Trials do not consume cumulative budget.
+    The solver does not search for a smaller assignment if its selected layer
+    exceeds the limit. This is not a memory or execution-time guarantee.
 
     Corners are reserved before straight LINE sections. Finite patterns may
     follow boundaries or form complete source-to-front section interfaces;
@@ -310,7 +351,14 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     No triangular mesh is constructed, including inside temporary builders.
     """
     start = perf_counter()
+    if (isinstance(max_added_elements, (bool, np.bool_))
+            or not isinstance(max_added_elements, (int, np.integer))
+            or max_added_elements <= 0):
+        _fail("max_added_elements must be a positive integer", "invalid_input",
+              stage="input_validation", parameter="max_added_elements")
+    max_added_elements = int(max_added_elements)
     data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
+    data["max_added_elements"] = max_added_elements
     local_nodes = mesh.nodes.copy()
     local_nodes[:, :2] = data["xy"]
     try:
@@ -337,9 +385,11 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     if not np.all(np.isfinite(world_nodes)) or np.any(cross(vectors, np.roll(vectors, -1, axis=1)) <= 0):
         raise UnmeshableDirectQuadLayout("new quads cannot be represented at the input coordinate scale",
                                         stage="world_coordinates")
+    check_element_limit(len(quads), max_added_elements, stage="precommit")
     elements = np.vstack((mesh.elements, quads))
     diagnostics = {**plan.diagnostics, **registry_diagnostics,
                    "added_nodes": len(nodes) - len(mesh.nodes), "added_elements": len(quads),
+                   "max_added_elements": max_added_elements,
                    "edge_expansion": [d * data["scale"] for d in data["expansion"]],
                    "snapped_patterns": data["snapped"], "elapsed_seconds": perf_counter() - start}
     # This is the only mutation of the caller's mesh.

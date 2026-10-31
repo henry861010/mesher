@@ -7,6 +7,7 @@ import numpy as np
 
 from ._corners import plan_corner
 from ._line import plan_line
+from ._limits import ElementLimitExceeded, check_element_limit, preflight_element_limit
 from ._registry import _NodePool, _PointIndex
 from ._types import QuadLayerError
 
@@ -80,41 +81,54 @@ def _quality_summary(nodes, quads):
 def fill_sections(nodes, plan, data, *, element_offset=0):
     """Stage a layer; no caller-owned mesh data is changed during candidate search."""
     tol, h = data["tol"], data["h"]
-    source_ids = np.unique(data["frozen"])
-    pool = _NodePool(nodes, source_ids, tol)
+    limit = data.get("max_added_elements")
+    preflight_element_limit(plan, data)
     states = {seam.id: seam_states(seam, tol) for seam in plan.seams}
     candidates = []
     line_stats = {}
+    limit_errors = []
     for section in plan.sections:
         source_chains = tuple(nodes[np.asarray(chain, dtype=int)] for chain in section.source_chains)
         outer = _xyz(section.outer_boundary)
         options = {}
         rejected = []
+        section_limit_errors = []
         if section.kind == "LINE":
             line_stats[section.id] = {"line_planner": "outer_first", "unit_trial_count": 0,
                                       "local_repair_count": 0, "outer_count_attempts": 0}
         for left_count, left in states[section.left_seam].items():
             for right_count, right in states[section.right_seam].items():
+                attempt_stats = {}
                 try:
                     if section.kind == "LINE":
-                        attempt_stats = {}
                         patches = plan_line(source_chains[0], outer, left, right, h, tol,
-                                            best_only=True, _diagnostics=attempt_stats)
-                        for key in ("unit_trial_count", "local_repair_count", "outer_count_attempts"):
-                            line_stats[section.id][key] += attempt_stats[key]
+                                            best_only=True, _diagnostics=attempt_stats,
+                                            max_added_elements=limit)
                     else:
                         corner = np.r_[plan.front[section.corner], 0.0]
                         patches = plan_corner(section.kind, source_chains, outer, left, right,
-                                              corner, h, tol)
+                                              corner, h, tol, max_added_elements=limit)
                     if patches:
+                        for candidate in patches:
+                            check_element_limit(len(candidate.quads), limit,
+                                                stage="section_builder", section_id=section.id)
                         options[left_count, right_count] = min(
                             patches, key=lambda patch: (patch.size_error, patch.quality))
                     else:
                         rejected.append(f"{left_count}/{right_count}: nearest legal outer counts "
                                         "have no valid unit assembly")
+                except ElementLimitExceeded as error:
+                    error.context.setdefault("section_id", section.id)
+                    section_limit_errors.append(error)
                 except ValueError as error:
                     rejected.append(f"{left_count}/{right_count}: {error}")
+                finally:
+                    if section.kind == "LINE":
+                        for key in ("unit_trial_count", "local_repair_count", "outer_count_attempts"):
+                            line_stats[section.id][key] += attempt_stats.get(key, 0)
         if not options:
+            if section_limit_errors:
+                raise section_limit_errors[0]
             raise QuadLayerError("no seam pair can build this section with direct units",
                                  code="unmeshable_section_layout", stage="section_builder",
                                  section_id=section.id, kind=section.kind,
@@ -122,7 +136,17 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                                  pattern_ids=section.pattern_ids, causes=sorted(set(rejected)),
                                  **line_stats.get(section.id, {}))
         candidates.append(options)
-    selected = solve_section_ring(plan.sections, states, candidates)
+        limit_errors.extend(section_limit_errors)
+    try:
+        selected = solve_section_ring(plan.sections, states, candidates)
+    except QuadLayerError as error:
+        if error.code == "unmeshable_seam_assignment" and limit_errors:
+            raise limit_errors[0]
+        raise
+    added_elements = sum(len(options[pair].quads) for options, pair in zip(candidates, selected))
+    check_element_limit(added_elements, limit, stage="selected_layer")
+    source_ids = np.unique(data["frozen"])
+    pool = _NodePool(nodes, source_ids, tol)
 
     def world(points):
         return (np.asarray(points)[:, :2] * data["scale"] + data["origin"]).tolist()
