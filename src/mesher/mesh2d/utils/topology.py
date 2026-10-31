@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ..model import Mesh2D
+from ..model import Mesh2D, _validate_zero_z
 
 
 def _delete_element(mesh: Mesh2D, indices) -> Mesh2D:
@@ -26,6 +26,7 @@ def _delete_element(mesh: Mesh2D, indices) -> Mesh2D:
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
 
+    _validate_zero_z(mesh.nodes)
     elements = np.asarray(mesh.elements)
     if elements.ndim != 2 or elements.shape[1] != 4:
         raise ValueError("elements must have shape (M, 4)")
@@ -88,6 +89,7 @@ def _clear_node(mesh: Mesh2D) -> np.ndarray:
         nodes.dtype, np.complexfloating
     ):
         raise ValueError("nodes must have a real numeric dtype")
+    _validate_zero_z(nodes)
     if elements.ndim != 2 or elements.shape[1] != 4:
         raise ValueError("elements must have shape (M, 4)")
     if not np.issubdtype(elements.dtype, np.integer) or np.issubdtype(
@@ -137,6 +139,7 @@ def _select_boundary_elements(mesh, indices):
         nodes.dtype, np.complexfloating
     ):
         raise ValueError("nodes must have a real numeric dtype")
+    _validate_zero_z(nodes)
     if elements.ndim != 2 or elements.shape[1] != 4:
         raise ValueError("elements must have shape (M, 4)")
     if not np.issubdtype(elements.dtype, np.integer) or np.issubdtype(

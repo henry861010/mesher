@@ -43,6 +43,18 @@ package.
 that retained references to constructor inputs or expected `(n, 2)` storage
 must read back `mesh.nodes` and use `mesh.nodes[:, :2]` for planar work.
 
+All Mesh2D Z values must now be exactly zero. Inputs on a nonzero constant plane
+or with tiny Z noise are rejected, as are nonfinite Z values. If projection is
+intended, construct `Mesh2D(xyz[:, :2], elements)` explicitly. The `nodes` setter
+and `replace_data` enforce the same rule. In-place NumPy editing remains
+supported, but any invalid Z must be repaired before calling a mesh operation,
+including a no-op; failed validation does not change the mesh.
+
+Remove the `planar` argument and `planarity` property from uses of
+`GeometryTolerance`; only the XY `absolute` and `relative` tolerances remain.
+`Dragger.set_2D` also requires zero Z when a third source column is provided.
+3D layer heights, Mesh3D coordinates, and exported 3D geometry are unaffected.
+
 ## Mesh25D reorganization
 
 Callers of the earlier process-flow Python API must update these imports:

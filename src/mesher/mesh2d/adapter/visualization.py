@@ -50,6 +50,9 @@ def plot_quad_layer(result: QuadLayerResult, source_outline, *, pattern_lines=()
     results in one figure, or omit them to create a figure. Returns the figure.
     Neither this function nor its diagnostic helpers call a mesher or planner.
     """
+    from ..model import _validate_zero_z
+
+    _validate_zero_z(result.mesh.nodes)
     import matplotlib.pyplot as plt
     from matplotlib.collections import PolyCollection
     from matplotlib.lines import Line2D

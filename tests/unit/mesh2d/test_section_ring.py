@@ -71,11 +71,11 @@ class SectionRingTests(unittest.TestCase):
     def test_pattern_kink_has_three_and_four_node_canonical_states(self):
         points = np.array([[0., 0], [0, 2], [1, 2]])
         seam = SimpleNamespace(id=4, points=points)
-        states = seam_states(seam, 7.0, 1e-10)
+        states = seam_states(seam, 1e-10)
         self.assertEqual(set(states), {3, 4})
         np.testing.assert_array_equal(states[3][:, :2], points)
         np.testing.assert_array_equal(states[4][:, :2], [[0, 0], [0, 1], [0, 2], [1, 2]])
-        self.assertTrue(np.all(states[4][:, 2] == 7))
+        self.assertTrue(np.all(states[4][:, 2] == 0))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ...model import Mesh2D
+from ...model import Mesh2D, _validate_zero_z
 
 
 def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -59,6 +59,8 @@ def _segments_intersect(
 def _validate_cyclic_boundary(
     mesh: Mesh2D | np.ndarray, edges: tuple[np.ndarray, ...], *, require_convex: bool
 ) -> np.ndarray:
+    if isinstance(mesh, Mesh2D):
+        _validate_zero_z(mesh.nodes)
     nodes = mesh.nodes if isinstance(mesh, Mesh2D) else mesh
     for number, edge in enumerate(edges, start=1):
         if not isinstance(edge, np.ndarray) or edge.ndim != 1:
@@ -158,7 +160,7 @@ def _stage_unit_1_1_1_x(
     added_quads: list[list[int]] = []
 
     def coordinate(index: int) -> np.ndarray:
-        return nodes[index] if index < original_node_count else added_nodes[index - original_node_count]
+        return nodes[index, :2] if index < original_node_count else added_nodes[index - original_node_count]
 
     while len(lower) > 2:
         lower_points = np.asarray([coordinate(index) for index in lower])
@@ -191,7 +193,8 @@ def _stage_unit_1_1_1_x(
         top_left, top_right = left_index, right_index
 
     added_quads.append([lower[0], lower[1], top_right, top_left])
-    new_nodes = np.asarray(added_nodes, dtype=np.float64).reshape(-1, 3)
+    new_xy = np.asarray(added_nodes, dtype=np.float64).reshape(-1, 2)
+    new_nodes = np.column_stack((new_xy, np.zeros(len(new_xy))))
     new_quads = np.asarray(added_quads, dtype=np.int64)
     return new_nodes, new_quads
 

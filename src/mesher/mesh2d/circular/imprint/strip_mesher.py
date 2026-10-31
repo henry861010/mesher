@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ...model import Mesh2D
+from ...model import Mesh2D, _validate_zero_z
 from ..utils.pattern_segments import (
     _PatternGuideSet,
     _circle_line_intersections,
@@ -99,6 +99,7 @@ class _CircularStripMesher(
         """
         if not isinstance(self.mesh, Mesh2D):
             raise TypeError("mesh must be a Mesh2D instance")
+        _validate_zero_z(self.mesh.nodes)
         if not isinstance(self.closed_input, (bool, np.bool_)):
             raise TypeError("closed must be True or False")
         self.closed = bool(self.closed_input)

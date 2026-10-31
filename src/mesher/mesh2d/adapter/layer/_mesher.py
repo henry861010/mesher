@@ -7,7 +7,7 @@ from time import perf_counter
 
 import numpy as np
 
-from ...model import Mesh2D
+from ...model import Mesh2D, _validate_zero_z
 from ._geometry import (BoxIndex, area, collinear_interval, cross, intervals_cover,
                         point_location, segment_contacts, segment_convex_interval)
 from ._sections import partition_sections
@@ -70,6 +70,10 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
     if not isinstance(mesh, Mesh2D):
         _fail("mesh must be a Mesh2D")
     try:
+        _validate_zero_z(mesh.nodes)
+    except ValueError as exc:
+        raise QuadLayerError(str(exc)) from exc
+    try:
         h, ratio, axis_tol = float(element_size), float(expand_ratio), float(axis_tolerance)
     except (TypeError, ValueError) as exc:
         raise QuadLayerError("size, ratio and tolerance must be finite scalars") from exc
@@ -116,8 +120,6 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
               4 * abs(float(np.spacing(np.max(np.abs(original)))) / scale))
     if h <= 32 * tol:
         raise UnmeshableDirectQuadLayout("element_size is below geometric resolution")
-    if np.ptp(mesh.nodes[:, 2]) > tol * scale:
-        _fail("all nodes must lie in one plane parallel to XY")
     source = xy[flat]
     chains = [xy[chain].copy() for chain in ids]
     directions = []

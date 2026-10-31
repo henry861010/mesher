@@ -61,7 +61,8 @@ class EditorMesh2D:
         """Return ascending element IDs with every XY vertex in the rectangle.
 
         Corners can be supplied in either order. The bounds are inclusive and
-        must be finite scalar numbers. This read-only operation ignores Z.
+        must be finite scalar numbers. Geometry uses XY; all node Z values
+        must be zero.
         """
         elements = _select_boundary_elements(mesh, None)
         try:
@@ -84,14 +85,14 @@ class EditorMesh2D:
     def equivalence(mesh: Mesh2D, tol: float = 0.001) -> Mesh2D:
         """Weld referenced nodes transitively by XY distance <= tol, in place.
 
-        The lowest original node ID supplies each group's complete XYZ. A
-        collapsed Quad4 becomes Tri3 when adjacent duplicates can be removed;
+        The lowest original node ID supplies each group's XY coordinate with
+        Z=0. A collapsed Quad4 becomes Tri3 when adjacent duplicates can be removed;
         fewer than three vertices, non-adjacent duplicates, and zero-area cells
         are discarded. Winding, concavity, and duplicate elements are retained.
         Unreferenced nodes are removed and connectivity is renumbered.
 
         tol must be finite and non-negative (zero means exact XY equality).
-        Referenced XYZ coordinates must be finite. Invalid input raises before
+        Referenced XY coordinates must be finite. Invalid input raises before
         mutation; otherwise the original mesh is returned after atomic commit.
         """
         elements = _select_boundary_elements(mesh, None)
@@ -107,8 +108,8 @@ class EditorMesh2D:
         used = np.zeros(mesh.node_count, dtype=bool)
         used[elements] = True
         referenced = np.flatnonzero(used)
-        if not np.all(np.isfinite(mesh.nodes[referenced])):
-            raise ValueError("referenced nodes must contain finite XYZ coordinates")
+        if not np.all(np.isfinite(mesh.nodes[referenced, :2])):
+            raise ValueError("referenced nodes must contain finite XY coordinates")
         mapping = _equivalent_node_mapping(mesh.nodes, referenced, tolerance)
         repaired = _repair_collapsed_elements(mesh.nodes, mapping[elements])
         used.fill(False)

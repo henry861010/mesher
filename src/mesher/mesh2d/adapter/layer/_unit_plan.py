@@ -7,7 +7,7 @@ from itertools import product
 
 import numpy as np
 
-from ...model import Mesh2D
+from ...model import Mesh2D, _validate_zero_z
 from ..unit import build_unit_1_1_1_x, build_unit_1_1_x_y, build_unit_1_x_y_z
 from ..unit.build_unit_1_1_x_y import _validate_patch
 
@@ -42,7 +42,8 @@ def xyz_chain(values: np.ndarray) -> np.ndarray:
         raise ValueError("a boundary chain needs at least two XY or XYZ points")
     if points.shape[1] == 2:
         points = np.column_stack((points, np.zeros(len(points))))
-    if not np.all(np.isfinite(points)):
+    _validate_zero_z(points)
+    if not np.all(np.isfinite(points[:, :2])):
         raise ValueError("boundary coordinates must be finite")
     return points.copy()
 
@@ -79,23 +80,25 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
         raise ValueError("a unit needs four sides and a positive tolerance")
     chains = tuple(xyz_chain(side) for side in sides)
     for current, following in zip(chains, chains[1:] + chains[:1]):
-        if np.linalg.norm(current[-1] - following[0]) > tol:
+        if np.linalg.norm(current[-1, :2] - following[0, :2]) > tol:
             raise ValueError("unit coordinate chains must join cyclically")
     boundary = np.vstack([chain[:-1] for chain in chains])
     offsets = np.cumsum([0, *(len(chain) - 1 for chain in chains)])
     ids = tuple(np.r_[np.arange(offsets[i], offsets[i + 1]),
                       offsets[(i + 1) % 4]].astype(np.int64)
                 for i in range(4))
-    origin = boundary[0].copy()
+    origin = boundary[0, :2].copy()
     scale = float(np.ptp(boundary[:, :2], axis=0).max())
     if scale <= tol:
         raise ValueError("unit boundary has no usable extent")
-    normalized = (boundary - origin) / scale
+    normalized = np.column_stack(((boundary[:, :2] - origin) / scale,
+                                  np.zeros(len(boundary))))
     cache_key = (tuple(map(len, ids)), normalized.tobytes())
     cached = None if _cache is None else _cache.get(cache_key)
     if cached is not None:
         raw_nodes, raw_quads, method = cached
-        nodes = origin + scale * raw_nodes
+        nodes = np.column_stack((origin + scale * raw_nodes[:, :2],
+                                 np.zeros(len(raw_nodes))))
         nodes[:len(boundary)] = boundary
         quads = raw_quads.copy()
         return UnitPlan(nodes, quads, ids, method, quality_score(nodes, quads),
@@ -130,7 +133,8 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
         # equivalence can bypass a unit validation.
         _cache[cache_key] = (mesh.nodes.copy(), np.asarray(mesh.elements, dtype=np.int64).copy(),
                              diagnostics["method"])
-    nodes = origin + scale * mesh.nodes
+    nodes = np.column_stack((origin + scale * mesh.nodes[:, :2],
+                             np.zeros(len(mesh.nodes))))
     # Coordinates on all fixed boundaries survive normalization exactly.
     nodes[:len(boundary)] = boundary
     quads = np.asarray(mesh.elements, dtype=np.int64)
@@ -144,24 +148,24 @@ class CoordinatePool:
     def __init__(self, tol: float):
         self.tol = tol
         self.points: list[np.ndarray] = []
-        self.buckets: dict[tuple[int, int, int], list[int]] = {}
+        self.buckets: dict[tuple[int, int], list[int]] = {}
 
-    def _key(self, point: np.ndarray) -> tuple[int, int, int]:
-        return tuple(int(np.floor(float(value) / self.tol)) for value in point)
+    def _key(self, point: np.ndarray) -> tuple[int, int]:
+        return tuple(int(np.floor(float(value) / self.tol)) for value in point[:2])
 
     def intern(self, point: np.ndarray) -> int:
         key = self._key(point)
         found = []
-        for delta in product((-1, 0, 1), repeat=3):
+        for delta in product((-1, 0, 1), repeat=2):
             nearby = tuple(a + b for a, b in zip(key, delta))
             for index in self.buckets.get(nearby, ()):
-                distance = float(np.linalg.norm(self.points[index] - point))
+                distance = float(np.linalg.norm(self.points[index][:2] - point[:2]))
                 if distance <= self.tol:
                     found.append((distance, index))
         if found:
             return min(found)[1]
         index = len(self.points)
-        self.points.append(np.asarray(point, dtype=float).copy())
+        self.points.append(np.array([point[0], point[1], 0.0], dtype=float))
         self.buckets.setdefault(key, []).append(index)
         return index
 
@@ -176,7 +180,7 @@ class CoordinatePool:
                 mapping[index] = self.intern(point)
             else:
                 mapping[index] = len(self.points)
-                self.points.append(point.copy())
+                self.points.append(np.array([point[0], point[1], 0.0], dtype=float))
         return mapping
 
     def array(self) -> np.ndarray:

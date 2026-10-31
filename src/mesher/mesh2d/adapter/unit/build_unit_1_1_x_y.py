@@ -20,8 +20,8 @@ from .build_unit_1_1_1_x import (
 
 def _coons_point(nodes: np.ndarray, x: np.ndarray, y: np.ndarray, opposite: int) -> np.ndarray:
     """Interpolate the next diagonal node using the two current boundary arcs."""
-    x_points = nodes[x]
-    y_points = nodes[y]
+    x_points = nodes[x, :2]
+    y_points = nodes[y, :2]
     x_lengths = np.linalg.norm(np.diff(x_points[:, :2], axis=0), axis=1)
     y_lengths = np.linalg.norm(np.diff(y_points[:, :2], axis=0), axis=1)
     u = float(x_lengths[0] / x_lengths.sum())
@@ -29,7 +29,7 @@ def _coons_point(nodes: np.ndarray, x: np.ndarray, y: np.ndarray, opposite: int)
     origin = x_points[0]
     shared = x_points[-1] - origin
     end_y = y_points[-1] - origin
-    far_corner = nodes[opposite] - origin
+    far_corner = nodes[opposite, :2] - origin
     next_x, previous_y = x_points[1] - origin, y_points[-2] - origin
     top = (1.0 - u) * far_corner + u * end_y
     left = v * far_corner
@@ -162,8 +162,7 @@ def _peel_pair(
         np.asarray((next_index, x[1]), dtype=np.int64),
     )
     for xy in _feasible_points(nodes, edges, target):
-        candidate = target.copy()
-        candidate[:2] = xy
+        candidate = np.r_[xy, 0.0]
         candidate_nodes = np.vstack((nodes, candidate))
         try:
             _validate_quads(candidate_nodes, quads)

@@ -357,7 +357,7 @@ class MixedMeshAndReportTests(unittest.TestCase):
             self.assertEqual(report.failed_indices.size, 0)
 
     def test_small_jacobian_can_fail_absolute_quality_threshold(self):
-        tolerance = GeometryTolerance(absolute=0.0, relative=0.0, planar=0.0)
+        tolerance = GeometryTolerance(absolute=0.0, relative=0.0)
         checker = _checker(
             np.array([[0.0, 0.0], [1.0e-8, 0.0], [0.0, 1.0e-8]]),
             np.array([[0, 1, 2, 2]], dtype=np.int64),
@@ -517,21 +517,17 @@ class InvalidMeshTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Mesh2D(nodes, elements.astype(np.float64))
 
-    def test_xyz_plane_and_explicit_planar_tolerance(self):
-        elements = np.array([[0, 1, 2, 2]], dtype=np.int64)
-        within = np.array(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 5.0e-4], [0.0, 1.0, 0.0]]
-        )
-        outside = within.copy()
-        outside[1, 2] = 2.0e-3
-        tolerance = GeometryTolerance(absolute=0.0, relative=0.0, planar=1.0e-3)
-
-        result = MeshQualityChecker(
-            Mesh2D(within, elements), tolerance=tolerance
-        ).calculate_jacobian()
-        self.assertAlmostEqual(result.values[0], 1.0)
-        with self.assertRaises(ValueError):
-            MeshQualityChecker(Mesh2D(outside, elements), tolerance=tolerance)
+    def test_exact_xy_plane_is_independent_of_quality_tolerance(self):
+        mesh = Mesh2D([[0., 0.], [1., 0.], [0., 1.]], [[0, 1, 2, 2]])
+        tolerance = GeometryTolerance(absolute=0., relative=0.)
+        result = MeshQualityChecker(mesh, tolerance=tolerance).calculate_jacobian()
+        self.assertAlmostEqual(result.values[0], 1.)
+        mesh.nodes[1, 2] = 1e-30
+        with self.assertRaisesRegex(ValueError, "Z=0; node 1"):
+            MeshQualityChecker(mesh, tolerance=tolerance)
+        with self.assertRaises(TypeError):
+            GeometryTolerance(planar=1e-3)
+        self.assertFalse(hasattr(tolerance, "planarity"))
 
     def test_legacy_two_array_checker_constructor_is_removed(self):
         nodes = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])

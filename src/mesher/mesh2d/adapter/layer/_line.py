@@ -45,7 +45,10 @@ def sample_outer(anchors: np.ndarray, count: int, h: float,
         heappush(heap, (h * h - lengths[index] ** 2 / (n * (n + 1)), index))
     points = [anchors[0].copy()]
     for start, end, n in zip(anchors[:-1], anchors[1:], counts):
-        points.extend(start + (end - start) * (i / n) for i in range(1, int(n)))
+        points.extend(
+            np.r_[start[:2] + (end[:2] - start[:2]) * (i / n), 0.0]
+            for i in range(1, int(n))
+        )
         points.append(end.copy())
     error = float(np.sum(counts * (lengths / counts / h - 1) ** 2) / count)
     return np.asarray(points), error
@@ -60,7 +63,7 @@ class _Cut:
 def _connector(source: np.ndarray, outer: np.ndarray, count: int) -> np.ndarray:
     if count == 2:
         return np.asarray((source, outer))
-    return np.asarray((source, .5 * (source + outer), outer))
+    return np.asarray((source, np.r_[.5 * (source[:2] + outer[:2]), 0.0], outer))
 
 
 def _nearest_index(values: np.ndarray, target: float, low: int, high: int) -> int:
@@ -201,7 +204,7 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
         raise ValueError("LINE outer boundary has no usable length")
     for actual, expected in ((left[0], source[0]), (left[-1], outer[0]),
                              (right[0], source[-1]), (right[-1], outer[-1])):
-        if np.linalg.norm(actual - expected) > tol:
+        if np.linalg.norm(actual[:2] - expected[:2]) > tol:
             raise ValueError("LINE source, outer and seam endpoints do not match")
     if any(np.any(np.linalg.norm(np.diff(chain[:, :2], axis=0), axis=1) <= tol)
            for chain in (source, outer, left, right)):

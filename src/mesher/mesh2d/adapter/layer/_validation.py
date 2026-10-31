@@ -188,8 +188,7 @@ def validate_patch(mesh, nodes, quads, outline, data):
     if (nodes.ndim != 2 or nodes.shape[1] != 3 or len(nodes) < original_count
             or not np.all(np.isfinite(nodes))):
         _failure("the staged node array is invalid")
-    if (not np.array_equal(nodes[:original_count, :2], data["xy"])
-            or not np.array_equal(nodes[:original_count, 2], mesh.nodes[:, 2])):
+    if not np.array_equal(nodes[:original_count, :2], data["xy"]):
         _failure("the staged layer modified original node coordinates")
     if (quads.ndim != 2 or quads.shape[1] != 4 or not len(quads)
             or not np.issubdtype(quads.dtype, np.integer)

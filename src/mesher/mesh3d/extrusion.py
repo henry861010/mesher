@@ -21,6 +21,7 @@ from typing import Any, Callable
 import numpy as np
 from matplotlib.path import Path
 
+from ..mesh2d.model import _validate_zero_z
 from .model import Mesh3D
 
 ELEMENT_2D_LEN = 4
@@ -102,11 +103,17 @@ class Dragger:
         
     ### initial
     def set_2D(self, nodes, elements):
-        """Load clockwise Quad4 and padded-Tri3 planar connectivity."""
+        """Load clockwise Quad4/padded-Tri3 connectivity and XY source nodes.
+
+        A supplied third coordinate must be exactly zero; extrusion heights
+        come from the layer plan. Additional columns retain their legacy
+        ignored behavior. Validation completes before replacing source data.
+        """
         nodes = np.asarray(nodes, dtype=np.float64)
         elements = np.asarray(elements, dtype=np.int32)
         if nodes.ndim != 2 or nodes.shape[1] < 2:
             raise ValueError("mesh2D.nodes must have shape (n, 2+)") 
+        _validate_zero_z(nodes)
         if elements.ndim != 2 or elements.shape[1] != 4:
             raise ValueError("mesh2D.elements must have shape (m, 4)")
         if np.any(elements < 0) or np.any(elements >= len(nodes)):

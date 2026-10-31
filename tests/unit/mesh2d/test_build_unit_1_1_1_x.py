@@ -17,9 +17,9 @@ def _patch(segment_count, *, bulged=False, nonuniform=False):
     else:
         fractions = np.linspace(0.0, 1.0, segment_count + 1)
     bottom_y = -0.12 * np.sin(np.pi * fractions) if bulged else np.zeros_like(fractions)
-    bottom = np.column_stack((fractions, bottom_y, 2.0 * fractions))
-    top_left = np.array([0.03, 1.0, 2.0])
-    top_right = np.array([0.96, 1.08, 4.0])
+    bottom = np.column_stack((fractions, bottom_y, np.zeros_like(fractions)))
+    top_left = np.array([0.03, 1.0, 0.0])
+    top_right = np.array([0.96, 1.08, 0.0])
     nodes = np.vstack((bottom, top_left, top_right))
     mesh = Mesh2D(nodes, np.empty((0, 4), dtype=np.int32))
     edges = (
@@ -90,7 +90,7 @@ class BuildUnit111XTests(unittest.TestCase):
                         build_unit_1_1_1_x(mesh, *edges)
                         self.assert_valid_patch(mesh, edges, original_node_count)
 
-    def test_nonuniform_bulged_boundary_uses_arc_length_and_interpolates_z(self):
+    def test_nonuniform_bulged_boundary_uses_arc_length_with_zero_z(self):
         mesh, edges = _patch(5, bulged=True, nonuniform=True)
         initial = mesh.nodes.copy()
         lengths = np.linalg.norm(np.diff(initial[edges[0], :2], axis=0), axis=1)

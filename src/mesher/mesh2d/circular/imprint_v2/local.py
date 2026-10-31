@@ -10,7 +10,7 @@ from time import perf_counter
 
 import numpy as np
 
-from ...model import Mesh2D
+from ...model import Mesh2D, _validate_zero_z
 from ..utils.pattern_segments import _coerce_pattern_guides
 from .triangulation import _triangulate_flat_quads
 from .utils import (
@@ -176,6 +176,7 @@ def _run_local_imprint(
     started = perf_counter()
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
+    _validate_zero_z(mesh.nodes)
     center, radius = _normalize_circle(center, radius)
     projection_tolerance = _normalize_nonnegative(
         projection_tolerance, "projection_tolerance",

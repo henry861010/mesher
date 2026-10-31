@@ -314,14 +314,14 @@ class ToCircleTests(unittest.TestCase):
         self.assertIs(mesh.nodes, nodes)
         self.assertIs(mesh.elements, elements)
 
-    def test_moves_inside_and_outside_nodes_radially_and_preserves_z(self):
+    def test_moves_inside_and_outside_nodes_radially_with_zero_z(self):
         mesh = self._mesh(
             [
-                [0.9, 0.0, 7.0],
-                [0.0, 1.1, 8.0],
-                [-1.0, 0.0, 9.0],
-                [2.0, 2.0, 10.0],
-                [0.0, 0.0, 11.0],
+                [0.9, 0.0, 0.0],
+                [0.0, 1.1, 0.0],
+                [-1.0, 0.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [0.0, 0.0, 0.0],
             ],
             [[0, 1, 2, 3]],
         )
@@ -346,7 +346,7 @@ class ToCircleTests(unittest.TestCase):
             ],
             atol=1.0e-15,
         )
-        np.testing.assert_array_equal(mesh.nodes[:, 2], [7, 8, 9, 10, 11])
+        np.testing.assert_array_equal(mesh.nodes[:, 2], 0.0)
         np.testing.assert_array_equal(mesh.elements, [[0, 3, 2, 1]])
 
     def test_element_indices_limit_unique_referenced_nodes(self):
@@ -526,7 +526,7 @@ class ToCircleTests(unittest.TestCase):
         angles = np.deg2rad([0.0, -2.0, -4.0, 180.0])
         mesh = self._mesh(
             np.column_stack(
-                (np.cos(angles), np.sin(angles), [1.0, 2.0, 3.0, 4.0])
+                (np.cos(angles), np.sin(angles), np.zeros(len(angles)))
             ),
             [[0, 1, 2, 3]],
         )
@@ -801,9 +801,9 @@ class ImprintCircleTests(unittest.TestCase):
             id(mesh.elements),
         )
 
-    def test_splits_triangle_into_triangle_and_quad_and_interpolates_z(self):
+    def test_splits_triangle_into_triangle_and_quad_with_zero_z(self):
         mesh = Mesh2D(
-            nodes=[[0.0, 0.0, 0.0], [2.0, 0.0, 2.0], [0.0, 2.0, 4.0]],
+            nodes=[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
             elements=[[0, 1, 2, 2]],
         )
 
@@ -814,7 +814,7 @@ class ImprintCircleTests(unittest.TestCase):
         self.assertEqual(mesh.element_count, 2)
         np.testing.assert_allclose(
             mesh.nodes[3:],
-            [[1.0, 0.0, 1.0], [0.0, 1.0, 2.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             atol=1.0e-14,
         )
         self.assertEqual(np.count_nonzero(mesh.element_types == 3), 1)
@@ -863,9 +863,9 @@ class ImprintCircleTests(unittest.TestCase):
         mesh = Mesh2D(
             nodes=[
                 [0.8, -0.2, 0.0],
-                [1.2, -0.2, 1.0],
-                [1.2, 0.2, 2.0],
-                [0.8, 0.2, 3.0],
+                [1.2, -0.2, 0.0],
+                [1.2, 0.2, 0.0],
+                [0.8, 0.2, 0.0],
             ],
             elements=[[0, 1, 2, 3]],
         )
@@ -901,11 +901,11 @@ class ImprintCircleTests(unittest.TestCase):
         mesh = Mesh2D(
             nodes=[
                 [0.8, -0.2, 0.0],
-                [1.2, -0.2, 1.0],
-                [0.8, 0.0, 2.0],
-                [1.2, 0.0, 3.0],
-                [0.8, 0.2, 4.0],
-                [1.2, 0.2, 5.0],
+                [1.2, -0.2, 0.0],
+                [0.8, 0.0, 0.0],
+                [1.2, 0.0, 0.0],
+                [0.8, 0.2, 0.0],
+                [1.2, 0.2, 0.0],
             ],
             elements=[[0, 1, 3, 2], [2, 3, 5, 4]],
         )
@@ -920,19 +920,19 @@ class ImprintCircleTests(unittest.TestCase):
         np.testing.assert_array_equal(shared_hits, [7])
         self.assertEqual(np.count_nonzero(mesh.elements == 7), 4)
 
-    def test_merge_tolerance_snaps_endpoint_and_preserves_its_z(self):
+    def test_merge_tolerance_snaps_endpoint_with_zero_z(self):
         mesh = Mesh2D(
             nodes=[
-                [0.95, 0.0, 7.0],
-                [2.0, 1.0, 8.0],
-                [0.0, 0.0, 9.0],
+                [0.95, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
             ],
             elements=[[0, 1, 2, 2]],
         )
 
         _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.1)
 
-        np.testing.assert_allclose(mesh.nodes[0], [1.0, 0.0, 7.0])
+        np.testing.assert_allclose(mesh.nodes[0], [1.0, 0.0, 0.0])
         self.assertEqual(mesh.node_count, 4)
         self.assertEqual(mesh.element_count, 2)
 
@@ -1190,13 +1190,13 @@ class RemoveRedundantElementTests(unittest.TestCase):
     def test_equivalences_nodes_globally_in_xy_and_preserves_representative(self):
         nodes = [
             [0.0, 0.0, 0.0],
-            [1.0, 0.0, 3.0],
-            [1.0, 1.0, 4.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
             [0.0, 1.0, 0.0],
-            [1.01, 0.0, 30.0],
+            [1.01, 0.0, 0.0],
             [2.0, 0.0, 0.0],
             [2.0, 1.0, 0.0],
-            [1.01, 1.0, 40.0],
+            [1.01, 1.0, 0.0],
         ]
         mesh = Mesh2D(
             nodes=nodes,
@@ -1303,12 +1303,12 @@ class RemoveRedundantElementTests(unittest.TestCase):
         self.assertLessEqual(max(repaired_edge_uses.values()), 2)
         self.assertEqual(mesh.element_count, 8977)
 
-    def test_removes_elements_with_nonfinite_xyz_coordinates(self):
+    def test_removes_elements_with_nonfinite_xy_coordinates(self):
         mesh = Mesh2D(
             nodes=[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
-                [0.0, 1.0, np.nan],
+                [np.nan, 1.0, 0.0],
                 [2.0, 0.0, 0.0],
                 [3.0, 0.0, 0.0],
                 [2.0, 1.0, 0.0],
@@ -1473,9 +1473,9 @@ class ImprintCirclePerformanceTests(unittest.TestCase):
         cell = np.array(
             [
                 [0.8, -0.2, 0.0],
-                [1.2, -0.2, 1.0],
-                [1.2, 0.2, 2.0],
-                [0.8, 0.2, 3.0],
+                [1.2, -0.2, 0.0],
+                [1.2, 0.2, 0.0],
+                [0.8, 0.2, 0.0],
             ]
         )
         nodes = np.tile(cell, (count, 1))

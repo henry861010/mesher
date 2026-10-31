@@ -23,6 +23,15 @@ dimension-specific algorithms. They never import `mesh25d`, `meshcontrol`, or
 `process_flow`. Control methods decide their own mesher-specific constraints;
 their shared factory resolves Standard V1 references without loading algorithms.
 
+`Mesh2D` stores `(n, 3)` arrays for interface compatibility, but its valid
+geometry is strictly XY with Z=0. The NumPy-only model owns the shared exact-Z
+validator; model writes and public mesh operations reject nonzero or nonfinite
+Z before mutation, including unused nodes and early no-ops. Writable arrays
+remain supported, so the condition is checked at operation boundaries rather
+than guaranteed between arbitrary in-place edits. Geometry helpers work on XY;
+three-column outputs append zeros. `Dragger.set_2D` reuses the model validator
+for raw 2D sources; actual Mesh3D heights come solely from layer definitions.
+
 Within `mesh2d`, `editor/` exposes the stateless `EditorMesh2D` API and owns its
 element cleanup rules. `utils/` holds NumPy-only node-equivalence and topology
 algorithms shared by the editor and circular features. Shared utilities depend

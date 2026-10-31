@@ -28,12 +28,12 @@ class SearchCircleTests(unittest.TestCase):
         self.mesh = Mesh2D(
             nodes=np.array(
                 [
-                    [0.0, 0.0, 4.0],
-                    [1.0, 0.0, 4.0],
-                    [1.0, 1.0, 4.0],
-                    [0.0, 1.0, 4.0],
-                    [2.0, 0.0, 4.0],
-                    [2.0, 1.0, 4.0],
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [2.0, 1.0, 0.0],
                 ]
             ),
             elements=np.array(
@@ -349,7 +349,7 @@ class ToCircleTests(unittest.TestCase):
         self.assertEqual(report.invalid_indices.size, 0)
         self.assertGreater(report.values[0], 0.0)
 
-    def test_promotes_nodes_preserves_element_dtype_and_copies_z(self):
+    def test_promotes_nodes_preserves_element_dtype_and_zero_z(self):
         base = Mesh2D(
             nodes=np.array(
                 [
@@ -367,7 +367,7 @@ class ToCircleTests(unittest.TestCase):
                 dtype=np.int16,
             ),
         )
-        z = np.array([10, 20, 30, 40, 50, 60], dtype=np.int32)
+        z = np.zeros(6, dtype=np.int32)
         original_nodes = np.column_stack((base.nodes[:, :2], z))
         mesh = Mesh2D(nodes=original_nodes, elements=base.elements)
 
@@ -1686,7 +1686,7 @@ class OpenCircleIntegrationTests(unittest.TestCase):
 
 class DeleteElementTests(unittest.TestCase):
     def setUp(self):
-        self.nodes = np.arange(18, dtype=np.float64).reshape(6, 3)
+        self.nodes = (np.arange(18, dtype=np.float64).reshape(6, 3) * [1, 1, 0])
         self.mesh = Mesh2D(
             nodes=self.nodes,
             elements=np.array(
@@ -1735,7 +1735,7 @@ class DeleteElementTests(unittest.TestCase):
 
 class ClearNodeTests(unittest.TestCase):
     def test_removes_unreferenced_nodes_and_remaps_elements(self):
-        nodes = np.arange(21, dtype=np.float64).reshape(7, 3)
+        nodes = (np.arange(21, dtype=np.float64).reshape(7, 3) * [1, 1, 0])
         mesh = Mesh2D(
             nodes=nodes,
             elements=np.array(
@@ -1760,7 +1760,7 @@ class ClearNodeTests(unittest.TestCase):
 
     def test_empty_elements_remove_all_nodes(self):
         mesh = Mesh2D(
-            nodes=np.arange(12, dtype=np.float64).reshape(4, 3),
+            nodes=(np.arange(12, dtype=np.float64).reshape(4, 3) * [1, 1, 0]),
             elements=np.empty((0, 4), dtype=np.int64),
         )
 
@@ -1771,7 +1771,7 @@ class ClearNodeTests(unittest.TestCase):
         self.assertEqual(mesh.elements.shape, (0, 4))
 
     def test_returns_identity_map_when_all_nodes_are_referenced(self):
-        nodes = np.arange(12, dtype=np.float64).reshape(4, 3)
+        nodes = (np.arange(12, dtype=np.float64).reshape(4, 3) * [1, 1, 0])
         elements = np.array([[0, 1, 2, 3]], dtype=np.int32)
         mesh = Mesh2D(nodes=nodes, elements=elements)
 

@@ -1,7 +1,7 @@
 import numpy as np
 import pyvista as pv
 
-from ..model import Mesh2D
+from ..model import Mesh2D, _validate_zero_z
 
 
 def build_faces(mesh: Mesh2D):
@@ -10,6 +10,7 @@ def build_faces(mesh: Mesh2D):
     Triangles use the fixed-width representation ``[n0, n1, n2, n2]``.
     Every other row is emitted as a four-node face.
     """
+    _validate_zero_z(mesh.nodes)
     elements = np.asarray(mesh.elements)
     if elements.ndim != 2 or elements.shape[1] != 4:
         raise ValueError("elements must have shape (M, 4)")

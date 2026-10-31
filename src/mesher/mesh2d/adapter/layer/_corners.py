@@ -48,7 +48,10 @@ def _outer_candidates(outer, source_segments, left_count, right_count, h, tol):
             heapq.heappush(heap, (cost(i, n + 1) - cost(i, n), i))
         points = [outer[0]]
         for a, b, count in zip(outer, outer[1:], parts):
-            points.extend(a + (b - a) * (i / count) for i in range(1, count))
+            points.extend(
+                np.r_[a[:2] + (b[:2] - a[:2]) * (i / count), 0.0]
+                for i in range(1, count)
+            )
             points.append(b)
         error = sum(cost(i, int(count)) for i, count in enumerate(parts)) / total
         candidates.append((error, total, np.asarray(points)))
@@ -88,13 +91,14 @@ def _four_sided_units(sides, tol) -> list[UnitPlan]:
         if min(n, m) < 2:
             continue
         for i, j in sorted({(1, 1), (n - 1, m - 1)}):
-            if np.linalg.norm(bottom[i] - top[j]) <= tol:
+            if np.linalg.norm(bottom[i, :2] - top[j, :2]) <= tol:
                 continue
             connector = np.asarray((bottom[i], top[j]))
             # First child travels bottom[i:] -> right -> top[:j+1] -> cut.
             path_count = (n - i) + len(right) - 1 + j
             if path_count % 2 == 0:
-                connector = np.asarray((bottom[i], (bottom[i] + top[j]) / 2, top[j]))
+                midpoint = np.r_[(bottom[i, :2] + top[j, :2]) / 2, 0.0]
+                connector = np.asarray((bottom[i], midpoint, top[j]))
             first = (bottom[i:], right, top[:j + 1], connector[::-1])
             second = (bottom[:i + 1], connector, top[j:], left)
             try:
@@ -137,7 +141,7 @@ def plan_corner(kind: str, source_chains: tuple[np.ndarray, ...], outer: np.ndar
     count = len(source) - 1
     results = []
     for sampled, error in _outer_candidates(outer, count, len(left), len(right), h, tol):
-        matches = np.flatnonzero(np.linalg.norm(sampled - corner_front, axis=1) <= tol)
+        matches = np.flatnonzero(np.linalg.norm(sampled[:, :2] - corner_front[:2], axis=1) <= tol)
         if len(matches) != 1:
             raise ValueError("corner front point must remain a mandatory anchor")
         split = int(matches[0])

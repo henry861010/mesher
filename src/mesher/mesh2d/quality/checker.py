@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from ..model import Mesh2D
+from ..model import Mesh2D, _validate_zero_z
 
 
 FloatArray = NDArray[np.float64]
@@ -56,15 +56,14 @@ class GeometryTolerance:
 
     ``absolute`` has units of length. The Jacobian tolerance is derived from
     it as ``absolute**2 + relative*h**2``, where ``h`` is the longest edge in
-    an element. ``planar`` is the absolute Z tolerance for XY meshes.
+    an element. Mesh2D requires Z=0 independently of these XY tolerances.
     """
 
     absolute: float = 1.0e-12
     relative: float = 1.0e-12
-    planar: float = 1.0e-12
 
     def __post_init__(self) -> None:
-        for name in ("absolute", "relative", "planar"):
+        for name in ("absolute", "relative"):
             value = getattr(self, name)
             if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
                 raise ValueError(f"{name} tolerance must be a real number")
@@ -78,10 +77,6 @@ class GeometryTolerance:
     @property
     def relative_length(self) -> float:
         return self.relative
-
-    @property
-    def planarity(self) -> float:
-        return self.planar
 
 
 @dataclass(frozen=True)
@@ -325,12 +320,7 @@ class MeshQualityChecker:
 
         self._nodes = np.array(node_array, dtype=np.float64, copy=True)
         self._elements = np.array(element_array, dtype=np.int64, copy=True)
-        if self._nodes.shape[1] == 3:
-            finite_z = np.isfinite(self._nodes[:, 2])
-            if np.any(np.abs(self._nodes[finite_z, 2]) > self.tolerance.planar):
-                raise ValueError(
-                    "3D nodes must lie in the XY plane within the planar tolerance"
-                )
+        _validate_zero_z(self._nodes)
         self._nodes.setflags(write=False)
         self._elements.setflags(write=False)
 
@@ -527,12 +517,12 @@ class MeshQualityChecker:
         )
 
         coordinates = np.full(
-            (element_count, 4, self._nodes.shape[1]),
+            (element_count, 4, 2),
             np.nan,
             dtype=np.float64,
         )
         if np.any(in_bounds):
-            coordinates[in_bounds] = self._nodes[elements[in_bounds]]
+            coordinates[in_bounds] = self._nodes[elements[in_bounds], :2]
 
         finite_coordinates = in_bounds & np.all(
             np.isfinite(coordinates),

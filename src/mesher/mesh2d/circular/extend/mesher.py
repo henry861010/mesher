@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...model import Mesh2D
+from ...model import Mesh2D, _validate_zero_z
 from ..utils.geometry import _minimum_scaled_jacobian
 from ..utils.topology import _clear_node, _get_boundary
 
@@ -88,6 +88,7 @@ def _copy_and_validate_mesh(mesh):
     """Return a private working copy after validating the array contract."""
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
+    _validate_zero_z(mesh.nodes)
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -350,7 +351,7 @@ def _build_layer_nodes(mesh, inner_boundary, request, radii):
             + radii[:, None] * unit_directions[None, :, 1]
         )
     if nodes.shape[1] == 3:
-        layer_nodes[:, :, 2] = source_nodes[None, :, 2]
+        layer_nodes[:, :, 2] = 0.0
     if not np.all(np.isfinite(layer_nodes)):
         raise ValueError("generated circular coordinates exceed float64 range")
     return layer_nodes
@@ -497,6 +498,7 @@ def extend_circular_mesh(
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
+    _validate_zero_z(mesh.nodes)
 
     request = _CircularExtensionRequest.from_values(
         element_size,

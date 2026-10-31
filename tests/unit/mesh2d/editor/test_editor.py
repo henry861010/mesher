@@ -109,11 +109,10 @@ class EditorMesh2DTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     EditorMesh2D.search_element(triangle, value, 0, 1, 1)
 
-    def test_equivalence_welds_xy_preserves_lowest_id_xyz_and_duplicate_cells(self):
+    def test_equivalence_welds_xy_preserves_lowest_id_xy_and_duplicate_cells(self):
         mesh = two_quads()
         other = two_quads()
         other.nodes[:, :2] += 0.0001
-        other.nodes[:, 2] = 1000
         merged = EditorMesh2D.merge(mesh, other)
         self.assertIs(EditorMesh2D.equivalence(merged), merged)
         np.testing.assert_array_equal(merged.nodes, mesh.nodes)
@@ -130,11 +129,11 @@ class EditorMesh2DTests(unittest.TestCase):
         np.testing.assert_array_equal(mesh.elements, np.tile([0, 1, 2, 2], (3, 1)))
 
     def test_exact_equivalence_keeps_nearby_distinct_nodes(self):
-        first = Mesh2D([[0, 0, 10], [1, 0, 20], [0, 1, 30]], [[0, 1, 2, 2]])
-        second = Mesh2D([[-0.0, 0, 100], [1.0001, 0, 200], [0, 1, 300]], [[0, 1, 2, 2]])
+        first = Mesh2D([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 2, 2]])
+        second = Mesh2D([[-0.0, 0, 0], [1.0001, 0, 0], [0, 1, 0]], [[0, 1, 2, 2]])
         mesh = EditorMesh2D.merge(first, second)
         EditorMesh2D.equivalence(mesh, 0)
-        np.testing.assert_array_equal(mesh.nodes, [[0, 0, 10], [1, 0, 20], [0, 1, 30], [1.0001, 0, 200]])
+        np.testing.assert_array_equal(mesh.nodes, [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1.0001, 0, 0]])
         np.testing.assert_array_equal(mesh.elements, [[0, 1, 2, 2], [0, 3, 2, 2]])
 
     def test_quad_collapse_along_any_edge_becomes_tri3(self):
@@ -200,9 +199,9 @@ class EditorMesh2DTests(unittest.TestCase):
                 self.assertIs(mesh.nodes, nodes)
                 self.assertIs(mesh.elements, elements)
         mesh = two_quads()
-        mesh.nodes[0, 2] = np.nan
+        mesh.nodes[0, 0] = np.nan
         nodes, elements = mesh.nodes, mesh.elements
-        with self.assertRaisesRegex(ValueError, "finite XYZ"):
+        with self.assertRaisesRegex(ValueError, "finite XY"):
             EditorMesh2D.equivalence(mesh)
         self.assertIs(mesh.nodes, nodes)
         self.assertIs(mesh.elements, elements)

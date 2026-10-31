@@ -23,7 +23,7 @@ def _patch(left_y, right_y, bottom_x, *, wavy=False):
         np.column_stack((right_x, right_y)),
         np.column_stack((bottom_x[1:-1], bottom_y)),
     ))
-    nodes = np.column_stack((xy, 0.3 * xy[:, 0] + 0.4 * xy[:, 1]))
+    nodes = np.column_stack((xy, np.zeros(len(xy))))
     left = np.arange(len(left_y), dtype=np.int64)
     right = np.arange(len(left_y), len(left_y) + len(right_y), dtype=np.int64)
     bottom = np.r_[left[-1], np.arange(len(left_y) + len(right_y), len(nodes)), right[-1]]
@@ -44,7 +44,7 @@ def _sketch_patch(**kwargs):
 def _polygon_patch(xy, edges, z=None):
     xy = np.asarray(xy, dtype=float)
     if z is None:
-        z = 0.3 * xy[:, 0] + 0.4 * xy[:, 1]
+        z = np.zeros(len(xy))
     mesh = Mesh2D(np.column_stack((xy, z)), np.empty((0, 4), dtype=np.int32))
     return mesh, tuple(np.array(edge, dtype=np.int64) for edge in edges)
 
@@ -214,7 +214,7 @@ class BuildUnit1XYZTests(unittest.TestCase):
                 build_unit_1_x_y_z(mesh, *edges)
                 self.assert_valid_patch(mesh, edges, original)
 
-    def test_concave_four_corner_patch_uses_inner_ring_and_interpolates_z(self):
+    def test_concave_four_corner_patch_uses_inner_ring_with_zero_z(self):
         mesh, edges = _polygon_patch(
             [[0, 0], [1, 0], [.35, .3], [0, 1]], [[0, 1], [1, 2], [2, 3], [3, 0]]
         )
@@ -223,18 +223,18 @@ class BuildUnit1XYZTests(unittest.TestCase):
         self.assertEqual(mesh.node_count, 8)
         self.assertEqual(mesh.element_count, 5)
         self.assert_valid_patch(mesh, edges, original)
-        np.testing.assert_allclose(mesh.nodes[:, 2], 0.3 * mesh.nodes[:, 0] + 0.4 * mesh.nodes[:, 1], atol=1e-12)
+        np.testing.assert_array_equal(mesh.nodes[:, 2], 0.0)
 
-    def test_inner_ring_z_stays_within_nonaffine_boundary_values(self):
+    def test_inner_ring_rejects_in_place_nonzero_z_before_mutation(self):
         mesh, edges = _polygon_patch(
             [[0, 0], [1, 0], [.35, .3], [0, 1]], [[0, 1], [1, 2], [2, 3], [3, 0]],
-            z=[-2, 4, 1, 0],
         )
-        original = mesh.nodes.copy()
-        build_unit_1_x_y_z(mesh, *edges)
-        self.assert_valid_patch(mesh, edges, original)
-        self.assertTrue(np.all(mesh.nodes[4:, 2] >= -2))
-        self.assertTrue(np.all(mesh.nodes[4:, 2] <= 4))
+        mesh.nodes[:, 2] = [-2, 4, 1, 0]
+        before, elements = mesh.nodes.copy(), mesh.elements
+        with self.assertRaisesRegex(ValueError, "Z=0; node 0"):
+            build_unit_1_x_y_z(mesh, *edges)
+        np.testing.assert_array_equal(mesh.nodes, before)
+        self.assertIs(mesh.elements, elements)
 
     def test_empty_visibility_kernel_does_not_prevent_successful_layers(self):
         mesh, edges = _polygon_patch(
@@ -248,8 +248,8 @@ class BuildUnit1XYZTests(unittest.TestCase):
 
     def test_scaling_and_translation(self):
         for ring in (False, True):
-            for scale, shift in ((1e-7, [0, 0, 0]), (1e7, [1e10, -2e10, 3e10]),
-                                 (1, [1e10, -2e10, 3e10])):
+            for scale, shift in ((1e-7, [0, 0, 0]), (1e7, [1e10, -2e10, 0.0]),
+                                 (1, [1e10, -2e10, 0.0])):
                 with self.subTest(ring=ring, scale=scale, shift=shift):
                     if ring:
                         mesh, edges = _polygon_patch(

@@ -1039,18 +1039,20 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
                     directed_uses.append((int(start), int(end)))
         self.assertCountEqual(directed_uses, [(5, 4), (4, 5)])
 
-    def test_three_dimensional_nodes_are_not_replaced_or_modified(self):
+    def test_nonzero_z_is_rejected_without_modifying_nodes_or_elements(self):
         mesh, inner_nodes, outer_nodes = self._pattern_fixture()
         z_values = np.linspace(-3.0, 4.0, mesh.nodes.shape[0])
         mesh.nodes[:, 2] = z_values
         original_nodes = mesh.nodes
         original_values = mesh.nodes.copy()
+        original_elements = mesh.elements
 
-        _mesh_inner_outer_circle(mesh, inner_nodes, outer_nodes, closed=True)
+        with self.assertRaisesRegex(ValueError, "Z=0"):
+            _mesh_inner_outer_circle(mesh, inner_nodes, outer_nodes, closed=True)
 
         self.assertIs(mesh.nodes, original_nodes)
         np.testing.assert_array_equal(mesh.nodes, original_values)
-        self.assert_valid_elements(mesh, mesh.elements)
+        self.assertIs(mesh.elements, original_elements)
 
     def test_incompatible_existing_ring_edge_is_an_atomic_error(self):
         inner_points = _points_on_circle(

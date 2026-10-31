@@ -22,12 +22,12 @@ def run(mesh, **overrides):
 
 
 class GuideBarrierTests(unittest.TestCase):
-    def test_blocks_both_axes_in_both_directions_and_preserves_z(self):
+    def test_blocks_both_axes_in_both_directions_with_zero_z(self):
         for axis in (0, 1):
             for sign in (-1, 1):
                 with self.subTest(axis=axis, sign=sign):
-                    moving = [0., 0., 7.]
-                    fixed = [0., 0., 9.]
+                    moving = [0., 0., 0.]
+                    fixed = [0., 0., 0.]
                     moving[axis], fixed[axis] = sign * 1.05, sign * 1.02
                     parallel = [[0., 0.], [0., 0.]]
                     parallel[0][axis], parallel[1][axis] = -2., 2.
@@ -68,12 +68,12 @@ class GuideBarrierTests(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.norm(mesh.nodes[2, :2]), 1.)
 
     def test_can_reach_fixed_circle_anchor(self):
-        mesh = Mesh2D([[.95, 0., 7.], [1., 0., 9.]], np.empty((0, 4), dtype=np.int32))
+        mesh = Mesh2D([[.95, 0., 0.], [1., 0., 0.]], np.empty((0, 4), dtype=np.int32))
         _to_circle(mesh, [0., 0.], 1., .1, 0., [
             [[-2., 0.], [2., 0.]], [[1., -.2], [1., .2]],
         ])
         np.testing.assert_allclose(mesh.nodes[:, :2], [[1., 0.], [1., 0.]])
-        np.testing.assert_array_equal(mesh.nodes[:, 2], [7., 9.])
+        np.testing.assert_array_equal(mesh.nodes[:, 2], [0., 0.])
 
     @staticmethod
     def remote_barrier_mesh():
@@ -120,7 +120,7 @@ class RadialGuideBarrierTests(unittest.TestCase):
             for sign in (-1, 1):
                 for distance in (.95, 1.05):
                     with self.subTest(axis=axis, sign=sign, distance=distance):
-                        source = np.array([0., 0., 7.])
+                        source = np.array([0., 0., 0.])
                         source[axis] = sign * distance
                         guide = np.zeros((2, 2))
                         guide[:, axis] = sign * (1. + distance) / 2.
@@ -129,7 +129,7 @@ class RadialGuideBarrierTests(unittest.TestCase):
                         np.testing.assert_array_equal(mesh.nodes, [source])
 
     def test_diagonal_path_checks_finite_guides_without_circle_roots(self):
-        source = [0.63, 0.84, 8.]
+        source = [0.63, 0.84, 0.0]
         # This entire segment is outside the circle; the radial path crosses it.
         guides = [[[.615, .81], [.615, .83]]]
         mesh = self.project([source], guides)
@@ -144,7 +144,7 @@ class RadialGuideBarrierTests(unittest.TestCase):
             for axis in (0, 1):
                 for sign in (-1, 1):
                     with self.subTest(offset=offset, axis=axis, sign=sign):
-                        source = np.array([0., 0., 7.])
+                        source = np.array([0., 0., 0.])
                         source[axis] = 1.05
                         guide = np.zeros((2, 2))
                         guide[:, axis] = 1.025
@@ -160,12 +160,12 @@ class RadialGuideBarrierTests(unittest.TestCase):
                         np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
 
     def test_extension_tracks_projection_tolerance(self):
-        source = [1.01, 0., 7.]
+        source = [1.01, 0., 0.0]
         guide = [[[1.005, .05], [1.005, .06]]]
         for tolerance, blocked in ((.02, False), (.1, True)):
             with self.subTest(projection_tolerance=tolerance):
                 mesh = self.project([source], guide, projection_tolerance=tolerance)
-                expected = source if blocked else [1., 0., 7.]
+                expected = source if blocked else [1., 0., 0.0]
                 np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
 
     def test_zero_extension_retains_finite_barriers_and_shared_metadata(self):
@@ -192,12 +192,12 @@ class RadialGuideBarrierTests(unittest.TestCase):
                 np.testing.assert_array_equal(guides.upper_bounds, bounds[1])
 
     def test_diagonal_crossing_beyond_original_endpoint_is_blocked(self):
-        source = [0.63, 0.84, 8.]
+        source = [0.63, 0.84, 0.0]
         mesh = self.project([source], [[[.615, .90], [.615, 1.]]])
         np.testing.assert_array_equal(mesh.nodes, [source])
 
     def test_extended_barriers_do_not_extend_node_membership_or_circle_roots(self):
-        source = [1.05, 0., 8.]
+        source = [1.05, 0., 0.0]
         guides = _PatternGuideSet.from_values(
             [[[.95, 0.], [.96, 0.]]], coordinate_scale=1.,
         )
@@ -210,19 +210,19 @@ class RadialGuideBarrierTests(unittest.TestCase):
     def test_only_numerical_tolerance_excludes_path_endpoints(self):
         for fixed, blocked in ((1., False), (1. + 1e-14, False), (1.001, True)):
             with self.subTest(fixed=fixed):
-                source = [1.05, 0., 9.]
+                source = [1.05, 0., 0.0]
                 mesh = self.project([source], [[[fixed, -.2], [fixed, .2]]], .005)
-                expected = source if blocked else [1., 0., 9.]
+                expected = source if blocked else [1., 0., 0.0]
                 np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
 
     def test_guides_beyond_the_path_and_parallel_segments_do_not_block(self):
-        source = [1.05, 0., 7.]
+        source = [1.05, 0., 0.0]
         guides = [
             [[.98, -.1], [.98, .1]], [[1.1, -.1], [1.1, .1]],
             [[1.01, .03], [1.03, .03]],
         ]
         mesh = self.project([source], guides, .005)
-        np.testing.assert_allclose(mesh.nodes, [[1., 0., 7.]], rtol=0, atol=1e-15)
+        np.testing.assert_allclose(mesh.nodes, [[1., 0., 0.0]], rtol=0, atol=1e-15)
 
     def test_collinear_overlap_uses_extended_bounds_and_allows_target_contact(self):
         for source_x, bounds, blocked in (
@@ -231,25 +231,25 @@ class RadialGuideBarrierTests(unittest.TestCase):
             (.95, [1.1, 1.3], False),
         ):
             with self.subTest(source_x=source_x, bounds=bounds):
-                source = [source_x, 0., 6.]
+                source = [source_x, 0., 0.0]
                 mesh = self.project([source], [[[bounds[0], 0.], [bounds[1], 0.]]], .005)
-                expected = source if blocked else [1., 0., 6.]
+                expected = source if blocked else [1., 0., 0.0]
                 np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
 
     def test_blocked_node_cannot_participate_in_target_merging(self):
-        source = [1.05, 0., 7.]
-        neighbour = [1.05 * np.cos(-.03), 1.05 * np.sin(-.03), 9.]
+        source = [1.05, 0., 0.0]
+        neighbour = [1.05 * np.cos(-.03), 1.05 * np.sin(-.03), 0.0]
         mesh = self.project([source, neighbour], [[[1.025, .09], [1.025, .1]]])
         np.testing.assert_array_equal(mesh.nodes[0], source)
-        np.testing.assert_allclose(mesh.nodes[1], [np.cos(-.03), np.sin(-.03), 9.])
+        np.testing.assert_allclose(mesh.nodes[1], [np.cos(-.03), np.sin(-.03), 0.0])
 
     def test_selection_limits_movement_and_repeated_projection_is_stable(self):
-        nodes = [[1.05, 0., 7.], [1.04, .1, 8.],
-                 [1.05 * np.cos(-.03), 1.05 * np.sin(-.03), 9.], [2., 2., 10.]]
+        nodes = [[1.05, 0., 0.0], [1.04, .1, 0.0],
+                 [1.05 * np.cos(-.03), 1.05 * np.sin(-.03), 0.0], [2., 2., 0.0]]
         guides = [[[1.025, .09], [1.025, .1]]]
         mesh = self.project(nodes, guides, elements=[[0, 2, 3, 3]], indices=[0])
         np.testing.assert_array_equal(mesh.nodes[[0, 1, 3]], np.asarray(nodes)[[0, 1, 3]])
-        np.testing.assert_allclose(mesh.nodes[2], [np.cos(-.03), np.sin(-.03), 9.])
+        np.testing.assert_allclose(mesh.nodes[2], [np.cos(-.03), np.sin(-.03), 0.0])
         projected = mesh.nodes.copy()
         _to_circle(mesh, [0., 0.], 1., .1, 0., guides, indices=[0])
         np.testing.assert_array_equal(mesh.nodes, projected)
@@ -318,22 +318,21 @@ class LocalPatchTests(unittest.TestCase):
         for i in range(12):
             x = .95 + .06 * i
             start = len(nodes)
-            nodes.extend([[x, 0., i*10.], [x+.01, .5, i*10.+1], [x+.01, 1., i*10.+2]])
+            nodes.extend([[x, 0., 0.], [x+.01, .5, 0.], [x+.01, 1., 0.]])
             elements.append([start, start+1, start+2, start+2])
         mesh = Mesh2D(nodes, elements)
         stats = {}
         run(mesh, merge_tolerance=.07, stats=stats)
         self.assertLess(stats['core_elements'], 12)
         self.assertEqual(stats['patch_elements'], 12)
-        # All equivalent families retain the first global member's Z.
-        self.assertLessEqual(float(mesh.nodes[:, 2].max()), 2.)
+        np.testing.assert_array_equal(mesh.nodes[:, 2], 0.0)
 
-    def test_cross_boundary_equivalence_retains_lowest_global_id_and_z(self):
+    def test_cross_boundary_equivalence_retains_lowest_global_id(self):
         for tolerance in (0., .01):
             with self.subTest(tolerance=tolerance):
                 mesh = Mesh2D(
-                    [[0., 2., 40.], [0., 3., 41.], [-1., 3., 42.],
-                     [0., 0., 3.], [2., 0., 4.], [0., 2., 5.]],
+                    [[0., 2., 0.], [0., 3., 0.], [-1., 3., 0.],
+                     [0., 0., 0.], [2., 0., 0.], [0., 2., 0.]],
                     [[0, 1, 2, 2], [3, 4, 5, 5]],
                 )
                 stats = {}
@@ -341,13 +340,12 @@ class LocalPatchTests(unittest.TestCase):
                 self.assertEqual(stats['core_elements'], 1)
                 self.assertEqual(stats['patch_elements'], 2)
                 shared = mesh.nodes[np.all(mesh.nodes[:, :2] == [0., 2.], axis=1)]
-                np.testing.assert_array_equal(shared, [[0., 2., 40.]])
+                np.testing.assert_array_equal(shared, [[0., 2., 0.]])
 
-    def test_seam_shared_intersections_are_unique_and_z_is_interpolated(self):
+    def test_seam_shared_intersections_are_unique_with_zero_z(self):
         mesh = generate_rectilinear_mesh(.2, [-3., 3.], [-3., 3.])
-        mesh.nodes[:, 2] = mesh.nodes[:, 0] + 2 * mesh.nodes[:, 1]
         run(mesh, radius=1.13, projection_tolerance=.02, merge_tolerance=.001)
-        np.testing.assert_allclose(mesh.nodes[:, 2], mesh.nodes[:, 0] + 2 * mesh.nodes[:, 1], atol=.1)
+        np.testing.assert_array_equal(mesh.nodes[:, 2], 0.0)
         # Exact XY duplicates would reveal independent edge insertion at a seam.
         self.assertEqual(len(np.unique(mesh.nodes[:, :2], axis=0)), mesh.node_count)
         if importlib.util.find_spec('shapely'):

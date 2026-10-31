@@ -32,7 +32,7 @@ def _fan_mesh(
     if dimensions == 2:
         nodes = nodes_xy
     else:
-        z = np.concatenate(([7.0], np.arange(angles.size, dtype=np.float64)))
+        z = np.zeros(angles.size + 1)
         nodes = np.column_stack((nodes_xy, z))
 
     ring = np.arange(1, angles.size + 1, dtype=np.int64)
@@ -183,7 +183,7 @@ class ExtendCircularMeshTests(unittest.TestCase):
             atol=1.0e-12,
         )
 
-    def test_off_center_irregular_3d_ring_preserves_z_by_layer(self):
+    def test_off_center_irregular_xyz_ring_has_zero_z_in_every_layer(self):
         angles = np.deg2rad([0.0, 37.0, 91.0, 156.0, 213.0, 278.0, 326.0])
         mesh = _fan_mesh(
             center=(4.0, -3.0),

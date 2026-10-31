@@ -4,7 +4,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from ...model import Mesh2D
+from ...model import Mesh2D, _validate_zero_z
 
 from .geometry import (
     _minimum_scaled_jacobian,
@@ -380,6 +380,7 @@ def _read_projection_inputs(
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
+    _validate_zero_z(mesh.nodes)
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)

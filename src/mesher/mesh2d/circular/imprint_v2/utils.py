@@ -5,9 +5,8 @@ element connectivity counter-clockwise. ``_imprint_circle`` splits elements
 crossed by the circle, while ``_remove_redundant_element`` equivalences nearby
 nodes, repairs recoverable cells, removes unusable cells, and compacts the mesh.
 
-All geometric calculations use node X and Y coordinates. A node's Z value is
-preserved by ``_to_circle`` and inherited from the lowest-index representative
-during node equivalence.
+All geometric calculations use node X and Y coordinates. Input and output
+nodes have Z=0, including newly inserted circle intersections.
 """
 
 from dataclasses import dataclass
@@ -16,7 +15,7 @@ import warnings
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from ...model import Mesh2D
+from ...model import Mesh2D, _validate_zero_z
 from ...utils.equivalence import (
     _coordinate_bin,
     _equivalent_node_mapping,
@@ -943,7 +942,7 @@ def _project_circle(
     considers every mesh node, including unreferenced nodes.  After every valid
     call, all orientable elements in the mesh are normalized counter-clockwise,
     including elements outside ``indices``.  A padded Tri3 remains in canonical
-    ``[n0, n1, n2, n2]`` form.  Node Z coordinates are preserved, and validation
+    ``[n0, n1, n2, n2]`` form.  Node Z coordinates must be zero, and validation
     and target construction finish before the mesh is mutated.
 
     Args:
@@ -997,6 +996,7 @@ def _project_circle(
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
+    _validate_zero_z(mesh.nodes)
 
     center, circle_radius = _normalize_circle(center, radius)
     radial_tolerance = _normalize_nonnegative(
@@ -1261,8 +1261,7 @@ def _split_circle(
     that distance of an edge endpoint reuses the endpoint after projecting its
     XY coordinate radially onto the circle.  Intersections within that distance
     of one another are treated as a single contact.  Newly inserted nodes on a
-    shared selected edge are deduplicated; their Z coordinate is linearly
-    interpolated along the source edge.
+    shared selected edge are deduplicated and have Z=0.
 
     When ``indices`` is provided, only those element rows may have their
     connectivity split.  Reused endpoint nodes are shared mesh nodes, so
@@ -1290,6 +1289,7 @@ def _split_circle(
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
+    _validate_zero_z(mesh.nodes)
 
     center, circle_radius = _normalize_circle(center, radius)
     merge_tolerance = _normalize_nonnegative(
@@ -1527,7 +1527,7 @@ def _split_circle(
 
     # Work in local perimeter orientation for endpoint tests and later
     # insertion order, while retaining canonical parameters for shared-edge
-    # node keys and Z interpolation.
+    # node keys.
     canonical_is_local = local_edge_starts == canonical_starts
     local_parameters = np.where(
         canonical_is_local[..., None],
@@ -1648,9 +1648,6 @@ def _split_circle(
     flat_root_xy = root_xy.reshape(candidate_count, 8, 2)
     flat_edge_positions = root_edge_positions.reshape(candidate_count, 8)
     flat_root_ordinals = root_ordinals.reshape(candidate_count, 8)
-    flat_canonical_parameters = canonical_parameters.reshape(
-        candidate_count, 8
-    )
     flat_local_parameters = local_parameters.reshape(candidate_count, 8)
     flat_snap_nodes = np.full((candidate_count, 8), -1, dtype=np.int64)
     snap_rows, snap_slots = np.nonzero(snapped)
@@ -1692,7 +1689,6 @@ def _split_circle(
     sorted_xy = _take_rows(flat_root_xy)
     sorted_edges = _take_rows(flat_edge_positions)
     sorted_ordinals = _take_rows(flat_root_ordinals)
-    sorted_canonical_parameters = _take_rows(flat_canonical_parameters)
     sorted_local_parameters = _take_rows(flat_local_parameters)
     sorted_snap_nodes = _take_rows(flat_snap_nodes)
     sorted_support = _take_rows(root_support)
@@ -1755,9 +1751,6 @@ def _split_circle(
     rotated_xy = _rotate_rows(sorted_xy)
     rotated_edges = _rotate_rows(sorted_edges)
     rotated_ordinals = _rotate_rows(sorted_ordinals)
-    rotated_canonical_parameters = _rotate_rows(
-        sorted_canonical_parameters
-    )
     rotated_local_parameters = _rotate_rows(sorted_local_parameters)
     rotated_snap_nodes = _rotate_rows(sorted_snap_nodes)
     rotated_support = _rotate_rows(sorted_support)
@@ -1785,9 +1778,6 @@ def _split_circle(
     group_xy = np.zeros((candidate_count, 8, 2), dtype=np.float64)
     group_edges = np.zeros((candidate_count, 8), dtype=np.int64)
     group_ordinals = np.zeros((candidate_count, 8), dtype=np.int64)
-    group_canonical_parameters = np.zeros(
-        (candidate_count, 8), dtype=np.float64
-    )
     group_local_parameters = np.zeros(
         (candidate_count, 8), dtype=np.float64
     )
@@ -1803,9 +1793,6 @@ def _split_circle(
         group_ordinals[start_rows, start_groups] = rotated_ordinals[
             start_rows, start_slots
         ]
-        group_canonical_parameters[start_rows, start_groups] = (
-            rotated_canonical_parameters[start_rows, start_slots]
-        )
         group_local_parameters[start_rows, start_groups] = (
             rotated_local_parameters[start_rows, start_slots]
         )
@@ -1885,9 +1872,6 @@ def _split_circle(
         eligible_candidate_positions, :2
     ]
     eligible_group_xy = group_xy[eligible_candidate_positions, :2]
-    eligible_group_canonical_parameters = group_canonical_parameters[
-        eligible_candidate_positions, :2
-    ]
     eligible_group_local_parameters = group_local_parameters[
         eligible_candidate_positions, :2
     ]
@@ -1934,25 +1918,13 @@ def _split_circle(
 
         unique_rows = unsnapped_rows[first_key_positions]
         unique_groups = unsnapped_groups[first_key_positions]
-        unique_parameters = eligible_group_canonical_parameters[
-            unique_rows, unique_groups
-        ]
-        unique_start_nodes = unique_keys[:, 0]
-        unique_end_nodes = unique_keys[:, 1]
         new_node_coordinates = np.empty(
             (unique_keys.shape[0], 3), dtype=np.float64
         )
         new_node_coordinates[:, :2] = eligible_group_xy[
             unique_rows, unique_groups
         ]
-        new_node_coordinates[:, 2] = (
-            float_nodes[unique_start_nodes, 2]
-            + unique_parameters
-            * (
-                float_nodes[unique_end_nodes, 2]
-                - float_nodes[unique_start_nodes, 2]
-            )
-        )
+        new_node_coordinates[:, 2] = 0.0
         assigned_nodes = nodes.shape[0] + key_inverse
         intersection_node_indices[unsnapped_rows, unsnapped_groups] = (
             assigned_nodes
@@ -2366,7 +2338,7 @@ def _remove_redundant_element(
 
     Structurally valid, finite, positive-area elements first contribute nodes
     to a global XY equivalence pass.  Equivalence is transitive, and the
-    lowest original node index supplies the complete XYZ coordinate for each
+    lowest original node index supplies the XY coordinate (with Z=0) for each
     group.  After remapping, a Quad4 collapsed along one edge is retained as a
     Tri3, while a simple concave Quad4 is split into two positive-area Tri3
     elements.  Elements that cannot be repaired or whose XY area is less than
@@ -2393,6 +2365,7 @@ def _remove_redundant_element(
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
+    _validate_zero_z(mesh.nodes)
 
     merge_tolerance = _normalize_nonnegative(
         merge_tolerance,

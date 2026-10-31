@@ -47,9 +47,20 @@ from mesher import ElementType2D, Mesh2D, Mesh3D
 ```
 
 `Mesh2D` owns contiguous `float64` nodes with shape `(n, 3)` and `int32`
-connectivity with shape `(m, 4)`. XY input is accepted and normalized with a
-zero Z coordinate. Tri3 rows use `[n0, n1, n2, n2]`; `element_types` exposes
-the inferred Tri3/Quad4 topology.
+connectivity with shape `(m, 4)`. XY input is padded with a zero Z coordinate;
+XYZ input must have exactly zero Z at every node, including unused nodes.
+Nonzero Z (even tiny noise), NaN, and infinity raise `ValueError` with the first
+invalid node's index and Z value. No Z tolerance or automatic projection is
+applied. To explicitly project source coordinates, pass `xyz[:, :2]`.
+Tri3 rows use `[n0, n1, n2, n2]`; `element_types` exposes the inferred topology.
+
+`mesh.nodes` remains writable. Direct edits can temporarily make a mesh invalid;
+public mesh operations validate Z before work, including no-op operations.
+Getters remain available for inspection and repair. Constructors, the `nodes`
+setter, and `replace_data` validate new coordinates before assigning them.
+All 2D geometry uses XY and generated nodes have Z=0. `GeometryTolerance` has
+only `absolute` and `relative` settings; `planar` and `planarity` are removed.
+The 3D extruder validates its 2D source and generates Z from the layer plan.
 
 `Mesh3D` owns `(n, 3)` nodes and fixed-width `(m, 20)` ANSYS connectivity.
 `element_node_num` identifies the effective leading slots in each row; every
@@ -77,11 +88,11 @@ outlines_by_edge = EditorMesh2D.outlines_by_edge(combined)  # Loops -> edges -> 
 
 Deletion and equivalence return the input mesh. Merge preserves source order,
 owns independent arrays, and does not weld coincident nodes. Equivalence uses
-transitive XY distance groups and retains the lowest original node ID's complete
-XYZ coordinate. It converts adjacent-vertex Quad4 collapses to padded Tri3,
+transitive XY distance groups and retains the lowest original node ID's
+XY coordinate with Z=0. It converts adjacent-vertex Quad4 collapses to padded Tri3,
 removes unusable or zero-area cells, and removes unreferenced nodes; winding,
 concave cells, and duplicate elements are retained. Tolerance must be finite and
-non-negative; zero merges only identical XY coordinates. Referenced XYZ values
+non-negative; zero merges only identical XY coordinates. Referenced XY values
 must be finite. Deletion renumbers element rows, and equivalence can renumber
 both nodes and elements, so obtain fresh selections after editing.
 
@@ -247,7 +258,7 @@ Large coarsening can therefore retain thin cells or multiple transition rows
 inside a unit, while the separate whole-layer thin collar has been removed.
 
 Input cells must be nondegenerate convex Quad4
-cells (either orientation), and all nodes must share one constant Z. Corner
+cells (either orientation), and all nodes must have Z=0. Corner
 reservations that overlap, a short/coarse source edge, incompatible seam counts,
 collisions, or topology changes can make a layer infeasible. `QuadLayerError`
 and `UnmeshableDirectQuadLayout` include the failure context. Expansion is fixed:

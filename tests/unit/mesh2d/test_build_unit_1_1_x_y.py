@@ -20,9 +20,9 @@ def _patch(x_segments, y_segments, *, wavy=False, nonuniform=False):
         y_fraction = np.linspace(0.0, 1.0, y_segments + 1)
     x_y = 0.035 * np.sin(2.0 * np.pi * x_fraction) if wavy else np.zeros_like(x_fraction)
     y_x = 1.0 + 0.03 * np.sin(2.0 * np.pi * y_fraction) if wavy else np.ones_like(y_fraction)
-    bottom = np.column_stack((x_fraction, x_y, 0.3 * x_fraction + 0.4 * x_y))
-    right = np.column_stack((y_x[1:], y_fraction[1:], 0.3 * y_x[1:] + 0.4 * y_fraction[1:]))
-    nodes = np.vstack((bottom, right, [[0.0, 1.0, 0.4]]))
+    bottom = np.column_stack((x_fraction, x_y, np.zeros_like(x_fraction)))
+    right = np.column_stack((y_x[1:], y_fraction[1:], np.zeros_like(y_fraction[1:])))
+    nodes = np.vstack((bottom, right, [[0.0, 1.0, 0.0]]))
     mesh = Mesh2D(nodes, np.empty((0, 4), dtype=np.int32))
     edges = (
         np.arange(x_segments + 1, dtype=np.int64),
@@ -100,7 +100,7 @@ class BuildUnit11XYTests(unittest.TestCase):
                     build_unit_1_1_x_y(mesh, *edges)
                     self.assert_valid_patch(mesh, edges, original_count)
 
-    def test_nonuniform_curved_edges_interpolate_z(self):
+    def test_nonuniform_curved_edges_have_zero_z(self):
         mesh, edges = _patch(5, 3, wavy=True, nonuniform=True)
         original_count = mesh.node_count
         boundary = np.concatenate([edge[:-1] for edge in edges])
@@ -114,7 +114,7 @@ class BuildUnit11XYTests(unittest.TestCase):
         self.assert_valid_patch(mesh, edges, original_count)
         np.testing.assert_allclose(
             mesh.nodes[original_count:, 2],
-            0.3 * mesh.nodes[original_count:, 0] + 0.4 * mesh.nodes[original_count:, 1],
+            0.0,
             atol=1e-12,
         )
 
@@ -122,11 +122,11 @@ class BuildUnit11XYTests(unittest.TestCase):
         mesh, edges = _patch(5, 3, nonuniform=True)
         first_new_index = mesh.node_count
         build_unit_1_1_x_y(mesh, *edges)
-        np.testing.assert_allclose(mesh.nodes[first_new_index], [0.08, 0.57, 0.252], atol=1e-12)
+        np.testing.assert_allclose(mesh.nodes[first_new_index], [0.08, 0.57, 0.0], atol=1e-12)
 
     def test_large_coordinate_offset_preserves_patch_geometry(self):
         mesh, edges = _patch(5, 3, wavy=True, nonuniform=True)
-        mesh.nodes += [1.0e10, -2.0e10, 3.0e10]
+        mesh.nodes += [1.0e10, -2.0e10, 0.0]
         initial_count = mesh.node_count
         build_unit_1_1_x_y(mesh, *edges)
         self.assert_valid_patch(mesh, edges, initial_count)

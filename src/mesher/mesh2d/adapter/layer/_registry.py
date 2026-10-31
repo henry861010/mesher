@@ -17,7 +17,6 @@ class _NodePool:
         self.added: list[np.ndarray] = []
         self.tol = tol
         self.buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
-        self.z = float(original[int(source_ids[0]), 2])
         for node_id in source_ids:
             node_id = int(node_id)
             existing = self.find(original[node_id, :2])
@@ -52,7 +51,7 @@ class _NodePool:
         if found is not None:
             return found
         node_id = len(self.original) + len(self.added)
-        self.added.append(np.array((xy[0], xy[1], self.z), dtype=float))
+        self.added.append(np.array((xy[0], xy[1], 0.0), dtype=float))
         self.buckets[self.key(xy)].append(node_id)
         return node_id
 

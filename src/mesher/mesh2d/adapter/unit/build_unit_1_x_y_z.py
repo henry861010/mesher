@@ -139,7 +139,9 @@ def _stage_sweep(nodes: np.ndarray, edges: _Edges) -> _Patch:
                 consumed = next_i - i + next_j - j
                 # Count segments, including every node on the OLD frontier.
                 if (len(frontier) - 1 + consumed + 1) % 2:
-                    midpoint = 0.5 * nodes[connector[0]] + 0.5 * nodes[connector[1]]
+                    midpoint_xy = (0.5 * nodes[connector[0], :2]
+                                   + 0.5 * nodes[connector[1], :2])
+                    midpoint = np.r_[midpoint_xy, 0.0]
                     connector = np.asarray(
                         (connector[0], len(nodes), connector[1]), dtype=np.int64
                     )
@@ -224,18 +226,7 @@ def _stage_inner_ring(nodes: np.ndarray, edges: _Edges) -> _Patch:
     directions = (points - center) / distances[:, None]
     inner_xy = origin + scale * (center + radius * directions)
 
-    # Mean value coordinates are positive here and reproduce affine Z fields.
-    following = np.roll(directions, -1, axis=0)
-    angles = np.arctan2(_cross(directions, following), np.sum(directions * following, axis=1))
-    half_tangents = np.tan(0.5 * angles)
-    weights = (np.roll(half_tangents, 1) + half_tangents) / distances
-    weights /= weights.sum()
-    z_origin = nodes[boundary[0], 2]
-    relative_z = nodes[boundary, 2] - z_origin
-    center_z = float(weights @ relative_z)
-    fraction = radius / distances
-    inner_z = z_origin + (1.0 - fraction) * center_z + fraction * relative_z
-    inner_nodes = np.column_stack((inner_xy, inner_z))
+    inner_nodes = np.column_stack((inner_xy, np.zeros(len(inner_xy))))
     inner = np.arange(len(nodes), len(nodes) + len(boundary), dtype=np.int64)
     strips = np.column_stack((boundary, np.roll(boundary, -1), np.roll(inner, -1), inner))
     fan = np.asarray(
@@ -287,8 +278,8 @@ def build_unit_1_x_y_z(
     Edges are one-dimensional integer NumPy arrays of existing node indices.
     At least one edge has two nodes and their total node count must be even.
     Both windings and mildly concave chains are accepted. Geometry is measured
-    in XY; new connector midpoints interpolate XYZ, and the inner-ring fallback
-    uses mean value coordinates for its center's Z coordinate.
+    in XY; every new node has Z=0. The x/y/z in this function name denote
+    side subdivision counts, not spatial coordinate axes.
 
     Existing templates are preferred. Otherwise, of the two next side nodes,
     the one farther from the initial short segment is matched to the nearest

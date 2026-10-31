@@ -152,7 +152,7 @@ class SectionLineTests(unittest.TestCase):
         sides = (source, right, outer[::-1], left[::-1])
         cache = {}
         original = build_unit_patch(sides, 1e-10, _cache=cache)
-        translated = tuple(side + [4, 2, 7] for side in sides)
+        translated = tuple(side + [4, 2, 0] for side in sides)
         cached = build_unit_patch(translated, 1e-10, _cache=cache)
         direct = build_unit_patch(translated, 1e-10)
         self.assertEqual(len(cache), 1)

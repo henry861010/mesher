@@ -41,8 +41,8 @@ def imprint(mesh, **kwargs):
 
 class FlatQuadTriangulationTests(unittest.TestCase):
     def test_every_corner_uses_the_diagonal_avoiding_a_sliver(self):
-        nodes = np.array([[0., 0., 2.], [1., -.001, 4.],
-                          [2., 0., 8.], [0., 1., 16.]])
+        nodes = np.array([[0., 0., 0.0], [1., -.001, 0.0],
+                          [2., 0., 0.0], [0., 1., 0.0]])
         original_nodes = nodes.copy()
         for rotation in range(4):
             with self.subTest(rotation=rotation):
@@ -111,7 +111,7 @@ class ImprintFinalTriangulationTests(unittest.TestCase):
     @staticmethod
     def mesh():
         # Circle splitting produces a Quad4 with an approximately 171° corner.
-        return Mesh2D([[-1.1, -.6, 2.], [-.44, -.14, 4.], [.52, .8, 8.]],
+        return Mesh2D([[-1.1, -.6, 0.0], [-.44, -.14, 0.0], [.52, .8, 0.0]],
                       [[0, 1, 2, 2]])
 
     def test_public_call_triangulates_generated_quad_and_preserves_footprint(self):
@@ -181,8 +181,8 @@ class ImprintFinalTriangulationTests(unittest.TestCase):
 
     def test_remote_flat_quad_is_preserved(self):
         near = self.mesh()
-        remote = np.array([[20., 0., 1.], [21., -.001, 2.],
-                           [22., 0., 3.], [20., 1., 4.]])
+        remote = np.array([[20., 0., 0.0], [21., -.001, 0.0],
+                           [22., 0., 0.0], [20., 1., 0.0]])
         mesh = Mesh2D(np.concatenate((near.nodes, remote)),
                       np.concatenate((near.elements, [[3, 4, 5, 6]])))
         imprint(mesh)

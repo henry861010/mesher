@@ -11,19 +11,19 @@ from ._registry import _NodePool, _PointIndex
 from ._types import QuadLayerError
 
 
-def _xyz(points, z):
-    return np.column_stack((np.asarray(points), np.full(len(points), z)))
+def _xyz(points):
+    return np.column_stack((np.asarray(points), np.zeros(len(points))))
 
 
-def seam_states(seam, z, tol):
+def seam_states(seam, tol):
     """Canonical mandatory chain, optionally with one longest-interval midpoint."""
-    points = _xyz(seam.points, z)
+    points = _xyz(seam.points)
     lengths = np.linalg.norm(np.diff(points[:, :2], axis=0), axis=1)
     if not len(lengths) or np.any(lengths <= tol):
         raise QuadLayerError("a section seam has no usable length",
                              code="unmeshable_section_layout", seam_id=seam.id)
     longest = int(np.argmax(lengths))
-    midpoint = (points[longest] + points[longest + 1]) / 2
+    midpoint = np.r_[(points[longest, :2] + points[longest + 1, :2]) / 2, 0.0]
     return {len(points): points,
             len(points) + 1: np.insert(points, longest + 1, midpoint, axis=0)}
 
@@ -82,13 +82,12 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
     tol, h = data["tol"], data["h"]
     source_ids = np.unique(data["frozen"])
     pool = _NodePool(nodes, source_ids, tol)
-    z = pool.z
-    states = {seam.id: seam_states(seam, z, tol) for seam in plan.seams}
+    states = {seam.id: seam_states(seam, tol) for seam in plan.seams}
     candidates = []
     line_stats = {}
     for section in plan.sections:
         source_chains = tuple(nodes[np.asarray(chain, dtype=int)] for chain in section.source_chains)
-        outer = _xyz(section.outer_boundary, z)
+        outer = _xyz(section.outer_boundary)
         options = {}
         rejected = []
         if section.kind == "LINE":
@@ -104,7 +103,7 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                         for key in ("unit_trial_count", "local_repair_count", "outer_count_attempts"):
                             line_stats[section.id][key] += attempt_stats[key]
                     else:
-                        corner = np.r_[plan.front[section.corner], z]
+                        corner = np.r_[plan.front[section.corner], 0.0]
                         patches = plan_corner(section.kind, source_chains, outer, left, right,
                                               corner, h, tol)
                     if patches:
@@ -155,7 +154,7 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                 mapping[local] = pool.boundary_node(point[:2])
             else:
                 point = point.copy()
-                point[2] = z
+                point[2] = 0.0
                 mapping[local] = pool.interior_nodes(point[None])[0]
         if (not np.array_equal(mapping[patch.left_ids], seam_ids[section.left_seam])
                 or not np.array_equal(mapping[patch.right_ids], seam_ids[section.right_seam])

@@ -18,9 +18,12 @@ class ElementType2D(IntEnum):
 class Mesh2D:
     """Owned planar mesh arrays with a three-coordinate node invariant.
 
-    Planar algorithms operate on ``nodes[:, :2]``.  The Z coordinate is kept
-    so a planar mesh can carry an embedding or become an extrusion source.
-    Two-coordinate input is accepted and normalized with ``z = 0``.
+    Geometry uses only ``nodes[:, :2]``; the third column must be exactly zero.
+    Two-coordinate input is accepted and padded with zeros. Nonzero or nonfinite
+    Z values are rejected, without projection or a Z tolerance.
+
+    Arrays remain writable. Direct edits can temporarily violate this contract;
+    public mesh operations validate Z before consuming or changing the mesh.
 
     Connectivity has fixed width four.  Tri3 rows use the canonical padded
     representation ``[n0, n1, n2, n2]``; every other row is classified as a
@@ -55,6 +58,7 @@ class Mesh2D:
 
     @elements.setter
     def elements(self, values: ArrayLike) -> None:
+        _validate_zero_z(self._nodes)
         elements = _normalize_elements(values)
         _validate_connectivity(elements, len(self._nodes))
         self._elements = elements
@@ -93,7 +97,24 @@ def _normalize_nodes(values: ArrayLike) -> NDArray[np.float64]:
         raise ValueError("nodes must have shape (n, 2) or (n, 3).")
     if nodes.shape[1] == 2:
         nodes = np.column_stack((nodes, np.zeros(len(nodes), dtype=np.float64)))
+    _validate_zero_z(nodes)
     return np.ascontiguousarray(nodes)
+
+
+def _validate_zero_z(nodes: NDArray[np.float64]) -> None:
+    """Check the Z contract without modifying coordinates or validating XY.
+
+    Call after shape validation for raw arrays. Two-column arrays are already
+    XY; extra columns accepted by the extrusion adapter retain their semantics.
+    This check includes unused nodes and deliberately has no tolerance.
+    """
+    if nodes.shape[1] >= 3:
+        invalid = nodes[:, 2] != 0.0  # Also rejects NaN and either infinity.
+        if np.any(invalid):
+            index = int(np.argmax(invalid))
+            raise ValueError(
+                f"Mesh2D requires Z=0; node {index} has Z={float(nodes[index, 2])!r}"
+            )
 
 
 def _normalize_elements(values: ArrayLike) -> NDArray[np.int32]:
