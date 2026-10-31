@@ -14,8 +14,9 @@ from ._patterns import (PATTERN_RANGE_LIMIT, AxisPattern, covered_intervals,
                         occupied_intervals, pattern_contacts)
 from ._limits import check_element_limit
 from ._sections import partition_sections
-from ._section_mesh import fill_sections
-from ._types import QuadLayerError, QuadLayerResult, QuadSectionPlan, UnmeshableDirectQuadLayout
+from ._section_mesh import fill_sections, _quality_summary
+from ._types import (PreparedLayerSource, QuadLayerError, QuadLayerResult,
+                     QuadSectionPlan, UnmeshableDirectQuadLayout)
 
 
 def _fail(message, code="invalid_input", **context):
@@ -85,7 +86,8 @@ def _normalize_patterns(pattern_lines, origin, scale, tol, source):
     return np.asarray(result)
 
 
-def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance):
+def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance,
+             *, _semantic_directions=None, _frame=None):
     if not isinstance(mesh, Mesh2D):
         _fail("mesh must be a Mesh2D")
     try:
@@ -129,8 +131,8 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
     if len(set(flat.tolist())) != len(flat):
         _fail("outline repeats a node other than at consecutive edge joins")
     original = mesh.nodes[flat, :2]
-    origin = original[0].copy()
-    scale = float(np.max(np.ptp(original, axis=0)))
+    origin = original[0].copy() if _frame is None else _frame["origin"].copy()
+    scale = float(np.max(np.ptp(original, axis=0))) if _frame is None else _frame["scale"]
     if not np.isfinite(scale) or scale <= 0:
         _fail("source boundary has zero or unrepresentable extent")
     xy = (mesh.nodes[:, :2] - origin) / scale
@@ -139,18 +141,30 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
         _fail("geometry and target size have incompatible numeric scales")
     tol = max(128 * np.finfo(float).eps,
               4 * abs(float(np.spacing(np.max(np.abs(original)))) / scale))
+    if _frame is not None:
+        tol = max(tol, _frame["tol"])
     if h <= 32 * tol:
         raise UnmeshableDirectQuadLayout("element_size is below geometric resolution")
     source = xy[flat]
     chains = [xy[chain].copy() for chain in ids]
+    if _semantic_directions is not None:
+        semantic = np.asarray(_semantic_directions, dtype=float)
+        if (semantic.shape != (len(chains), 2)
+                or not np.all(np.isin(semantic, (-1., 0., 1.)))
+                or not np.all(np.sum(np.abs(semantic), axis=1) == 1)):
+            _fail("prepared source directions must be cardinal unit vectors",
+                  code="unsupported_slot_repair", stage="repair_outline")
     directions = []
     for i, chain in enumerate(chains):
         delta = chain[-1] - chain[0]
-        axis = int(np.argmax(np.abs(delta)))
+        axis = int(np.argmax(np.abs(delta if _semantic_directions is None else semantic[i])))
         length = abs(delta[axis])
         direction = np.zeros(2)
         direction[axis] = 1 if delta[axis] >= 0 else -1
-        if length <= tol or np.ptp(chain[:, 1 - axis]) > axis_tol * length + tol:
+        if _semantic_directions is not None:
+            direction = semantic[i].copy()
+        if length <= tol or (_semantic_directions is None
+                             and np.ptp(chain[:, 1 - axis]) > axis_tol * length + tol):
             _fail("outline edges must be near a global X or Y axis", edge_index=i)
         if np.any(np.diff(chain @ direction) <= tol):
             _fail("nodes on each logical edge must be strictly ordered", edge_index=i)
@@ -189,7 +203,8 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
                 old_incidence=incidence)
 
 
-def _front(data):
+def _expansion_distances(data):
+    """Plan supports and pattern distances before any front can collapse."""
     chains, normals = data["chains"], data["normals"]
     tol, h = data["tol"], data["h"]
     supports, distances, snapped = [], [], []
@@ -211,6 +226,13 @@ def _front(data):
         supports.append(support + distance)
         distances.append(distance)
         snapped.append(pattern_id if distance == nearest else None)
+    data.update(expansion=distances, snapped=snapped, supports=supports)
+    return supports
+
+
+def _front(data):
+    chains, normals, tol = data["chains"], data["normals"], data["tol"]
+    supports = _expansion_distances(data)
     front = np.asarray([np.linalg.solve(np.asarray((normals[i - 1], normals[i])),
                                        np.asarray((supports[i - 1], supports[i])))
                         for i in range(len(chains))])
@@ -233,8 +255,7 @@ def _front(data):
     outer, inner = (front, source) if area(source) < 0 else (source, front)
     if point_location(inner[0], outer, tol) != 1:
         _fail("source and front do not bound a single annular layer", "topology_change")
-    data.update(front=front, outer=outer, inner=inner,
-                expansion=distances, snapped=snapped)
+    data.update(front=front, outer=outer, inner=inner)
 
 
 def _validate_old_patterns(mesh, data):
@@ -272,37 +293,143 @@ def _validate_patch(*args):
     return validate_patch(*args)
 
 
-def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance):
+def _world_nodes(nodes, source_mesh, data):
+    """Restore staged nodes while retaining every source coordinate exactly."""
+    result = nodes.copy()
+    count = len(source_mesh.nodes)
+    result[count:, :2] = nodes[count:, :2] * data["scale"] + data["origin"]
+    result[:count] = source_mesh.nodes
+    restored = (result[count:, :2] - data["origin"]) / data["scale"]
+    if (not np.all(np.isfinite(result))
+            or np.any(np.abs(restored - nodes[count:, :2]) > data["tol"])):
+        raise UnmeshableDirectQuadLayout("mapping new nodes back exceeds the geometric tolerance",
+                                        stage="world_coordinates")
+    return result
+
+
+def _world_repair_diagnostics(value, data, key=None):
+    if key in {"polygon", "mouth_points"}:
+        return (np.asarray(value)[..., :2] * data["scale"] + data["origin"]).tolist()
+    if key in {"boundary_element_size", "max_element_size", "ring_target_sizes"}:
+        return (np.asarray(value) * data["scale"]).tolist()
+    if isinstance(value, dict):
+        return {name: _world_repair_diagnostics(item, data, name) for name, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_world_repair_diagnostics(item, data) for item in value]
+    return value
+
+
+def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance,
+                  *, repair_slots=True, max_added_elements=None,
+                  repair_max_element_size=None):
+    if not isinstance(repair_slots, (bool, np.bool_)):
+        _fail("repair_slots must be a boolean", stage="input_validation", parameter="repair_slots")
+    if repair_max_element_size is not None:
+        if (isinstance(repair_max_element_size, (bool, np.bool_))
+                or not isinstance(repair_max_element_size, (int, float, np.integer, np.floating))):
+            _fail("repair_max_element_size must be a finite positive scalar or None",
+                  stage="input_validation", parameter="repair_max_element_size")
+        try:
+            repair_max_element_size = float(repair_max_element_size)
+        except (ValueError, OverflowError) as error:
+            raise QuadLayerError("repair_max_element_size must be a finite positive scalar",
+                                 code="invalid_input", stage="input_validation",
+                                 parameter="repair_max_element_size") from error
+        if not np.isfinite(repair_max_element_size) or repair_max_element_size <= 0:
+            _fail("repair_max_element_size must be finite and positive",
+                  stage="input_validation", parameter="repair_max_element_size")
     try:
         data = _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
     except QuadLayerError as error:
         error.context.setdefault("stage", "input_validation")
         raise
-    for stage, action in (("pattern_validation", lambda: _validate_old_patterns(mesh, data)),
-                          ("expansion", lambda: _front(data)),
-                          ("section_partition", lambda: partition_sections(data))):
+    try:
+        _validate_old_patterns(mesh, data)
+    except QuadLayerError as error:
+        error.context.setdefault("stage", "pattern_validation")
+        raise
+    working = mesh
+    repair_diagnostics = {"slot_repairs": [], "repair_added_nodes": 0,
+                          "repair_added_elements": 0}
+    prepared_source = None
+    if repair_slots and area(data["source"]) < 0:
+        from ._repair import repair_slots as stage_repairs
+        _expansion_distances(data)
+        normalized = Mesh2D(np.column_stack((data["xy"], np.zeros(len(mesh.nodes)))), mesh.elements)
+        # Only the repair target uses this cap. The original h continues to
+        # determine slot closure, pattern snapping, and the expanded front.
+        repair_cap = (None if repair_max_element_size is None else
+                      min(repair_max_element_size, float(element_size)) / data["scale"])
+        try:
+            repair = stage_repairs(normalized, data, max_added_elements=max_added_elements,
+                                   repair_max_element_size=repair_cap)
+        except QuadLayerError as error:
+            error.context.setdefault("stage", "slot_repair")
+            raise
+        if repair is not None:
+            original_data = data
+            working = Mesh2D(_world_nodes(repair.mesh.nodes, mesh, data), repair.mesh.elements)
+            if (not np.array_equal(working.nodes[:len(mesh.nodes)], mesh.nodes)
+                    or not np.array_equal(working.elements[:len(mesh.elements)], mesh.elements)):
+                _fail("slot repair modified original mesh data", stage="slot_repair")
+            repair_diagnostics = _world_repair_diagnostics(repair.diagnostics, data)
+            repair_diagnostics.update(
+                repair_added_nodes=len(working.nodes) - len(mesh.nodes),
+                repair_added_elements=len(working.elements) - len(mesh.elements),
+                prepared_outline=[list(map(int, chain)) for chain in repair.outline],
+                edge_provenance=[list(map(int, edges)) for edges in repair.provenance])
+            try:
+                data = _prepare(working, repair.outline, element_size, pattern_lines,
+                                expand_ratio, axis_tolerance,
+                                _semantic_directions=repair.directions, _frame=original_data)
+            except QuadLayerError as error:
+                error.context.setdefault("stage", "repair_outline")
+                raise
+            data["_original_data"] = original_data
+            prepared_source = PreparedLayerSource(
+                working.nodes, working.elements, tuple(map(tuple, repair.outline)),
+                len(mesh.nodes), len(mesh.elements))
+    data["_source_mesh"] = working
+    data["_repair_diagnostics"] = repair_diagnostics
+    actions = []
+    if prepared_source is not None:
+        actions.append(("pattern_validation", lambda: _validate_old_patterns(working, data)))
+    actions.extend((("expansion", lambda: _front(data)),
+                    ("section_partition", lambda: partition_sections(data))))
+    for stage, action in actions:
         try:
             result = action()
         except QuadLayerError as error:
             error.context.setdefault("stage", stage)
             raise
+    result = replace(result, prepared_source=prepared_source,
+                     diagnostics={**result.diagnostics, **repair_diagnostics})
     return data, result
 
 
 def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
                        expand_ratio: float = 1.0,
-                       axis_tolerance: float = 1e-3) -> QuadSectionPlan:
-    """Inspect the corner-first section geometry without generating elements.
+                       axis_tolerance: float = 1e-3,
+                       repair_slots: bool = True,
+                       repair_max_element_size: float | None = None) -> QuadSectionPlan:
+    """Inspect repaired source and section geometry without modifying input.
 
     All returned coordinates and expansion distances use the caller's frame.
-    Source chains retain original node IDs. This preview validates geometric
-    partitioning; the subsequent seam/unit search may still find no solution.
+    Original IDs are retained. With repairs, section source chains index the
+    read-only ``prepared_source`` snapshot, which includes staged fill cells.
+    Outer-layer construction remains a geometric preview: the subsequent
+    seam/unit search may still find no solution. ``repair_slots=False`` keeps
+    the original strict single-layer behavior.
+    ``repair_max_element_size`` has the same interior target-size semantics as
+    :func:`extend_quad_layer`, including automatic sizing when it is None.
     At least one existing Quad4 is required. Pattern lengths and endpoint
     L-infinity distances from the source bounding box cannot exceed one million
     times its largest XY span. This preview has no element budget and makes no
     guarantee that construction fits a later call's ``max_added_elements``.
     """
-    data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
+    data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio,
+                              axis_tolerance, repair_slots=repair_slots,
+                              repair_max_element_size=repair_max_element_size)
 
     def world(points):
         result = points * data["scale"] + data["origin"]
@@ -320,7 +447,9 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
 def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
                       expand_ratio: float = 1.0,
                       axis_tolerance: float = 1e-3,
-                      max_added_elements: int = 1_000_000) -> QuadLayerResult:
+                      max_added_elements: int = 1_000_000,
+                      repair_slots: bool = True,
+                      repair_max_element_size: float | None = None) -> QuadLayerResult:
     """Append one conforming Quad4 layer, committing only after validation.
 
     ``outline`` is a closed chain of near-axis logical edges, CW for an
@@ -328,6 +457,20 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     XY segments of shape ``(n, 2, 2)``. Growth is to the left of each directed
     edge. A parallel pattern within ``element_size * expand_ratio`` determines
     that whole edge's expansion; otherwise the expansion is ``element_size``.
+
+    Closing simple exterior slots are filled to existing mouth anchors first,
+    unless ``repair_slots=False``. Repaired chains retain cardinal logical
+    directions even when individual segments are oblique. Patterns are applied
+    again to that prepared outline. Both stages share one output budget and
+    one atomic commit; original node and element IDs remain unchanged.
+
+    Repair mouth and chord sampling target the median frozen segment length,
+    capped at ``element_size``. Interior targets double inward up to
+    ``min(element_size, 4 * boundary_target)`` by default. A finite positive
+    ``repair_max_element_size`` overrides that interior target cap, must be at
+    least each repaired slot's boundary target, and is capped at ``element_size``.
+    It is not a hard maximum on every mesh edge. Inward construction stops before
+    a boundary collapse and fills the remaining core; it never restarts repair.
 
     At least one existing Quad4 is required. Each pattern's length and each
     endpoint's L-infinity distance from the source bounding box must be at most
@@ -357,38 +500,49 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
         _fail("max_added_elements must be a positive integer", "invalid_input",
               stage="input_validation", parameter="max_added_elements")
     max_added_elements = int(max_added_elements)
-    data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
-    data["max_added_elements"] = max_added_elements
-    local_nodes = mesh.nodes.copy()
+    data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio,
+                              axis_tolerance, repair_slots=repair_slots,
+                              max_added_elements=max_added_elements,
+                              repair_max_element_size=repair_max_element_size)
+    working = data["_source_mesh"]
+    repair_count = len(working.elements) - len(mesh.elements)
+    data["max_added_elements"] = max_added_elements - repair_count
+    local_nodes = working.nodes.copy()
     local_nodes[:, :2] = data["xy"]
     try:
         nodes, quads, new_outline, registry_diagnostics = fill_sections(
-            local_nodes, plan, data, element_offset=len(mesh.elements))
+            local_nodes, plan, data, element_offset=len(working.elements))
     except QuadLayerError as error:
+        if error.code == "element_limit_exceeded":
+            error.context["limit"] = max_added_elements
+            error.context["required_elements"] += repair_count
         error.context.setdefault("stage", "section_assembly")
         raise
     try:
-        _validate_patch(mesh, nodes, quads, new_outline, data)
+        _validate_patch(working, nodes, quads, new_outline, data)
+        all_quads = np.vstack((working.elements[len(mesh.elements):], quads)) if repair_count else quads
+        if repair_count:
+            original_data = dict(data["_original_data"])
+            original_data.update(front=data["front"], outer=data["front"],
+                                 inner=original_data["source"], tol=data["tol"])
+            _validate_patch(mesh, nodes, all_quads, new_outline, original_data)
     except QuadLayerError as error:
         error.context.setdefault("stage", "final_validation")
         raise
-    world_nodes = nodes.copy()
-    world_nodes[len(mesh.nodes):, :2] = nodes[len(mesh.nodes):, :2] * data["scale"] + data["origin"]
-    world_nodes[:len(mesh.nodes)] = mesh.nodes
-    restored_xy = (world_nodes[len(mesh.nodes):, :2] - data["origin"]) / data["scale"]
-    if np.any(np.abs(restored_xy - nodes[len(mesh.nodes):, :2]) > data["tol"]):
-        raise UnmeshableDirectQuadLayout("mapping new nodes back exceeds the geometric tolerance",
-                                        stage="world_coordinates")
+    world_nodes = _world_nodes(nodes, working, data)
     # Verify strict convexity again after restoring the caller's coordinate frame.
-    represented = (world_nodes[quads, :2] - data["origin"]) / data["scale"]
+    represented = (world_nodes[all_quads, :2] - data["origin"]) / data["scale"]
     vectors = np.roll(represented, -1, axis=1) - represented
     if not np.all(np.isfinite(world_nodes)) or np.any(cross(vectors, np.roll(vectors, -1, axis=1)) <= 0):
         raise UnmeshableDirectQuadLayout("new quads cannot be represented at the input coordinate scale",
                                         stage="world_coordinates")
-    check_element_limit(len(quads), max_added_elements, stage="precommit")
-    elements = np.vstack((mesh.elements, quads))
+    check_element_limit(len(all_quads), max_added_elements, stage="precommit")
+    elements = np.vstack((mesh.elements, all_quads))
     diagnostics = {**plan.diagnostics, **registry_diagnostics,
-                   "added_nodes": len(nodes) - len(mesh.nodes), "added_elements": len(quads),
+                   "added_nodes": len(nodes) - len(mesh.nodes), "added_elements": len(all_quads),
+                   "expand_added_nodes": len(nodes) - len(working.nodes),
+                   "expand_added_elements": len(quads),
+                   "quality": _quality_summary(nodes, all_quads),
                    "max_added_elements": max_added_elements,
                    "edge_expansion": [d * data["scale"] for d in data["expansion"]],
                    "snapped_patterns": data["snapped"], "elapsed_seconds": perf_counter() - start}

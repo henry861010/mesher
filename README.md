@@ -201,6 +201,51 @@ otherwise the expansion is `element_size`. Coincident guides do not stop growth.
 `axis_tolerance` (default `1e-3`) limits transverse deviation relative to each
 logical edge's length. The new front is axis aligned; old coordinates never move.
 
+Both entry points default to `repair_slots=True`. Before expanding, the adapter
+detects parallel C/U-shaped slots whose opposing walls close under this call's
+actual expansion distances, including pattern snapping. It fills each supported
+slot up to its original mouth in a temporary Quad4 mesh, rebuilds the selected
+outline, and runs the usual section and unit construction. All original nodes,
+elements, and edge segments remain fixed. Set `repair_slots=False` to retain the
+original topology-change rejection for closing slots.
+
+Repair mouth segments and shared pattern chords target the same local size
+`h_b`: the median segment length across the three frozen slot boundaries,
+capped at `element_size`. Necessary contact nodes and even boundary parity
+take precedence over exact spacing. The interior coarsens through inward Quad4
+rings, doubling the target at each accepted ring. Both public entry points
+accept `repair_max_element_size=None`; its default interior target cap is
+`min(element_size, 4 * h_b)`. An explicit cap must be finite, positive, and at
+least `h_b` for every repaired slot; its effective value is still capped at
+`element_size`. This controls target sizes, not the maximum length of every
+diagonal or transition edge. The outer expansion retains the original
+`element_size` and pattern-snapping behavior.
+
+Inward rings stop while there is still room for a core fill. Their proposed
+depth must be no more than half the first boundary-collapse distance; all
+strips must pass geometry validation. The core uses a structured grid when
+opposite chain counts agree, fixed-boundary strips when they differ, or the
+bounded direct builder for other supported faces. Each public call runs slot
+repair once. A failed core or a later topology change reports an error instead
+of starting another repair pass.
+
+Opposing walls need not have matching node positions or counts. A mouth joins
+existing nodes; it never inserts a hanging node into an old edge. A slightly
+slanted mouth can be combined with neighboring, same-direction segments into a
+monotone logical X/Y chain. The original input still passes the usual XY check;
+only these internally prepared chains use the relaxed geometry check. Their
+new front uses the furthest source support in the expansion direction and stays
+axis aligned. Consequently, local layer thickness can exceed `element_size`
+by the transverse mouth misalignment. Patterns are applied again to the rebuilt
+logical outline, so a merged edge can have a different snapped expansion.
+
+This repair supports independent parallel slots, including unequal wall lengths
+and misaligned mouths. Interacting repairs, a closing neck with a remaining
+cavity, complete hole filling, and joining separate components remain
+unsupported. Repair does not shrink the requested expansion or modify the old
+mesh to rescue an infeasible layout. Any repair, expansion, or final validation
+failure leaves the original mesh unchanged.
+
 Patterns have a fixed numeric support range. Let `S` be the largest XY span of
 the source outline's bounding box. Each pattern's length and each endpoint's
 L-infinity distance to that box must be at most `1_000_000 * S`, inclusive.
@@ -239,17 +284,30 @@ recursive backtracking or global LINE quality search. Exhausting these repairs
 and the other legal outer count reports a layout error; this does not prove
 that every possible quadrangulation is infeasible.
 
-`plan_quad_sections()` is an optional read-only preview of the first level,
+`plan_quad_sections()` is an optional read-only preview of the section level,
 importable from `mesher.mesh2d.adapter`. It is not a required step before
 `extend_quad_layer()`. Its `QuadSectionPlan` contains `sections`, `seams`, `front`, and `edge_expansion`.
 Sections retain their source node chains, outer boundary, and left/right seam
-IDs; seam coordinates run from source to front. This preview verifies geometric
+IDs; seam coordinates run from source to front. When repair is needed, preview
+also constructs the temporary slot fills. Its optional `prepared_source`
+contains read-only world-XYZ `nodes`, `elements`, an immutable logical `outline`,
+and `original_node_count` / `original_element_count`. Section source IDs then
+refer to that snapshot, rather than only the caller's input arrays. Without
+repair, `prepared_source` is `None` and the original ID semantics are unchanged.
+This preview verifies geometric
 partitioning; full unit feasibility is determined during `extend_quad_layer()`.
 It has no element-budget argument and does not guarantee that construction fits
 within the budget of a later extension call.
 `result.diagnostics` records section details, seam states, units and their global
 element ranges, construction methods, quality, expansion distances, and added
 node/element counts. The construction path is `sections`.
+`slot_repairs` separately records repair polygons, mouth chains, absolute
+element ranges, `boundary_element_size`, and the effective `max_element_size`.
+Each repair face records `ring_count` and `stop_reason`. Length diagnostics
+use the caller's coordinate units. `repair_added_nodes` / `repair_added_elements` and
+`expand_added_nodes` / `expand_added_elements` separate the two phases;
+`added_nodes`, `added_elements`, and quality cover both. `prepared_outline` and
+`edge_provenance` describe the repaired logical source used by the section plan.
 
 Finite horizontal/vertical patterns must coincide with a source/front boundary
 or form complete chords from an existing source node to the corresponding
@@ -259,6 +317,11 @@ Patterns crossing frozen source segments or existing cell interiors are
 rejected. Internal endpoints, interior T/X junctions, closed pattern loops,
 and chords to an unrelated front are unsupported in this version and report
 `unsupported_pattern_layout`. Finite guides are never silently extended.
+Inside a slot repair, a pattern may follow an existing edge or form a complete
+noncrossing chord across the fill. Old-edge contacts must be existing nodes;
+new mouth contacts become mandatory shared nodes. Such chords divide the repair
+into conforming Quad4 faces before expansion. The same restrictions on internal
+endpoints, T/X junctions, and closed loops apply to the repair phase.
 
 Among the constructed section candidates, the seam solver minimizes the sum of
 the sections' mean squared normalized
@@ -281,13 +344,14 @@ there is no thin-collar retry or automatic shrinking on failure.
 
 `extend_quad_layer(..., max_added_elements=1_000_000)` limits the number of new
 Quad4 elements in this call, not the existing mesh size or the sum of candidate
-trials. The argument accepts positive Python or NumPy integers; booleans,
+trials. Slot repair and expansion share this total budget; expansion uses the
+budget remaining after repair. The argument accepts positive Python or NumPy integers; booleans,
 floating-point values, `None`, and nonpositive values are invalid. A result
 exactly at the limit is allowed. Each call, including a subsequent layer, has
 its own limit; successful diagnostics record `max_added_elements`.
 
-Before sampling or unit construction, a count-only pass checks a lower bound
-over all sections. Oversized candidates are excluded before sampling or further
+Before outer-layer sampling or unit construction, a count-only pass checks a
+lower bound over all sections against the remaining budget. Oversized candidates are excluded before sampling or further
 assembly. The actual chosen layer is checked before global node mapping and
 again before commit. A refusal caused by the limit reports
 `QuadLayerError(code="element_limit_exceeded")`, with the limit, a known lower
@@ -318,23 +382,32 @@ and requires the median full extension call to be below one second by default:
 `venv/bin/python benchmarks/mesh2d/benchmark_adapter_layer.py`.
 
 The implementation lives in `src/mesher/mesh2d/adapter/`; files in `examples/`
-only demonstrate its public API. Each example calls `extend_quad_layer()` once,
-then `mesher.mesh2d.adapter.visualization.plot_quad_layer()` draws the returned
-section, unit, and element diagnostics without planning or generating another mesh.
+only demonstrate its public API. Examples call `extend_quad_layer()` once per
+case and draw the returned mesh or its section, unit, and element diagnostics
+without planning or generating another mesh.
 
 Run [the visual example](examples/extend_quad_layer.py) with
 `python examples/extend_quad_layer.py`. It opens a Matplotlib window and saves
 `examples/output/extend_quad_layer.png`, comparing **sections, selected units,
 and the final mesh** for a cross, finite pattern chords, and a hole. Use
 `--case pattern` to focus on guides or `--no-show --plot output.png` to save
-without opening a window. [The L-shaped regression example](examples/test2.py)
-uses source spacing 5 and expansion 50: it shows 6 LINE, 5 OUTER, and 1 INNER
-section, with `(0, 0) → (0, 100)` retained as a single LINE. Each example prints
-elapsed time and the final quality summary, also shown in the mesh panel.
+without opening a window. The example prints elapsed time and the final quality
+summary, also shown in the mesh panel.
 Use `--diagnostics output.json` to retain the section/unit records, chosen seam
 counts, global element ranges, quality, and timing from the same run as the PNG.
-Run `test2.py` with `--view-mesh` to also open the PyVista viewer. Matplotlib and PyVista are provided
-by the optional `visualization` dependency.
+
+[The test2 regression example](examples/test2.py) uses source spacing 5,
+repair boundary spacing 5, interior targets 5 → 10 → 20, and expansion 50.
+Run `python examples/test2.py` to open the PyVista viewer. Adjust
+`repair_max_element_size` directly in its `extend_quad_layer()` call to change
+the repair interior target cap. The example does not save output files or
+print diagnostics. PyVista is provided by the optional `visualization` dependency.
+
+The [slot repair example](examples/extend_quad_layer_slot_repair.py) compares
+equal-depth and misaligned-mouth C slots, drawing repair regions and mouth
+chains separately from the section ring. Run
+`python examples/extend_quad_layer_slot_repair.py --no-show --plot output.png --diagnostics output.json`
+to save a reproducible plot and diagnostics from the same extension calls.
 
 ## Process-flow 3D extrusion
 

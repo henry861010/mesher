@@ -37,9 +37,22 @@ mesh = editor.equivalence(editor.merge(mesh1, mesh2))
 mesh = editor.equivalence(editor.merge(mesh, mesh3))
 mesh = editor.equivalence(editor.merge(mesh, mesh4))
 
+# layer one 30
 outline = editor.outlines_by_edge(mesh)[0]
-result = extend_quad_layer(mesh, outline, element_size=30, expand_ratio=1.5, pattern_lines=pattern_lines)
+result = extend_quad_layer(
+    mesh, outline, element_size=30, expand_ratio=1.5, pattern_lines=pattern_lines,
+    repair_max_element_size=20,
+)
 mesh = result.mesh
+
+# layer two 100
+outline = editor.outlines_by_edge(mesh)[0]
+result = extend_quad_layer(
+    mesh, outline, element_size=100, expand_ratio=1.5, pattern_lines=pattern_lines,
+    repair_max_element_size=20,
+)
+mesh = result.mesh
+
 
 view_mesh(mesh, reference_lines=pattern_lines)
 

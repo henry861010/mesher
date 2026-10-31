@@ -68,11 +68,38 @@ class Section:
 
 
 @dataclass(frozen=True)
+class PreparedLayerSource:
+    """Owned, read-only world-coordinate source after staging slot repairs.
+
+    Original node and element IDs are preserved as array prefixes. Section
+    source chains in the containing plan index these nodes, not the caller's
+    still-unmodified mesh. ``outline`` contains semantic axis-aligned chains;
+    their individual source segments may be oblique.
+    """
+
+    nodes: np.ndarray
+    elements: np.ndarray
+    outline: tuple[tuple[int, ...], ...]
+    original_node_count: int
+    original_element_count: int
+
+    def __post_init__(self):
+        for name in ("nodes", "elements"):
+            source = np.asarray(getattr(self, name))
+            # An immutable backing buffer also prevents callers from turning
+            # WRITEABLE back on through a view of the preview snapshot.
+            values = np.frombuffer(source.tobytes(), dtype=source.dtype).reshape(source.shape)
+            object.__setattr__(self, name, values)
+        object.__setattr__(self, "outline", tuple(tuple(map(int, chain)) for chain in self.outline))
+
+
+@dataclass(frozen=True)
 class QuadSectionPlan:
-    """A complete cyclic section partition, without creating mesh elements."""
+    """A cyclic section preview, optionally including staged slot-fill cells."""
 
     sections: tuple[Section, ...]
     seams: tuple[Seam, ...]
     front: np.ndarray
     edge_expansion: tuple[float, ...]
     diagnostics: dict[str, Any]
+    prepared_source: PreparedLayerSource | None = None

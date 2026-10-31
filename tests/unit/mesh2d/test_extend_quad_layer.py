@@ -414,13 +414,20 @@ class ExtendQuadLayerTests(unittest.TestCase):
             extend_quad_layer(mesh, outline, 0.5)
         self.assert_unchanged(mesh, snapshot)
 
-    def test_narrow_u_slot_closure_is_an_atomic_topology_error(self):
+    def test_narrow_u_slot_closure_without_repair_is_an_atomic_topology_error(self):
         cells = {(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (2, 2)}
         mesh, outline, _ = _polyomino(cells)
         snapshot = self._snapshot(mesh)
         with self.assertRaises(ValueError):
-            extend_quad_layer(mesh, outline, 0.5)
+            extend_quad_layer(mesh, outline, 0.5, repair_slots=False)
         self.assert_unchanged(mesh, snapshot)
+
+    def test_narrow_u_slot_closure_is_repaired_by_default(self):
+        cells = {(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (2, 2)}
+        mesh, outline, _ = _polyomino(cells)
+        result = self.run_layer(mesh, outline, h=0.5)
+        self.assertEqual(len(result.diagnostics['slot_repairs']), 1)
+        self.assertEqual(len(result.outline), 4)
 
     def test_collision_with_other_mesh_is_atomic(self):
         mesh, outline = _rectangle()

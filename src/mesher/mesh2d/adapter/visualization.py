@@ -72,6 +72,7 @@ def plot_quad_layer(result: QuadLayerResult, source_outline, *, pattern_lines=()
     source_nodes, source_elements = _source_counts(result)
     old_nodes, old_elements = mesh.nodes[:source_nodes], mesh.elements[:source_elements]
     sections, units = diagnostics["section_details"], diagnostics["units"]
+    repairs = diagnostics.get("slot_repairs", ())
     front_ids = [node for chain in result.outline for node in chain[:-1]]
     points = np.vstack((old_nodes[:, :2], mesh.nodes[front_ids, :2]))
     lower, upper = points.min(axis=0), points.max(axis=0)
@@ -109,11 +110,30 @@ def plot_quad_layer(result: QuadLayerResult, source_outline, *, pattern_lines=()
         row[1].add_patch(Polygon(np.asarray(unit["polygon"]),
                                 facecolor=_SECTION_COLORS[kinds[unit["section_id"]]],
                                 edgecolor="#38444e", linewidth=1.0, alpha=0.85, zorder=2))
-    added = mesh.elements[source_elements:]
+    # Section/unit ranges begin after any staged slot repair elements. Repairs
+    # are a separate construction phase, not members of the cyclic section plan.
+    repair_elements = diagnostics.get("repair_added_elements", 0)
+    added = mesh.elements[source_elements + repair_elements:]
     row[2].add_collection(PolyCollection(mesh.nodes[added, :2],
                                          facecolors="#cde5e8", edgecolors="#2b5158",
                                          linewidths=0.55, zorder=2))
-    row[0].set_title(f"{name}\n1. {len(sections)} sections; corner first", fontsize=11)
+    for repair_index, repair in enumerate(repairs):
+        polygon = np.asarray(repair["polygon"])
+        mouth = np.asarray(repair["mouth_points"])
+        for axis in row[:2]:
+            axis.add_patch(Polygon(polygon, facecolor="#efc8dc", edgecolor="#9a426e",
+                                   hatch="//", linewidth=1.0, alpha=0.8, zorder=2))
+            axis.text(*_polygon_center(polygon), f"R{repair_index}",
+                      ha="center", va="center", fontsize=8, weight="bold", zorder=7)
+        cells = mesh.elements[repair["element_start"]:repair["element_end"]]
+        row[2].add_collection(PolyCollection(mesh.nodes[cells, :2],
+                                             facecolors="#efc8dc", edgecolors="#9a426e",
+                                             linewidths=0.6, zorder=2))
+        for axis in row:
+            axis.plot(*mouth[:, :2].T, color="#a62573", linewidth=2,
+                      marker="o", markersize=3, zorder=6)
+    repair_label = f"; {len(repairs)} slot repairs" if repairs else ""
+    row[0].set_title(f"{name}\n1. {len(sections)} sections{repair_label}", fontsize=11)
     row[1].set_title(f"2. {len(units)} units within fixed sections\n"
                      "Bold edges: sections / thin edges: units", fontsize=11)
     quality = diagnostics["quality"]
@@ -134,9 +154,16 @@ def plot_quad_layer(result: QuadLayerResult, source_outline, *, pattern_lines=()
         Line2D([], [], color="#168562", linewidth=2, label="New outline"),
         Line2D([], [], color="#c73535", marker="o", linewidth=2, label="Finite patterns"),
     ])
+    has_repairs = bool(repairs) or getattr(figure, "_quad_layer_has_repairs", False)
+    if has_repairs:
+        handles.extend([
+            Patch(facecolor="#efc8dc", edgecolor="#9a426e", hatch="//", label="Slot repair"),
+            Line2D([], [], color="#a62573", marker="o", linewidth=2, label="Repaired mouth"),
+        ])
     figure._quad_layer_kinds = used_kinds
+    figure._quad_layer_has_repairs = has_repairs
     figure._quad_layer_legend = figure.legend(
-        handles=handles, loc="outside lower center", ncol=len(handles), frameon=False)
+        handles=handles, loc="outside lower center", ncol=min(len(handles), 8), frameon=False)
     return figure
 
 

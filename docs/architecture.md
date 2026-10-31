@@ -51,12 +51,54 @@ remaining LINE ranges using complete finite pattern chords. Public `Section`,
 source node chains. Sections need not themselves be convex. Left/right refer
 to outline traversal, and seam points run from source to front.
 
+Both APIs enable slot repair by default. Original-input and pattern validation
+precede closure detection. Supported parallel slots are filled in a temporary
+Quad4 mesh, preserving all old nodes and elements; the selected boundary is
+then rebuilt and grouped into monotone logical X/Y chains. Only this prepared
+source may contain slanted repair-mouth segments. Axial support expansion and
+pattern snapping run on the rebuilt outline before the existing section planner.
+Preview exposes this temporary source through `QuadSectionPlan.prepared_source`:
+its node/element arrays are read-only, its outline is immutable, and section
+source IDs reference the snapshot. Preview can therefore create slot-fill
+elements without changing its caller's mesh, while full expansion feasibility
+is still determined by construction.
+
+Repair has a separate boundary target: the median segment length across the
+three frozen source chains, capped by the layer's `element_size`. Mouth and
+shared pattern chords are sampled once at this target with mandatory nodes
+and even face-boundary parity preserved. `repair_max_element_size` is accepted
+by both public entry points; `None` caps the interior target at four times the
+boundary target or the layer target, whichever is smaller. Explicit caps must
+be finite, positive, and no smaller than the boundary target, and are clipped
+to the layer target. All lengths are normalized internally and restored to
+world units in public diagnostics.
+
+Each repair face coarsens inward using fixed-boundary LINE strips. A ring
+doubles its predecessor's target, up to the interior cap, and uses that target
+as its inward distance. The candidate must stay within half the first
+boundary-collapse distance; its validated strips share inner-ring nodes and
+corner seams. A positive-progress check and a finite bound derived from the
+initial geometry and minimum step cap the number of rings. Once no ring fits,
+four-sided cores use structured filling when opposite counts agree, otherwise
+strips along the longer opposite sides. Other supported cores retain the
+finite-candidate direct builder. Repair diagnostics expose the effective
+boundary and interior targets plus per-face ring counts and stopping reasons.
+There is one repair phase per public call: no inward builder re-enters layer
+planning or slot detection. Core failure and topology changes after repair
+propagate as atomic failures. Repair targets never replace the requested
+outer expansion size.
+
 `extend_quad_layer()` uses the same internal section planner. Section builders
 produce and isolate-test unit plans for candidate seam node counts; a cyclic
 solver chooses compatible states around the entire layer. Neighboring sections
 share seam node IDs. Unit builders generate strictly convex Quad4 cells, and
 final validation checks the layer before committing it to the existing mesh.
 Diagnostics connect sections to units and units to global element ranges.
+Repairs have their own diagnostics and absolute element ranges rather than
+artificial ring sections. The final validator checks repair and expansion
+together against the original source; the original mesh receives one commit
+only after both stages succeed. The element budget and quality summary cover
+both stages. `repair_slots=False` preserves the earlier closure rejection.
 `mesh2d.adapter.visualization.plot_quad_layer()` reads the completed result
 to show sections, units, and the final mesh, without invoking planning or meshing.
 The [visual example](../examples/extend_quad_layer.py) only prepares inputs and
@@ -86,16 +128,18 @@ including other components of the input mesh. Non-pattern geometry retains the
 general segment predicates and its existing tolerances.
 
 Layer construction accepts `max_added_elements` (default one million positive
-integer elements), counting only the new layer. A count-only preflight computes
-the minimum section lower bounds across seam/outer-count candidates before any
-sampling or unit construction. Candidate guards exclude proven oversized
+integer elements), counting repair and expansion together. Repair candidates
+consume only their selected output count; the section planner uses the remaining
+budget. A count-only preflight computes the minimum section lower bounds across
+seam/outer-count candidates before outer-layer sampling or unit construction.
+Candidate guards exclude proven oversized
 boundaries and stop assembly when actual counts exceed the limit. The selected
 ring's actual count is checked before global node mapping and before commit.
 Limit failures retain `element_limit_exceeded` rather than being swallowed by
 geometry fallbacks. Candidate retries do not consume a cumulative budget. The
 solver does not add a count-constrained optimization dimension: if its chosen
 ring is too large, construction fails atomically. This guard does not promise
-bounded execution time or memory consumption. The geometry-only preview has no
+bounded execution time or memory consumption. The section preview has no
 element-budget parameter and makes no budget-feasibility promise.
 
 LINE construction samples the outer boundary first, preserving mandatory
