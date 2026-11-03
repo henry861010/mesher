@@ -1,4 +1,4 @@
-"""Direct Quad4 filling of a slot bounded by frozen chains and a free mouth.
+"""Direct Quad4 filling between frozen chains and a free boundary path.
 
 Patterns split the empty patch into faces before any cells are built. Free
 mouth intervals and chords are sampled once, with a shared parity assignment,
@@ -43,9 +43,11 @@ def _fail(message, *, patterns=False, **context):
                          stage="slot_repair", **context)
 
 
-def _source_path(chains, tol):
-    if len(chains) != 3:
+def _source_path(chains, tol, free_boundary=None):
+    if free_boundary is None and len(chains) != 3:
         _fail("a slot repair needs three frozen source chains")
+    if free_boundary is not None and len(chains) < 2:
+        _fail("an explicit repair boundary needs at least two frozen source chains")
     values = []
     for chain in chains:
         chain = np.asarray(chain, dtype=float)
@@ -60,16 +62,51 @@ def _source_path(chains, tol):
     source = np.vstack((values[0], *(chain[1:] for chain in values[1:])))
     if len(source) < 3 or np.linalg.norm(source[0] - source[-1]) <= tol:
         _fail("the slot has no usable mouth")
-    polygon = source[:, :2]
+    if free_boundary is None:
+        free_boundary = source[[-1, 0]].copy()
+    else:
+        free_boundary = np.asarray(free_boundary, dtype=float)
+        if (free_boundary.ndim != 2 or free_boundary.shape[1] != 3
+                or len(free_boundary) < 2 or not np.all(np.isfinite(free_boundary))
+                or np.any(free_boundary[:, 2] != 0)):
+            _fail("the free repair boundary must contain finite XYZ points with Z=0")
+        if (not np.array_equal(free_boundary[0], source[-1])
+                or not np.array_equal(free_boundary[-1], source[0])):
+            _fail("the free repair boundary must join the exact frozen source endpoints")
+        free_boundary = free_boundary.copy()
+    polygon = np.vstack((source, free_boundary[1:-1]))[:, :2]
+    following = np.roll(polygon, -1, axis=0)
+    if np.any(np.linalg.norm(following - polygon, axis=1) <= tol):
+        _fail("the repair boundary contains a zero-length segment")
     if abs(area(polygon)) <= tol * np.linalg.norm(np.ptp(polygon, axis=0)):
         _fail("the slot repair polygon has no usable area")
-    for i, (a, b) in enumerate(zip(polygon, np.roll(polygon, -1, axis=0))):
+    for i, (a, b) in enumerate(zip(polygon, following)):
+        adjacent = segment_contacts(a, b, b, polygon[(i + 2) % len(polygon)], tol)
+        if len(adjacent) > 1 and np.linalg.norm(adjacent[-1] - adjacent[0]) > tol:
+            _fail("the repair boundary doubles back along an adjacent segment")
         for j in range(i + 2, len(polygon)):
             if i == 0 and j == len(polygon) - 1:
                 continue
             if segment_contacts(a, b, polygon[j], polygon[(j + 1) % len(polygon)], tol):
                 _fail("the slot repair polygon intersects itself")
-    return source
+    return source, free_boundary
+
+
+def _on_free_boundary(point, free_boundary, tol):
+    return any(on_segment(point, a[:2], b[:2], tol)
+               for a, b in zip(free_boundary, free_boundary[1:]))
+
+
+def _free_station(point, free_boundary, tol):
+    """Order mandatory anchors along the path, including every bend."""
+    station = 0.0
+    for a, b in zip(free_boundary, free_boundary[1:]):
+        delta = b[:2] - a[:2]
+        length = float(np.linalg.norm(delta))
+        if on_segment(point[:2], a[:2], b[:2], tol):
+            return station + float(np.clip((point[:2] - a[:2]) @ delta / length, 0., length))
+        station += length
+    _fail("a mandatory anchor leaves the free repair boundary")
 
 
 def _union_patterns(patterns, tol):
@@ -89,11 +126,12 @@ def _union_patterns(patterns, tol):
     return result
 
 
-def _pattern_geometry(source, patterns, tol):
+def _pattern_geometry(source, patterns, tol, free_boundary=None):
     """Find complete interior chords and all mandatory mouth contacts."""
-    polygon = source[:, :2]
-    mouth = (polygon[-1], polygon[0])
-    chords, anchors, used_ids = [], [source[-1], source[0]], set()
+    if free_boundary is None:
+        free_boundary = source[[-1, 0]]
+    polygon = np.vstack((source, free_boundary[1:-1]))[:, :2]
+    chords, anchors, used_ids = [], list(free_boundary), set()
     for pattern in _union_patterns(patterns, tol):
         events = [(pattern.lo, pattern.point(pattern.lo)),
                   (pattern.hi, pattern.point(pattern.hi))]
@@ -108,7 +146,7 @@ def _pattern_geometry(source, patterns, tol):
                 ordered.append((value, point))
             elif len(matches):
                 ordered[-1] = (value, point)
-            if on_segment(point, *mouth, tol):
+            if _on_free_boundary(point, free_boundary, tol):
                 anchors.append(np.r_[point, 0.0])
         pieces = []
         for (_, a), (_, b) in zip(ordered, ordered[1:]):
@@ -118,8 +156,8 @@ def _pattern_geometry(source, patterns, tol):
                 _fail("a repair pattern terminates inside the slot", patterns=True,
                       pattern_ids=pattern.ids)
             for endpoint in (a, b):
-                old = np.any(np.linalg.norm(polygon - endpoint, axis=1) <= tol)
-                if not old and not on_segment(endpoint, *mouth, tol):
+                old = np.any(np.linalg.norm(source[:, :2] - endpoint, axis=1) <= tol)
+                if not old and not _on_free_boundary(endpoint, free_boundary, tol):
                     _fail("a repair pattern would split a frozen source segment", patterns=True,
                           pattern_ids=pattern.ids)
             pieces.append((np.r_[a, 0.0], np.r_[b, 0.0], pattern.ids))
@@ -141,13 +179,14 @@ def _pattern_geometry(source, patterns, tol):
     return chords, anchors, tuple(sorted(used_ids))
 
 
-def _face_graph(source, chords, anchors, tol):
+def _face_graph(source, chords, anchors, tol, free_boundary=None):
     pool = CoordinatePool(tol)
     source_ids = pool.chain(source)
     if len(set(source_ids.tolist())) != len(source_ids):
         _fail("repair source contains repeated coordinates")
-    delta = source[0, :2] - source[-1, :2]
-    anchors = sorted(anchors, key=lambda point: float((point[:2] - source[-1, :2]) @ delta))
+    if free_boundary is None:
+        free_boundary = source[[-1, 0]]
+    anchors = sorted(anchors, key=lambda point: _free_station(point, free_boundary, tol))
     mouth = []
     for point in anchors:
         node = pool.intern(point)
@@ -368,16 +407,20 @@ def _build_faces(points, source_ids, mouth, faces, free, counts, tol, limit, cac
 
 
 def build_repair_patch(source_chains, patterns, h, tol, *, max_added_elements=None,
-                       repair_max_element_size=None):
-    """Fill three contiguous source chains and a straight closing mouth.
+                       repair_max_element_size=None, free_boundary=None):
+    """Fill frozen source chains and a free closing boundary.
 
     Coordinates are normalized XYZ; source endpoints and every old segment are
     immutable. The returned mouth runs from the source end back to its start.
+    With no ``free_boundary``, three source chains and a straight mouth retain
+    the slot behavior. An explicit XYZ path permits two or more source chains;
+    its first/last points must equal the source end/start, and every path vertex
+    remains a mandatory boundary anchor.
     Either input winding is accepted. Only convex CCW Quad4 cells are returned.
     """
     if not np.isfinite(h) or h <= 0 or not np.isfinite(tol) or tol <= 0:
         _fail("repair size and tolerance must be positive and finite")
-    source = _source_path(source_chains, tol)
+    source, free_boundary = _source_path(source_chains, tol, free_boundary)
     lengths = np.linalg.norm(np.diff(source[:, :2], axis=0), axis=1)
     boundary_size = min(float(h), float(np.median(lengths[lengths > tol])))
     if repair_max_element_size is None:
@@ -392,8 +435,9 @@ def build_repair_patch(source_chains, patterns, h, tol, *, max_added_elements=No
                                  code="invalid_input", parameter="repair_max_element_size",
                                  stage="input_validation")
         max_size = min(float(h), max(boundary_size, float(value)))
-    chords, anchors, pattern_ids = _pattern_geometry(source, patterns, tol)
-    points, source_ids, mouth, faces, free, pattern_edges = _face_graph(source, chords, anchors, tol)
+    chords, anchors, pattern_ids = _pattern_geometry(source, patterns, tol, free_boundary)
+    points, source_ids, mouth, faces, free, pattern_edges = _face_graph(
+        source, chords, anchors, tol, free_boundary)
     errors, cache, failures = [], {}, []
     for counts in _count_candidates(points, faces, free, boundary_size):
         try:

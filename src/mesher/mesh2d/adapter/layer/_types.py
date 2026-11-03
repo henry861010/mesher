@@ -69,7 +69,7 @@ class Section:
 
 @dataclass(frozen=True)
 class PreparedLayerSource:
-    """Owned, read-only world-coordinate source after staging slot repairs.
+    """Owned, read-only world-coordinate source after slot and corner repairs.
 
     Original node and element IDs are preserved as array prefixes. Section
     source chains in the containing plan index these nodes, not the caller's
@@ -95,7 +95,11 @@ class PreparedLayerSource:
 
 @dataclass(frozen=True)
 class QuadSectionPlan:
-    """A cyclic section preview, optionally including staged slot-fill cells."""
+    """A cyclic section preview, optionally including staged repair cells.
+
+    Slot and corner fills are recorded separately in diagnostics and together
+    in ``prepared_source`` before the previewed expansion is constructed.
+    """
 
     sections: tuple[Section, ...]
     seams: tuple[Seam, ...]

@@ -349,7 +349,7 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
         error.context.setdefault("stage", "pattern_validation")
         raise
     working = mesh
-    repair_diagnostics = {"slot_repairs": [], "repair_added_nodes": 0,
+    repair_diagnostics = {"slot_repairs": [], "corner_repairs": [], "repair_added_nodes": 0,
                           "repair_added_elements": 0}
     prepared_source = None
     if repair_slots and area(data["source"]) < 0:
@@ -357,7 +357,7 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
         _expansion_distances(data)
         normalized = Mesh2D(np.column_stack((data["xy"], np.zeros(len(mesh.nodes)))), mesh.elements)
         # Only the repair target uses this cap. The original h continues to
-        # determine slot closure, pattern snapping, and the expanded front.
+        # determine slot/corner coverage, pattern snapping, and the front.
         repair_cap = (None if repair_max_element_size is None else
                       min(repair_max_element_size, float(element_size)) / data["scale"])
         try:
@@ -458,8 +458,11 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     edge. A parallel pattern within ``element_size * expand_ratio`` determines
     that whole edge's expansion; otherwise the expansion is ``element_size``.
 
-    Closing simple exterior slots are filled to existing mouth anchors first,
-    unless ``repair_slots=False``. Repaired chains retain cardinal logical
+    Closing simple exterior slots and covered isolated stair corners are filled
+    first, unless ``repair_slots=False``. A stair corner is covered when either
+    incident wall's planned expansion reaches the complete opposite leg.
+    Its two old legs are retained and joined by a two-segment free cap.
+    Repaired chains retain cardinal logical
     directions even when individual segments are oblique. Patterns are applied
     again to that prepared outline. Both stages share one output budget and
     one atomic commit; original node and element IDs remain unchanged.
@@ -468,7 +471,7 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     capped at ``element_size``. Interior targets double inward up to
     ``min(element_size, 4 * boundary_target)`` by default. A finite positive
     ``repair_max_element_size`` overrides that interior target cap, must be at
-    least each repaired slot's boundary target, and is capped at ``element_size``.
+    least each repair's boundary target, and is capped at ``element_size``.
     It is not a hard maximum on every mesh edge. Inward construction stops before
     a boundary collapse and fills the remaining core; it never restarts repair.
 

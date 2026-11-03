@@ -5,11 +5,18 @@ from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.visualization import view_mesh
 
-pattern_lines = np.asarray([
-    [[-50, 30], [50, 30]],
-    [[-100, 63], [-50, 63]],
-    [[0,50], [0, 200]]
-])
+# pattern_lines = np.asarray([
+#     [[-200, 30], [50, 30]],
+#     [[-100, 63], [-50, 63]],
+#     [[0,50], [0, 400]]
+# ])
+
+# pattern_lines = np.asarray([
+#     [[-200, 30], [50, 30]],
+#     [[0,50], [0, 400]]
+# ])
+
+pattern_lines = np.zeros((0,2,2),dtype=np.float64)
 
 editor = EditorMesh2D()
 mesh1 = generate_rectilinear_mesh(
@@ -49,7 +56,13 @@ mesh = result.mesh
 outline = editor.outlines_by_edge(mesh)[0]
 result = extend_quad_layer(
     mesh, outline, element_size=100, expand_ratio=1.5, pattern_lines=pattern_lines,
-    repair_max_element_size=20,
+)
+mesh = result.mesh
+
+# layer two 200
+outline = editor.outlines_by_edge(mesh)[0]
+result = extend_quad_layer(
+    mesh, outline, element_size=200, expand_ratio=1.5, pattern_lines=pattern_lines,
 )
 mesh = result.mesh
 

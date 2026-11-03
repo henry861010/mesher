@@ -265,6 +265,52 @@ def _make_corners(data, chords, seams):
     return corners
 
 
+def _share_repaired_endpoint_seams(data, corners, seams):
+    """Join endpoint reservations on a staged source without growing it again.
+
+    A repair can leave an INNER reservation consuming a complete neighboring
+    edge. Its OUTER neighbor's normal projection may then lie beyond that
+    edge's actual front. Clip that projection to the front and let both corners
+    own the same interface, retaining every frozen source segment.
+    """
+    if "_original_data" not in data:
+        return
+    tol = data["tol"]
+    for edge, first in enumerate(corners):
+        following = corners[(edge + 1) % len(corners)]
+        if (first.outgoing_index != following.incoming_index
+                or first.right == following.left
+                or (first.kind == "OUTER") == (following.kind == "OUTER")):
+            continue
+        before, after = seams.items[first.right], seams.items[following.left]
+        outer = before if first.kind == "OUTER" else after
+        a, b = data["front"][[edge, (edge + 1) % len(corners)]]
+        vector = b - a
+        fraction = float((outer.points[-1] - a) @ vector / (vector @ vector))
+        target = a if fraction <= 0. else b if fraction >= 1. else outer.points[-1]
+        for seam in (before, after):
+            if seam.pattern_ids and not _same(seam.points[-1], target, tol):
+                _fail("a repaired endpoint reservation would move a pattern interface",
+                      patterns=True, source_edge=edge, pattern_ids=seam.pattern_ids)
+        source = data["chains"][edge][first.outgoing_index]
+        shared = seams.add((source, target))
+        first.right = following.left = shared
+        for index, corner, left, right in (
+                (edge, first, first.outer[0], target),
+                ((edge + 1) % len(corners), following, target, following.outer[-1])):
+            front = data["front"][index]
+            corner.outer = _clean((left, front, right), tol)
+            if corner.kind != "OUTER":
+                left_arm, right_arm = not _same(left, front, tol), not _same(right, front, tol)
+                corner.kind = ("INNER_BOTH" if left_arm and right_arm else
+                               "INNER_LEFT" if left_arm else "INNER_RIGHT" if right_arm else "INNER")
+    used = {seam for corner in corners for seam in (corner.left, corner.right)}
+    remap = {old: new for new, old in enumerate(sorted(used))}
+    seams.items = [replace(seams.items[old], id=new) for old, new in remap.items()]
+    for corner in corners:
+        corner.left, corner.right = remap[corner.left], remap[corner.right]
+
+
 def _source_points(section, data):
     node_ids = []
     for chain in section.source_chains:
@@ -340,6 +386,7 @@ def partition_sections(data) -> QuadSectionPlan:
     chords, anchors = _admit_patterns(data)
     registry = _Seams(data, anchors)
     corners = _make_corners(data, chords, registry)
+    _share_repaired_endpoint_seams(data, corners, registry)
     sections = []
 
     def append(kind, source_chains, outer, left, right, *, source_edge=None, corner=None):

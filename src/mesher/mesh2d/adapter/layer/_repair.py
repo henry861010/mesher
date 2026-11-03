@@ -1,4 +1,4 @@
-"""Transactional filling of simple closing slots before semantic-axis growth.
+"""Transactional filling of closing slots and stair corners before growth.
 
 Only the selected exterior outline is changed.  Every original mesh node and
 element retains its ID, and the rebuilt outline records the cardinal meaning
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...model import Mesh2D
-from ._geometry import BoxIndex, area, cross, point_location, segment_contacts
+from ._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
 from ._limits import ElementLimitExceeded, check_element_limit
 from ._types import QuadLayerError
 
@@ -38,11 +38,21 @@ class _Slot:
 
 
 @dataclass(frozen=True)
+class _StairCorner:
+    edges: tuple[int, int]
+    knee: np.ndarray
+    candidates: tuple[int, ...] = (0,)
+
+
+@dataclass(frozen=True)
 class _Candidate:
-    slot: _Slot
+    slot: _Slot | _StairCorner
     source_chains: tuple[np.ndarray, ...]
     source_ids: np.ndarray
     polygon: np.ndarray
+    # Replacement boundary follows the original outline, from source start
+    # to source end. None retains the legacy straight slot mouth.
+    free_boundary: np.ndarray | None = None
 
 
 def _fail(message, *, reason=None, code="unsupported_slot_repair", **context):
@@ -50,6 +60,17 @@ def _fail(message, *, reason=None, code="unsupported_slot_repair", **context):
     if reason is not None:
         context["reason"] = reason
     raise QuadLayerError(message, code=code, **context)
+
+
+def _repair_error_context(error, kind, context):
+    for key, value in context.items():
+        error.context.setdefault(key, value)
+    if kind == "corner":
+        if error.code in {"unsupported_slot_repair", "unmeshable_slot_repair"}:
+            error.code = error.code.replace("slot_repair", "corner_repair")
+        stage = error.context.get("stage")
+        if isinstance(stage, str):
+            error.context["stage"] = stage.replace("slot_repair", "corner_repair")
 
 
 def _flat_chains(chains):
@@ -152,6 +173,8 @@ def _find_slots(data):
 
 
 def _candidate(slot, anchor, data):
+    if isinstance(slot, _StairCorner):
+        return _corner_candidate(slot, data)
     first, back, last = slot.edges
     chains = tuple(np.asarray(data["ids"][edge], dtype=np.int64).copy() for edge in slot.edges)
     if slot.shorter == 0:
@@ -189,21 +212,81 @@ def _candidate(slot, anchor, data):
     return _Candidate(slot, chains, source_ids, polygon)
 
 
+def _find_corners(data):
+    """Select isolated elbows covered by either original wall expansion."""
+    if area(data["source"]) >= 0:
+        return []
+    directions, tol = data["directions"], data["tol"]
+    turns = cross(np.roll(directions, 1, axis=0), directions)
+    corners = []
+    for outgoing in range(len(directions)):
+        incoming = (outgoing - 1) % len(directions)
+        if (turns[outgoing] <= 0 or turns[incoming] >= 0
+                or turns[(outgoing + 1) % len(directions)] >= 0):
+            continue
+        a, b = data["chains"][incoming][0], data["chains"][outgoing][-1]
+        direction = directions[outgoing]
+        knee = a + direction * float((b - a) @ direction)
+        polygon = np.vstack((data["chains"][incoming],
+                             data["chains"][outgoing][1:], knee))
+        # Include transverse source deviations as well as the free cap. In
+        # exact XY geometry this is ex >= width OR ey >= height.
+        if any(float(np.max(polygon @ data["normals"][edge]))
+               <= data["supports"][edge] + tol for edge in (incoming, outgoing)):
+            corners.append(_StairCorner((incoming, outgoing), knee))
+    corners.sort(key=lambda corner: (*corner.knee, corner.edges))
+    return corners
+
+
+def _corner_candidate(corner, data):
+    chains = tuple(np.asarray(data["ids"][edge], dtype=np.int64).copy()
+                   for edge in corner.edges)
+    source_ids = _flat_chains(chains)
+    source = data["xy"][source_ids]
+    boundary = np.asarray((source[0], corner.knee, source[-1]))
+    polygon = np.vstack((source, corner.knee))
+    tol = data["tol"]
+    _simple_polygon(polygon, tol, reason="invalid_corner_cap")
+    directions = data["directions"][list(corner.edges)[::-1]]
+    if np.any(np.sum(np.diff(boundary, axis=0) * directions, axis=1) <= tol):
+        _fail("a corner cap reverses its semantic direction", reason="invalid_corner_cap")
+    perimeter = float(np.linalg.norm(np.roll(polygon, -1, axis=0) - polygon, axis=1).sum())
+    if area(polygon) <= tol * perimeter:
+        _fail("the corner cap leaves no positive repair region", reason="invalid_corner_cap")
+    return _Candidate(corner, chains, source_ids, polygon, boundary)
+
+
+def _free_boundary(candidate):
+    if candidate.free_boundary is not None:
+        return candidate.free_boundary
+    return candidate.polygon[[0, -1]]
+
+
 def _validate_empty(candidate, mesh, data, edge_keys, edge_points, edge_index, cell_index):
     """A cap may meet old topology only at its two existing endpoint IDs."""
     tol = data["tol"]
-    a, b = candidate.polygon[[0, -1]]
+    boundary = _free_boundary(candidate)
     endpoint_ids = (int(candidate.source_ids[0]), int(candidate.source_ids[-1]))
-    for j in edge_index.query(np.minimum(a, b) - tol, np.maximum(a, b) + tol):
-        c, d = edge_points[j]
-        contacts = segment_contacts(a, b, c, d, tol)
-        if len(contacts) > 1 and np.linalg.norm(contacts[-1] - contacts[0]) > tol:
-            _fail("a repair mouth overlaps an existing edge", reason="mouth_hits_existing_mesh")
-        for point in contacts:
-            if not any(node in edge_keys[j] and np.linalg.norm(point - endpoint) <= tol
-                       for node, endpoint in zip(endpoint_ids, (a, b))):
-                _fail("a repair mouth crosses existing mesh or would create a hanging node",
-                      reason="mouth_hits_existing_mesh")
+    endpoints = boundary[[0, -1]]
+    for a, b in zip(boundary[:-1], boundary[1:]):
+        for j in edge_index.query(np.minimum(a, b) - tol, np.maximum(a, b) + tol):
+            c, d = edge_points[j]
+            contacts = segment_contacts(a, b, c, d, tol)
+            if len(contacts) > 1 and np.linalg.norm(contacts[-1] - contacts[0]) > tol:
+                _fail("a repair mouth overlaps an existing edge", reason="mouth_hits_existing_mesh")
+            for point in contacts:
+                if not any(node in edge_keys[j] and np.linalg.norm(point - endpoint) <= tol
+                           for node, endpoint in zip(endpoint_ids, endpoints)):
+                    _fail("a repair mouth crosses existing mesh or would create a hanging node",
+                          reason="mouth_hits_existing_mesh")
+        if candidate.free_boundary is not None:
+            # Include isolated old nodes, which are absent from the edge index.
+            lower, upper = np.minimum(a, b) - tol, np.maximum(a, b) + tol
+            nearby = np.flatnonzero(np.all((mesh.nodes[:, :2] >= lower)
+                                           & (mesh.nodes[:, :2] <= upper), axis=1))
+            if any(int(node) not in endpoint_ids and on_segment(mesh.nodes[node, :2], a, b, tol)
+                   for node in nearby):
+                _fail("a corner cap meets an unrelated original node", reason="mouth_hits_existing_mesh")
     for j in cell_index.query(candidate.polygon.min(axis=0), candidate.polygon.max(axis=0)):
         cell = mesh.nodes[mesh.elements[j], :2]
         if (point_location(cell.mean(axis=0), candidate.polygon, tol) == 1
@@ -216,10 +299,12 @@ def _check_slot_conflict(candidate, selected, tol):
     first = candidate.polygon
     source_keys = {_key(a, b) for a, b in zip(candidate.source_ids[:-1], candidate.source_ids[1:])}
     for other in selected:
+        reason = ("interacting_slots" if isinstance(candidate.slot, _Slot)
+                  and isinstance(other.slot, _Slot) else "interacting_repairs")
         other_keys = {_key(a, b) for a, b in zip(other.source_ids[:-1], other.source_ids[1:])}
         if source_keys.intersection(other_keys):
-            _fail("closing slots consume the same original source segment",
-                  reason="interacting_slots", source_edges=(candidate.slot.edges, other.slot.edges))
+            _fail("repairs consume the same original source segment",
+                  reason=reason, source_edges=(candidate.slot.edges, other.slot.edges))
         second = other.polygon
         if (np.any(first.max(axis=0) < second.min(axis=0) - tol)
                 or np.any(second.max(axis=0) < first.min(axis=0) - tol)):
@@ -227,11 +312,11 @@ def _check_slot_conflict(candidate, selected, tol):
         for a, b in zip(first, np.roll(first, -1, axis=0)):
             for c, d in zip(second, np.roll(second, -1, axis=0)):
                 if segment_contacts(a, b, c, d, tol):
-                    _fail("slot repair regions intersect or touch", reason="interacting_slots",
+                    _fail("repair regions intersect or touch", reason=reason,
                           source_edges=(candidate.slot.edges, other.slot.edges))
         if (point_location(first[0], second, tol) >= 0
                 or point_location(second[0], first, tol) >= 0):
-            _fail("slot repair regions overlap", reason="interacting_slots",
+            _fail("repair regions overlap", reason=reason,
                   source_edges=(candidate.slot.edges, other.slot.edges))
 
 
@@ -246,8 +331,17 @@ def _regroup(mesh, data, nodes, quads, selected, mouths):
                 records.append((int(a), int(b), data["directions"][edge], (edge,)))
     for candidate, mouth in zip(selected, mouths):
         for a, b in zip(mouth[:-1], mouth[1:]):
-            records.append((int(a), int(b), data["directions"][candidate.slot.edges[1]],
-                            candidate.slot.edges))
+            if candidate.free_boundary is None:
+                direction = data["directions"][candidate.slot.edges[1]]
+            else:
+                boundary = candidate.free_boundary
+                matches = [i for i, (start, end) in enumerate(zip(boundary[:-1], boundary[1:]))
+                           if on_segment(nodes[a, :2], start, end, data["tol"])
+                           and on_segment(nodes[b, :2], start, end, data["tol"])]
+                if len(matches) != 1:
+                    _fail("a corner mouth omits its mandatory bend", reason="repair_topology")
+                direction = data["directions"][candidate.slot.edges[1 - matches[0]]]
+            records.append((int(a), int(b), direction, candidate.slot.edges))
     planned = {}
     for record in records:
         a, b = record[:2]
@@ -384,14 +478,15 @@ def _validate_repair(mesh, nodes, quads, outline, data, selected, mouths, consum
 
 
 def repair_slots(mesh, data, *, max_added_elements=None, repair_max_element_size=None):
-    """Return a normalized staged source, or None when no slot needs repair.
+    """Return a staged source, or None when no slot or corner needs repair.
 
     ``data`` is the original preparation dictionary with per-edge expansion
     distances populated.  This function never mutates ``mesh`` or ``data``.
-    Slot detection runs once. Adaptive face builders do not re-enter this phase.
+    Both detections run once. Adaptive builders do not re-enter this phase.
     """
     slots = _find_slots(data)
-    if not slots:
+    corners = _find_corners(data)
+    if not slots and not corners:
         return None
     from ._repair_patch import build_repair_patch
 
@@ -402,23 +497,32 @@ def repair_slots(mesh, data, *, max_added_elements=None, repair_max_element_size
     old_cells = mesh.nodes[mesh.elements, :2]
     cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
     nodes = mesh.nodes.copy()
-    added, selected, mouths, details = [], [], [], []
+    added, selected, mouths = [], [], []
+    details = {"slot_repairs": [], "corner_repairs": []}
     added_count = 0
-    for slot_index, slot in enumerate(slots):
+    repairs = [("slot", index, slot) for index, slot in enumerate(slots)]
+    repairs.extend(("corner", index, corner) for index, corner in enumerate(corners))
+    for kind, repair_index, slot in repairs:
+        context = {f"{kind}_id": repair_index, "repair_kind": kind,
+                   "source_edges": slot.edges}
         chosen = None
         errors, limit_errors, pattern_errors = [], [], []
         for anchor in slot.candidates:
+            remaining = None if max_added_elements is None else max_added_elements - added_count
             try:
                 candidate = _candidate(slot, anchor, data)
                 _validate_empty(candidate, mesh, data, edge_keys, edge_points, edge_index, cell_index)
                 _check_slot_conflict(candidate, selected, tol)
-                remaining = None if max_added_elements is None else max_added_elements - added_count
+                options = {}
+                if candidate.free_boundary is not None:
+                    options["free_boundary"] = np.column_stack(
+                        (candidate.free_boundary[::-1], np.zeros(len(candidate.free_boundary))))
                 patch = build_repair_patch(tuple(mesh.nodes[chain] for chain in candidate.source_chains),
                                            data["pattern_records"], data["h"], tol,
                                            max_added_elements=remaining,
-                                           repair_max_element_size=repair_max_element_size)
+                                           repair_max_element_size=repair_max_element_size, **options)
                 check_element_limit(added_count + len(patch.quads), max_added_elements,
-                                    stage="slot_repair", slot_id=slot_index)
+                                    stage=f"{kind}_repair", **context)
                 chosen = candidate, patch
                 break
             except ElementLimitExceeded as error:
@@ -426,10 +530,12 @@ def repair_slots(mesh, data, *, max_added_elements=None, repair_max_element_size
                     error.context["required_elements"] += added_count
                 if max_added_elements is not None:
                     error.context["limit"] = int(max_added_elements)
+                _repair_error_context(error, kind, context)
                 limit_errors.append(error)
             except QuadLayerError as error:
+                _repair_error_context(error, kind, context)
                 if (error.code == "invalid_input"
-                        or error.context.get("reason") == "interacting_slots"):
+                        or error.context.get("reason") in {"interacting_slots", "interacting_repairs"}):
                     raise
                 if error.code in {"unsupported_pattern_layout", "unsupported_repair_pattern"}:
                     pattern_errors.append(error)
@@ -442,16 +548,18 @@ def repair_slots(mesh, data, *, max_added_elements=None, repair_max_element_size
                 raise limit_errors[0]
             if pattern_errors and len(pattern_errors) == len(errors):
                 error = pattern_errors[0]
-                error.context.update(slot_id=slot_index, source_edges=slot.edges, causes=errors)
+                error.context.update(**context, causes=errors)
                 raise error
-            _fail("neither existing mouth anchor can produce a valid slot repair",
-                  code="unmeshable_slot_repair", slot_id=slot_index,
-                  source_edges=slot.edges, causes=errors)
+            message = ("neither existing mouth anchor can produce a valid slot repair" if kind == "slot"
+                       else "the corner cap cannot produce a valid repair")
+            _fail(message, code=f"unmeshable_{kind}_repair", stage=f"{kind}_repair",
+                  **context, causes=errors)
         candidate, patch = chosen
         source_local = np.asarray(patch.source_ids, dtype=np.int64)
         if (len(source_local) != len(candidate.source_ids)
                 or not np.array_equal(patch.nodes[source_local], mesh.nodes[candidate.source_ids])):
-            _fail("the slot builder changed a fixed source chain", code="unmeshable_slot_repair")
+            _fail("the repair builder changed a fixed source chain", code=f"unmeshable_{kind}_repair",
+                  stage=f"{kind}_repair", **context)
         mapping = np.full(len(patch.nodes), -1, dtype=np.int64)
         mapping[source_local] = candidate.source_ids
         new_local = np.flatnonzero(mapping < 0)
@@ -460,33 +568,38 @@ def repair_slots(mesh, data, *, max_added_elements=None, repair_max_element_size
         quads = mapping[np.asarray(patch.quads, dtype=np.int64)]
         mouth = mapping[np.asarray(patch.mouth_ids, dtype=np.int64)][::-1]
         if mouth[0] != candidate.source_ids[0] or mouth[-1] != candidate.source_ids[-1]:
-            _fail("the slot builder changed the mouth endpoints", code="unmeshable_slot_repair")
+            _fail("the repair builder changed the mouth endpoints", code=f"unmeshable_{kind}_repair",
+                  stage=f"{kind}_repair", **context)
         element_start = len(mesh.elements) + added_count
-        details.append({**deepcopy(patch.diagnostics), "slot_id": slot_index,
+        detail = {**deepcopy(patch.diagnostics), f"{kind}_id": repair_index,
                         "source_edges": list(slot.edges),
                         "source_chains": [chain.tolist() for chain in candidate.source_chains],
                         "mouth_node_ids": mouth.tolist(), "mouth_points": nodes[mouth, :2].tolist(),
                         "polygon": candidate.polygon.tolist(),
-                        "element_start": element_start, "element_end": element_start + len(quads)})
+                        "element_start": element_start, "element_end": element_start + len(quads)}
         for group in ("units", "faces"):
-            for record in details[-1].get(group, ()):
+            for record in detail.get(group, ()):
                 if "element_start" in record:
                     record["element_start"] += element_start
                 if "element_end" in record:
                     record["element_end"] += element_start
+        details[f"{kind}_repairs"].append(detail)
         added.append(quads)
         added_count += len(quads)
         selected.append(candidate)
         mouths.append(mouth)
     quads = np.vstack(added)
-    outline, directions, provenance, consumed = _regroup(mesh, data, nodes, quads, selected, mouths)
     try:
+        outline, directions, provenance, consumed = _regroup(mesh, data, nodes, quads, selected, mouths)
         _validate_repair(mesh, nodes, quads, outline, data, selected, mouths, consumed)
     except QuadLayerError as error:
-        error.context["stage"] = "slot_repair_validation"
+        kind = "corner" if not slots else "slot" if not corners else "combined"
+        error.context["stage"] = (f"{kind}_repair_validation" if kind != "combined"
+                                  else "repair_validation")
+        _repair_error_context(error, kind, {"repair_kind": kind})
         raise
     repaired = Mesh2D(nodes, np.vstack((mesh.elements, quads)))
-    diagnostics = {"slot_repairs": details, "repair_added_nodes": len(nodes) - len(mesh.nodes),
+    diagnostics = {**details, "repair_added_nodes": len(nodes) - len(mesh.nodes),
                    "repair_added_elements": added_count}
     return RepairResult(repaired, outline, directions, provenance, diagnostics)
 
