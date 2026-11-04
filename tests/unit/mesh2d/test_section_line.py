@@ -172,7 +172,8 @@ class SectionLineTests(unittest.TestCase):
         self.assertEqual(chosen[0].quality, expected.quality)
 
     def test_best_only_still_tries_other_count_after_geometry_failure(self):
-        args = _fixture(8, 16, 4, 2, 3)
+        args = _fixture(24, 2100, 500, 2, 3)
+        args[0][:, 0] = np.r_[0., 500., np.arange(1000., 1105., 5.), 1600., 2100.]
         original = line_module._plan_count
         attempts = []
 
@@ -181,7 +182,7 @@ class SectionLineTests(unittest.TestCase):
             return None if len(attempts) == 1 else original(*values)
 
         with patch.object(line_module, "_plan_count", side_effect=fail_first):
-            chosen = plan_line(*args, 8, 1e-10, best_only=True)
+            chosen = plan_line(*args, 500, 1e-10, best_only=True)
         self.assertEqual(len(attempts), 2)
         self.assertTrue(chosen)
 
@@ -194,10 +195,13 @@ class SectionLineTests(unittest.TestCase):
         self.assertEqual(len(candidates[0].source_ids), 41)
         self.assertAlmostEqual(candidates[0].quality, 10)
         self.assertEqual(trials.call_count, 4)
-        self.assertEqual(candidates[0].diagnostics, {
+        expected = {
             "line_planner": "outer_first", "unit_trial_count": 4,
             "local_repair_count": 0, "outer_count_attempts": 1,
-        })
+        }
+        self.assertEqual({key: candidates[0].diagnostics[key] for key in expected}, expected)
+        self.assertEqual(candidates[0].diagnostics["max_actual_transition_count"], 10)
+        self.assertEqual(candidates[0].alignment_error, 0.)
         self.assert_conforming(candidates[0])
 
     def test_filtered_boundary_checks_match_exhaustive_pairs(self):
@@ -239,11 +243,11 @@ class SectionLineTests(unittest.TestCase):
                 self.assertEqual(calls.call_count, len(selected[0].units))
                 self.assert_conforming(selected[0])
 
-    def test_equal_size_error_prefers_fewer_segments_and_stops(self):
+    def test_size_band_excludes_oversized_parity_neighbor(self):
         with patch.object(line_module, "_plan_count", wraps=line_module._plan_count) as calls:
             chosen = plan_line(*_fixture(7, 3, 2), 2, 1e-10, best_only=True)
         self.assertEqual(calls.call_count, 1)
-        self.assertEqual(len(chosen[0].outer_ids) - 1, 1)
+        self.assertEqual(len(chosen[0].outer_ids) - 1, 3)
         self.assertAlmostEqual(chosen[0].size_error, .25)
         self.assert_conforming(chosen[0])
 
@@ -349,9 +353,11 @@ class SectionLineTests(unittest.TestCase):
         with patch.object(line_module, "build_unit_patch", side_effect=ValueError("invalid")) as calls:
             chosen = plan_line(*args, 10, 1e-10, best_only=True, _diagnostics=stats)
         self.assertFalse(chosen)
-        self.assertEqual(calls.call_count, 3)
-        self.assertEqual(stats["unit_trial_count"], 3)
-        self.assertEqual(stats["local_repair_count"], 2)
+        # With exactly ten source segments per outer segment, neither neighbor
+        # can be tried without violating current or remaining capacity.
+        self.assertEqual(calls.call_count, 1)
+        self.assertEqual(stats["unit_trial_count"], 1)
+        self.assertEqual(stats["local_repair_count"], 0)
         for before, after in zip(originals, args):
             np.testing.assert_array_equal(before, after)
 

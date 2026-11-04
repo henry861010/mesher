@@ -34,6 +34,7 @@ class SectionPatch:
     size_error: float
     quality: float
     diagnostics: dict = field(default_factory=dict)
+    alignment_error: float = 0.0
 
 
 def xyz_chain(values: np.ndarray) -> np.ndarray:

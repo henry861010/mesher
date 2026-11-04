@@ -17,6 +17,7 @@ from ._full_geometry import (complement_domains, discover_boundaries, flatten_ou
                              section_outline_points, validate_fronts)
 from .layer import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from .layer._geometry import BoxIndex, area, cross
+from .layer._line_policy import validate_line_parameters
 from .layer._mesher import _generate_layer_adaptive_mesh
 from .layer._validation import _check_edge_geometry, _check_overlaps
 
@@ -201,6 +202,8 @@ def generate_full_adaptive_mesh(
     outer_outline,
     expand_ratio: float = 1.5,
     pattern_lines=(),
+    max_transition_count: int = 10,
+    min_size_ratio: float = 0.5,
 ) -> FullAdaptiveMeshResult:
     """Fill an orthogonal domain around existing focus meshes with Quad4s.
 
@@ -221,11 +224,19 @@ def generate_full_adaptive_mesh(
     its one-million-element budget; this API does not impose a cumulative limit.
     Global geometry validation uses its default absolute tolerance of 1e-3.
 
+    ``max_transition_count`` and ``min_size_ratio`` have the single-layer
+    API's LINE constraints and defaults (10 and 0.5). They apply to ordinary
+    intermediate layers only. The final transition preserves the global
+    generator's complete fixed interface, without imposing these constraints.
+    Both arguments are validated even when there is only one, fixed layer.
+
     All work is staged privately. Success updates and returns the original mesh;
     any failure leaves both original arrays unchanged. QuadLayerError context
     includes zero-based layer/boundary/global-region indices when applicable.
     """
     started = perf_counter()
+    max_transition_count, min_size_ratio = validate_line_parameters(
+        max_transition_count, min_size_ratio)
     sizes, ratio, patterns = _call(lambda: _inputs(element_sizes, expand_ratio, pattern_lines),
                                     stage="input_validation")
     topology = _call(lambda: discover_boundaries(mesh, outer_outline), stage="input_validation")
@@ -238,7 +249,9 @@ def generate_full_adaptive_mesh(
         for boundary_index, outline in enumerate(outlines):
             result = _call(
                 lambda: generate_layer_adaptive_mesh(working, outline, size,
-                            expand_ratio=ratio, pattern_lines=patterns),
+                            expand_ratio=ratio, pattern_lines=patterns,
+                            max_transition_count=max_transition_count,
+                            min_size_ratio=min_size_ratio),
                 stage="layer_construction", layer_index=layer_index, boundary_index=boundary_index)
             current.append(result.outline)
             diagnostics.append(result.diagnostics)
@@ -296,6 +309,9 @@ def generate_full_adaptive_mesh(
           stage="full_mesh_validation")
     diagnostics = {
         "element_sizes": sizes,
+        "max_transition_count": max_transition_count,
+        "min_size_ratio": min_size_ratio,
+        "line_policy_active": len(sizes) > 1,
         "boundaries": [{"boundary_index": index, "parent_index": parent,
                         "kind": "exterior" if sign < 0 else "hole"}
                        for index, (parent, sign) in enumerate(zip(topology.parents, topology.signs))],

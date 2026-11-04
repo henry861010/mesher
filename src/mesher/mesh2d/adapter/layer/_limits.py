@@ -87,14 +87,29 @@ def preflight_element_limit(plan, data):
                     unique.append(point)
             outer = np.asarray(unique)
         lengths = np.linalg.norm(np.diff(outer, axis=0), axis=1)
+        line_bounds = None
+        if section.kind == "LINE" and not data.get("fixed_outer_boundary", False):
+            from ._construction.sampling import line_count_bounds
+            try:
+                line_bounds = line_count_bounds(
+                    lengths, source_segments, data["h"], data["tol"],
+                    data.get("max_transition_count", 10), data.get("min_size_ratio", .5))
+            except QuadLayerError as error:
+                error.context.setdefault("section_id", section.id)
+                raise
         minima = []
         left_base = len(plan.seams[section.left_seam].points)
         right_base = len(plan.seams[section.right_seam].points)
         for left in (left_base, left_base + 1):
             for right in (right_base, right_base + 1):
-                counts = outer_segment_counts(source_segments, left, right,
-                                              float(lengths.sum()), data["h"], len(lengths),
-                                              fixed_outer_boundary=data.get("fixed_outer_boundary", False))
+                if line_bounds is None:
+                    counts = outer_segment_counts(source_segments, left, right,
+                                                  float(lengths.sum()), data["h"], len(lengths),
+                                                  fixed_outer_boundary=data.get("fixed_outer_boundary", False))
+                else:
+                    lower, upper = line_bounds
+                    count = lower + ((source_segments + left + right - lower) % 2)
+                    counts = [count] if count <= upper else []
                 minima.extend(section_element_lower_bound(source_segments, count, left, right)
                               for count in counts)
         if minima:

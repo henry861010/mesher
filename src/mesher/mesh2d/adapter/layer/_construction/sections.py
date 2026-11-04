@@ -30,21 +30,22 @@ def seam_states(seam, tol):
 
 
 def solve_section_ring(sections, states, candidates):
-    """Minimize size error, then worst quality, with deterministic closure."""
+    """Minimize LINE alignment error, size error, then worst cell quality."""
     for section, following in zip(sections, sections[1:] + sections[:1]):
         if section.right_seam != following.left_seam:
             raise QuadLayerError("sections do not form a shared-seam ring",
                                  code="unmeshable_section_layout", section_id=section.id)
     solutions = []
     for initial in sorted(states[sections[0].left_seam]):
-        current = {initial: (0.0, 0.0, ())}
+        current = {initial: (0.0, 0.0, 0.0, ())}
         for section, options in zip(sections, candidates):
             following = {}
             for (left, right), candidate in sorted(options.items()):
                 if left not in current:
                     continue
-                error, quality, path = current[left]
-                score = (error + candidate.size_error, max(quality, candidate.quality),
+                alignment, error, quality, path = current[left]
+                score = (alignment + getattr(candidate, "alignment_error", 0.0),
+                         error + candidate.size_error, max(quality, candidate.quality),
                          path + ((left, right),))
                 if right not in following or score < following[right]:
                     following[right] = score
@@ -55,7 +56,7 @@ def solve_section_ring(sections, states, candidates):
         raise QuadLayerError("no compatible seam states close the section ring",
                              code="unmeshable_seam_assignment", stage="seam_solver",
                              section_ids=[section.id for section in sections])
-    return min(solutions)[2]
+    return min(solutions)[-1]
 
 
 def _source_ids(section):
@@ -94,6 +95,8 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
         options = {}
         rejected = []
         section_limit_errors = []
+        constraint_errors = []
+        sampling_cache = {}
         if section.kind == "LINE":
             line_stats[section.id] = {"line_planner": "outer_first", "unit_trial_count": 0,
                                       "local_repair_count": 0, "outer_count_attempts": 0}
@@ -105,7 +108,10 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                         patches = plan_line(source_chains[0], outer, left, right, h, tol,
                                             best_only=True, _diagnostics=attempt_stats,
                                             max_added_elements=limit,
-                                            fixed_outer_boundary=fixed_outer_boundary)
+                                            fixed_outer_boundary=fixed_outer_boundary,
+                                            max_transition_count=data.get("max_transition_count", 10),
+                                            min_size_ratio=data.get("min_size_ratio", .5),
+                                            _sampling_cache=sampling_cache)
                     else:
                         corner = np.r_[plan.front[section.corner], 0.0]
                         patches = plan_corner(section.kind, source_chains, outer, left, right,
@@ -116,7 +122,8 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                             check_element_limit(len(candidate.quads), limit,
                                                 stage="section_builder", section_id=section.id)
                         options[left_count, right_count] = min(
-                            patches, key=lambda patch: (patch.size_error, patch.quality))
+                            patches, key=lambda patch: (patch.alignment_error,
+                                                         patch.size_error, patch.quality))
                     else:
                         counts = "fixed outer count" if fixed_outer_boundary else "nearest legal outer counts"
                         rejected.append(f"{left_count}/{right_count}: {counts} "
@@ -124,6 +131,11 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                 except ElementLimitExceeded as error:
                     error.context.setdefault("section_id", section.id)
                     section_limit_errors.append(error)
+                except QuadLayerError as error:
+                    if error.code != "line_constraints_infeasible":
+                        raise
+                    constraint_errors.append(error)
+                    rejected.append(f"{left_count}/{right_count}: {error}")
                 except ValueError as error:
                     rejected.append(f"{left_count}/{right_count}: {error}")
                 finally:
@@ -133,6 +145,10 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
         if not options:
             if section_limit_errors:
                 raise section_limit_errors[0]
+            if len(constraint_errors) == len(states[section.left_seam]) * len(states[section.right_seam]):
+                error = constraint_errors[0]
+                error.context.update(section_id=section.id, causes=sorted(set(rejected)))
+                raise error
             raise QuadLayerError("no seam pair can build this section with direct units",
                                  code="unmeshable_section_layout", stage="section_builder",
                                  section_id=section.id, kind=section.kind,
@@ -196,6 +212,18 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                              patch.nodes[patch.right_ids[1:]],
                              patch.nodes[patch.outer_ids[::-1][1:]],
                              patch.nodes[patch.left_ids[::-1][1:]]))
+        sampling_details = {}
+        if "line_sampling" in patch.diagnostics:
+            sampling_details = {key: value for key, value in patch.diagnostics.items()
+                                if key not in line_stats[section.id]}
+            sampling_details["forced_short_intervals"] = [
+                {"start": world(np.asarray([interval["start"]]))[0],
+                 "end": world(np.asarray([interval["end"]]))[0],
+                 "length": interval["length"] * data["scale"]}
+                for interval in patch.diagnostics["forced_short_intervals"]]
+            spacing = np.linalg.norm(np.diff(patch.nodes[patch.outer_ids, :2], axis=0), axis=1)
+            sampling_details.update(min_outer_spacing=float(spacing.min()) * data["scale"],
+                                    max_outer_spacing=float(spacing.max()) * data["scale"])
         details.append({"section_id": section.id, "kind": section.kind,
                         "source_edge": section.source_edge, "corner": section.corner,
                         "pattern_ids": list(section.pattern_ids),
@@ -209,7 +237,8 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                         "unit_ids": list(range(len(units), len(units) + len(patch.units))),
                         "element_start": offset, "element_end": offset + len(quads),
                         "polygon": world(polygon), "size_error": patch.size_error,
-                        "quality": patch.quality, **line_stats.get(section.id, {})})
+                        "quality": patch.quality, **line_stats.get(section.id, {}),
+                        **sampling_details})
         for record in patch.units:
             units.append({**record, "unit_id": len(units), "section_id": section.id,
                           "element_start": offset + record["element_start"],
@@ -230,5 +259,6 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                    "line_unit_trial_count": sum(s["unit_trial_count"] for s in line_stats.values()),
                    "line_local_repair_count": sum(s["local_repair_count"] for s in line_stats.values()),
                    "outer_size_error": sum(detail["size_error"] for detail in details),
+                   "line_alignment_error": sum(detail.get("alignment_error", 0.0) for detail in details),
                    "quality": _quality_summary(result_nodes, result_quads)}
     return result_nodes, result_quads, outline, diagnostics

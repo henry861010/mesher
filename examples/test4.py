@@ -11,7 +11,7 @@ import argparse
 
 import numpy as np
 
-from mesher. .adapter import generate_full_adaptive_mesh
+from mesher.mesh2d.adapter import generate_full_adaptive_mesh
 from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 

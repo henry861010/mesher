@@ -94,6 +94,11 @@ node mappings join those interfaces without renumbering source data, and final
 topology/geometry validation precedes one caller commit. Errors are atomic
 across the complete operation. This orchestration remains NumPy-only and does
 not import Mesh25D or process-flow modules.
+Both adaptive APIs validate `max_transition_count=10` and `min_size_ratio=0.5`
+through the shared `_line_policy` input contract before geometry preparation.
+The full API forwards them only to ordinary intermediate layers; the last
+fixed-interface layer remains exempt, including a one-layer full mesh. Result
+diagnostics record the settings and `line_policy_active`.
 
 Use `mesher.mesh2d.adapter` (or `mesher.mesh2d.adapter.layer`) for the layer API,
 `mesher.mesh2d.adapter.unit` for unit builders, and
@@ -172,12 +177,15 @@ both stages. `repair_slots=False` preserves the earlier closure rejection.
 to show sections, units, and the final mesh, without invoking planning or meshing.
 The [visual example](../examples/extend_quad_layer.py) only prepares inputs and
 calls these package APIs; reusable implementation does not live in `examples/`.
-The cyclic objective first sums the constructed sections' mean squared
-normalized outer edge-size errors, then minimizes the worst `max(edge aspect
+The cyclic objective first sums active LINE sections' mean squared normalized
+source-alignment errors (along-edge displacement divided by normal separation).
+It next sums the sections' mean squared normalized outer edge-size errors,
+then minimizes the worst `max(edge aspect
 ratio, 1 / corner scaled Jacobian)` over new cells. Quality only breaks ties
 among the existing candidates; it never requests more LINE constructions or
 imposes an additional rejection threshold. Unit-local construction can still
 produce layered transitions or thin cells under substantial coarsening.
+Fixed-interface and repair construction retain their original size-first objective.
 Source geometry and requested expansion remain fixed, and failures are atomic.
 There is no thin-collar fallback. Patterns with interior endpoints, T/X
 junctions, or closed internal loops are deliberately outside this version's
@@ -220,19 +228,37 @@ ring is too large, construction fails atomically. This guard does not promise
 bounded execution time or memory consumption. The section preview has no
 element-budget parameter and makes no budget-feasibility promise.
 
-LINE construction samples the outer boundary first, preserving mandatory
-pattern contacts and distributing nodes between anchors for at most two nearest
-parity-compatible counts. Counts are ordered by size error, then fewer segments;
-the production path stops at the first feasible one. The shorter source/outer
-chain advances one segment per unit. Alternating from the left and right ends,
-projected geometric proximity chooses a node on the longer chain, retaining
-enough segments to complete every remaining unit. Ties choose the smaller node
-index. Connector midpoints supply the required boundary parity and are shared
-by their two owners.
+Resampled LINE construction preserves mandatory anchors and uses two constraints:
+each outer segment receives at most `max_transition_count` source segments, and
+outer spacing lies in `[min_size_ratio * element_size, element_size]`, within
+the existing geometric tolerance. A mandatory-anchor interval shorter than the
+minimum remains one unsplit segment, recorded in diagnostics; its transition
+cap still applies. Reverse refinement, corner sections, repair interiors,
+source lengths, and expansion distances are unaffected. The section preview
+remains geometric and makes no LINE-policy feasibility promise.
+
+Source projected intervals of length `d` contribute density
+`max(1 / h, 1 / (K * d))`; the rest of the outer range has density `1 / h`.
+Integrated density determines the nearest two parity-compatible total counts
+inside the spacing/count bounds. An integer marginal-cost heap allocates counts
+among anchor intervals. Density quantiles are clamped by one forward and one
+backward spacing sweep; averaging the two valid layouts retains the bounds and
+fixed endpoints. A provisional capped nearest-node pairing ranks counts by
+alignment error, distance from demand, size error, and count, accepting the first
+feasible construction. Density and sampled points are reused across seam states.
+Density and coordinate sweeps are linear; allocating `m` segments over `A`
+anchor intervals costs `O(m log A)`.
+
+The shorter source/outer chain advances one segment per unit. Alternating from
+the left and right ends, projected proximity chooses a node on the longer chain.
+For coarsening, cut bounds enforce both the current transition limit and remaining
+units' capacity. Ties choose the smaller node index. Connector midpoints supply
+the required boundary parity and are shared by their two owners.
 
 Only failed unit construction tries the chosen cut's adjacent indices. A failed
 central closure can move only the last committed cut by one node and rebuild
-its two owners. There is no recursive repair, cut enumeration, or LINE quality
+its two owners; both repairs and the closing unit enforce the cap. There is no
+recursive repair, cut enumeration, or LINE quality
 optimization. Unit trials per outer configuration and seam pair are bounded by
 `8 * min(source_segments, outer_segments)`; ordinary cases need one per unit.
 Byte-identical normalized builder outputs remain cached. This bound concerns

@@ -11,6 +11,7 @@ from ._fixed_boundary import (fixed_boundary_nodes, prepare_fixed_boundary,
                               restore_fixed_boundary)
 from ._geometry import area, cross
 from ._limits import check_element_limit
+from ._line_policy import validate_line_parameters
 from ._planning.front import (_expansion_distances, _front, _normalize_new_outline,
                               _specified_front)
 from ._planning.source import _fail, _prepare, _validate_old_patterns
@@ -189,6 +190,8 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *, 
                       expand_ratio: float = 1.0,
                       axis_tolerance: float = 1e-3,
                       max_added_elements: int = 1_000_000,
+                      max_transition_count: int = 10,
+                      min_size_ratio: float = 0.5,
                       repair_slots: bool = True,
                       repair_max_element_size: float | None = None) -> QuadLayerResult:
     """Append one conforming Quad4 layer, committing only after validation.
@@ -206,8 +209,8 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *, 
     must be horizontal or vertical, with the same cyclic turns as the prepared
     source after repairs, and strictly on each source edge's expansion side.
     All supplied points, including collinear points, are mandatory within the
-    geometric tolerance. Additional points target ``element_size`` subject to
-    Quad4 parity; this is not a hard maximum segment length. Patterns still
+    geometric tolerance. Additional LINE points obey the size and transition
+    limits below as well as Quad4 parity. Patterns still
     constrain mesh edges but never move or snap an explicitly supplied target.
 
     Closing simple exterior slots and covered isolated stair corners are filled
@@ -243,10 +246,22 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *, 
     The solver does not search for a smaller assignment if its selected layer
     exceeds the limit. This is not a memory or execution-time guarantee.
 
+    ``max_transition_count`` is a positive Python or NumPy integer, default 10.
+    Each resampled LINE outer segment may receive at most this many source
+    segments; reverse refinement is unrestricted. ``min_size_ratio`` is finite
+    and in (0, 1], default 0.5. LINE outer spacing lies between
+    ``min_size_ratio * element_size`` and ``element_size``, within tolerance.
+    Adjacent mandatory anchors closer than that minimum remain one unsplit
+    segment and are recorded as an exception; the transition cap still applies.
+    These constraints do not change layer thickness, source edges, corner
+    sections, or repair interiors. Density-based sampling and bounded local
+    pairing favor source alignment without searching for a globally best mesh.
+
     Corners are reserved before straight LINE sections. Finite patterns may
     follow boundaries or form complete source-to-front section interfaces;
     interior endpoints and interior pattern junctions are unsupported.
-    Source nodes, segments, and elements are immutable. Size is a target.
+    Source nodes, segments, and elements are immutable. Outside resampled LINE
+    boundaries, size remains a target rather than a bound on every element edge.
     Unsupported sections or incompatible seam states raise :class:`QuadLayerError`;
     failures leave ``mesh`` untouched. There is no thin-collar retry.
     No triangular mesh is constructed, including inside temporary builders.
@@ -255,7 +270,8 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *, 
         mesh, outline, element_size, pattern_lines=pattern_lines, new_outline=new_outline,
         expand_ratio=expand_ratio, axis_tolerance=axis_tolerance,
         max_added_elements=max_added_elements, repair_slots=repair_slots,
-        repair_max_element_size=repair_max_element_size)
+        repair_max_element_size=repair_max_element_size,
+        max_transition_count=max_transition_count, min_size_ratio=min_size_ratio)
 
 
 def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
@@ -263,6 +279,8 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
                                  expand_ratio: float = 1.0,
                                  axis_tolerance: float = 1e-3,
                                  max_added_elements: int = 1_000_000,
+                                 max_transition_count: int = 10,
+                                 min_size_ratio: float = 0.5,
                                  repair_slots: bool = True,
                                  repair_max_element_size: float | None = None,
                                  fixed_outer_boundary: bool = False) -> QuadLayerResult:
@@ -272,6 +290,8 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
     again. Their exact world coordinates survive the normalized construction.
     """
     start = perf_counter()
+    max_transition_count, min_size_ratio = validate_line_parameters(
+        max_transition_count, min_size_ratio)
     if not isinstance(fixed_outer_boundary, (bool, np.bool_)):
         _fail("fixed_outer_boundary must be a boolean", stage="input_validation",
               parameter="fixed_outer_boundary")
@@ -289,6 +309,8 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
                               max_added_elements=max_added_elements,
                               repair_max_element_size=repair_max_element_size,
                               new_outline=new_outline)
+    data["max_transition_count"] = max_transition_count
+    data["min_size_ratio"] = min_size_ratio
     if fixed_outer_boundary:
         prepare_fixed_boundary(plan, data, new_outline)
     working = data["_source_mesh"]
@@ -345,6 +367,9 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
                    "expand_added_elements": len(quads),
                    "quality": _quality_summary(nodes, all_quads),
                    "max_added_elements": max_added_elements,
+                   "max_transition_count": max_transition_count,
+                   "min_size_ratio": min_size_ratio,
+                   "line_policy_active": not fixed_outer_boundary,
                    "edge_expansion": [d * data["scale"] for d in data["expansion"]],
                    "snapped_patterns": data["snapped"], "elapsed_seconds": perf_counter() - start}
     # This is the only mutation of the caller's mesh.

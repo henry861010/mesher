@@ -17,8 +17,8 @@ def _ring(count=3):
     return sections, states
 
 
-def _candidate(error=0.0, quality=1.0):
-    return SimpleNamespace(size_error=error, quality=quality)
+def _candidate(error=0.0, quality=1.0, alignment=0.0):
+    return SimpleNamespace(size_error=error, quality=quality, alignment_error=alignment)
 
 
 class SectionRingTests(unittest.TestCase):
@@ -41,6 +41,12 @@ class SectionRingTests(unittest.TestCase):
         options = [{(2, 2): _candidate(0, 100), (3, 3): _candidate(.01, 1)}
                    for _ in sections]
         self.assertEqual(solve_section_ring(sections, states, options), ((2, 2),) * 3)
+
+    def test_line_alignment_precedes_size_error_after_constraints_are_satisfied(self):
+        sections, states = _ring()
+        options = [{(2, 2): _candidate(0, 1, alignment=.2),
+                    (3, 3): _candidate(.1, 2, alignment=.01)} for _ in sections]
+        self.assertEqual(solve_section_ring(sections, states, options), ((3, 3),) * 3)
 
     def test_solver_matches_exhaustive_objective_and_is_deterministic(self):
         sections, states = _ring(4)

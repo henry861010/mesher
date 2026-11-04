@@ -96,7 +96,7 @@ class QuadLayerLimitTests(unittest.TestCase):
 
     def test_line_count_filter_prevents_sampling_and_preserves_typed_error(self):
         args = _line_fixture()
-        with patch.object(_line, "sample_outer") as sampler:
+        with patch.object(_line.LineSampling, "sample") as sampler:
             with self.assertRaises(ElementLimitExceeded):
                 _line.plan_line(*args, 1e-8, 1e-10, max_added_elements=10)
         sampler.assert_not_called()
@@ -111,11 +111,24 @@ class QuadLayerLimitTests(unittest.TestCase):
         assembly.assert_not_called()
 
     def test_only_oversized_outer_count_is_removed_before_sampling(self):
-        # Counts 2 and 4 have lower bounds 5 and 6 respectively.
-        with patch.object(_line, "sample_outer", wraps=_line.sample_outer) as sampler:
+        # Dense source demand gives two legal counts, 5 and 7, whose boundary
+        # lower bounds are 15 and 16. Only count 5 may reach sampling.
+        xs = np.r_[0., 500., np.arange(1000., 1105., 5.), 1600., 2100.]
+        source = np.column_stack((xs, np.zeros(len(xs)), np.zeros(len(xs))))
+        outer = np.array([[0., 500., 0.], [2100., 500., 0.]])
+        left = np.array([source[0], outer[0]])
+        right = np.linspace(source[-1], outer[-1], 3)
+        sampled_counts = []
+        original = _line.LineSampling.sample
+
+        def sampled(profile, count):
+            sampled_counts.append(count)
+            return original(profile, count)
+
+        with patch.object(_line.LineSampling, "sample", sampled):
             with self.assertRaises(ElementLimitExceeded):
-                _line.plan_line(*_line_fixture(), 2.5, 1e-10, max_added_elements=5)
-        self.assertEqual([call.args[1] for call in sampler.call_args_list], [2])
+                _line.plan_line(source, outer, left, right, 500., 1e-10, max_added_elements=15)
+        self.assertEqual(sampled_counts, [5])
 
     def test_corner_actual_limit_is_typed_and_can_try_another_count(self):
         source = (np.asarray([[0., 0, 0]]),)

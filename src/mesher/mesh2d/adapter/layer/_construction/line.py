@@ -8,6 +8,8 @@ from heapq import heappop, heappush
 import numpy as np
 
 from .._limits import ElementLimitExceeded, bounded_outer_counts, check_element_limit, outer_segment_counts
+from .._line_policy import validate_line_parameters
+from .sampling import LineSampling
 from .units import SectionPatch, UnitPlan, assemble_section, build_unit_patch, xyz_chain
 
 
@@ -65,11 +67,58 @@ def _nearest_index(values: np.ndarray, target: float, low: int, high: int) -> in
     return min((lower, upper), key=lambda index: (abs(values[index] - target), index))
 
 
+def _cut_bounds(a: int, b: int, remaining: int, from_left: bool,
+                cap: int | None) -> tuple[int, int]:
+    """Reserve both one-per-unit minima and K-per-unit remaining capacity."""
+    minimum = a + (1 if from_left else remaining)
+    maximum = b - (remaining if from_left else 1)
+    if cap is not None:
+        minimum = max(minimum, b - (cap * remaining if from_left else cap))
+        maximum = min(maximum, a + (cap if from_left else cap * remaining))
+    return minimum, maximum
+
+
+def _alignment_error(source, outer, pairs, axis, tol):
+    """Mean squared tangent/normal displacement of internal connectors."""
+    if not pairs:
+        return 0.0
+    indices = np.asarray(pairs, dtype=np.int64)
+    delta = outer[indices[:, 1], :2] - source[indices[:, 0], :2]
+    return float(np.mean((delta[:, axis] / np.maximum(np.abs(delta[:, 1 - axis]), tol)) ** 2))
+
+
+def _estimate_alignment(source, outer, cap, tol):
+    """A geometry-free alternating match; no trial unit is constructed."""
+    n, m = len(source) - 1, len(outer) - 1
+    coarsening = n >= m
+    axis = int(np.argmax(np.abs(outer[-1, :2] - outer[0, :2])))
+    direction = 1 if outer[-1, axis] > outer[0, axis] else -1
+    short, long = (outer, source) if coarsening else (source, outer)
+    short_values, long_values = short[:, axis] * direction, long[:, axis] * direction
+    if np.any(np.diff(short_values) <= tol) or np.any(np.diff(long_values) <= tol):
+        raise ValueError("LINE nodes must be strictly ordered along the main axis")
+    low, high, a, b = 0, len(short) - 1, 0, len(long) - 1
+    pairs, from_left = [], True
+    while high - low > 1:
+        position = low + 1 if from_left else high - 1
+        minimum, maximum = _cut_bounds(a, b, high - low - 1, from_left,
+                                       cap if coarsening else None)
+        index = _nearest_index(long_values, short_values[position], minimum, maximum)
+        pairs.append((index, position) if coarsening else (position, index))
+        if from_left:
+            low, a = position, index
+        else:
+            high, b = position, index
+        from_left = not from_left
+    return _alignment_error(source, outer, pairs, axis, tol)
+
+
 def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
                 right: np.ndarray, size_error: float, tol: float,
                 build_cache: dict | None = None,
                 stats: dict | None = None,
-                max_added_elements: int | None = None) -> SectionPatch | None:
+                max_added_elements: int | None = None,
+                max_transition_count: int | None = None) -> SectionPatch | None:
     """Alternate from both ends, with three cut choices and one closing repair.
 
     The shorter chain advances exactly one segment per unit. Only invalid
@@ -79,6 +128,8 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
     if stats is None:
         stats = {"unit_trial_count": 0, "local_repair_count": 0}
     n, m = len(source) - 1, len(outer) - 1
+    if max_transition_count is not None and n > max_transition_count * m:
+        return None
     coarsening = n >= m
     short_count, long_count = min(n, m), max(n, m)
     axis = int(np.argmax(np.abs(outer[-1, :2] - outer[0, :2])))
@@ -103,6 +154,8 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
     def trial(start, end, entry, exit_cut):
         i, j = indices(start, entry.long_index)
         ni, nj = indices(end, exit_cut.long_index)
+        if max_transition_count is not None and ni - i > max_transition_count * (nj - j):
+            return None
         sides = (source[i:ni + 1], exit_cut.chain,
                  outer[j:nj + 1][::-1], entry.chain[::-1])
         stats["unit_trial_count"] += 1
@@ -118,8 +171,9 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
     while high - low > 1:
         remaining = high - low - 1
         position = low + 1 if from_left else high - 1
-        minimum = cuts[low].long_index + (1 if from_left else remaining)
-        maximum = cuts[high].long_index - (remaining if from_left else 1)
+        minimum, maximum = _cut_bounds(cuts[low].long_index, cuts[high].long_index,
+                                       remaining, from_left,
+                                       max_transition_count if coarsening else None)
         nearest = _nearest_index(long_values, short_values[position], minimum, maximum)
         fixed_position = low if from_left else high
         fixed = cuts[fixed_position]
@@ -155,6 +209,11 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
         for index in (cuts[shared].long_index - 1, cuts[shared].long_index + 1):
             minimum = cuts[far if neighbor_on_left else low].long_index + 1
             maximum = cuts[high if neighbor_on_left else far].long_index - 1
+            if coarsening and max_transition_count is not None:
+                minimum = max(minimum, cuts[high if neighbor_on_left else far].long_index
+                              - max_transition_count)
+                maximum = min(maximum, cuts[far if neighbor_on_left else low].long_index
+                              + max_transition_count)
             if not minimum <= index <= maximum:
                 continue
             stats["local_repair_count"] += 1
@@ -178,8 +237,17 @@ def _plan_count(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
     check_element_limit(quad_count + len(closing.quads), max_added_elements,
                         stage="section_builder")
     units[low] = closing
-    return assemble_section([units[i] for i in range(short_count)],
-                            source, outer, left, right, size_error, tol)
+    result = assemble_section([units[i] for i in range(short_count)],
+                              source, outer, left, right, size_error, tol)
+    if max_transition_count is not None:
+        pairs = [indices(position, cuts[position].long_index)
+                 for position in range(1, short_count)]
+        result.alignment_error = _alignment_error(source, outer, pairs, axis, tol)
+        result.diagnostics.update(
+            alignment_error=result.alignment_error,
+            max_actual_transition_count=max(unit["boundary_counts"][0] - 1
+                                            for unit in result.units))
+    return result
 
 
 def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
@@ -187,16 +255,23 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
               best_only: bool = False,
               _diagnostics: dict | None = None,
               max_added_elements: int | None = None,
-              fixed_outer_boundary: bool = False) -> list[SectionPatch]:
-    """Return up to two feasible target-size candidates for a LINE section.
+              fixed_outer_boundary: bool = False,
+              max_transition_count: int = 10,
+              min_size_ratio: float = 0.5,
+              _sampling_cache: dict | None = None) -> list[SectionPatch]:
+    """Return at most two bounded-density candidates for a LINE section.
 
     Source and outer run in the same section-travel direction. Both seams run
     from source to outer. Source segments and every supplied anchor are fixed.
-    Empty results mean these unit strategies could not mesh either count.
-    With ``best_only``, stop at the first feasible count, ordered by size error
-    then segment count. Quality never triggers additional LINE construction.
+    Source demand and two bounded sweeps choose outer points. Coarsening units
+    consume at most max_transition_count source segments per outer segment.
+    The first feasible candidate wins with best_only; a geometry-free match
+    orders candidates by alignment, demand distance, size error, then count.
+    Fixed outer boundaries bypass the new sampling and transition policy.
     """
     source, outer, left, right = map(xyz_chain, (source, outer, left, right))
+    max_transition_count, min_size_ratio = validate_line_parameters(
+        max_transition_count, min_size_ratio)
     if not np.isfinite(h) or h <= 0 or not np.isfinite(tol) or tol <= 0:
         raise ValueError("element size and tolerance must be positive and finite")
     # Section partitioning already orders the anchors. Collapse repeated
@@ -217,35 +292,51 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
         raise ValueError("LINE boundary contains a zero-length segment")
     lengths = np.linalg.norm(np.diff(outer[:, :2], axis=0), axis=1)
     length = float(lengths.sum())
+    sampling = None
     if fixed_outer_boundary:
         counts = outer_segment_counts(len(source) - 1, len(left), len(right),
                                       length, h, len(outer) - 1,
                                       fixed_outer_boundary=True)
     else:
-        counts = outer_count_candidates(len(source) - 1, len(left), len(right),
-                                        length, h, len(outer) - 1)
+        sampling = None if _sampling_cache is None else _sampling_cache.get("sampling")
+        if sampling is None:
+            sampling = LineSampling(source, outer, h, tol, max_transition_count, min_size_ratio)
+            if _sampling_cache is not None:
+                _sampling_cache["sampling"] = sampling
+        counts = sampling.counts(len(left), len(right))
     counts, limit_error = bounded_outer_counts(
         counts, len(source) - 1, len(left), len(right), max_added_elements)
     if fixed_outer_boundary:
         error = float(np.mean((lengths / h - 1) ** 2))
-        sampled_candidates = [(outer.copy(), error, count) for count in counts]
+        sampled_candidates = [((error, count), outer.copy(), error, count) for count in counts]
     else:
-        sampled_candidates = [(*sample_outer(outer, count, h, tol), count) for count in counts]
-    sampled_candidates.sort(key=lambda item: (item[1], item[2]))
+        sampled_candidates = []
+        for count in counts:
+            sampled, error = sampling.sample(count)
+            score = (_estimate_alignment(source, sampled, max_transition_count, tol),
+                     abs(count - sampling.demand), error, count)
+            sampled_candidates.append((score, sampled, error, count))
+    sampled_candidates.sort(key=lambda item: item[0])
     candidates = []
     build_cache: dict = {}
     stats = {} if _diagnostics is None else _diagnostics
     stats.update(line_planner="outer_first", unit_trial_count=0,
                  local_repair_count=0, outer_count_attempts=0)
-    for sampled, error, _ in sampled_candidates:
+    for _, sampled, error, _ in sampled_candidates:
         stats["outer_count_attempts"] += 1
         try:
             patch = _plan_count(source, sampled, left, right, error, tol,
-                                build_cache, stats, max_added_elements)
+                                build_cache, stats, max_added_elements,
+                                None if fixed_outer_boundary else max_transition_count)
         except ElementLimitExceeded as error:
             limit_error = error
             continue
         if patch is not None:
+            if sampling is not None:
+                sampling.validate_sample(patch.nodes[patch.outer_ids])
+                if patch.diagnostics["max_actual_transition_count"] > max_transition_count:
+                    raise AssertionError("LINE construction exceeded its transition cap")
+                patch.diagnostics.update(sampling.diagnostics)
             candidates.append(patch)
             if best_only:
                 break
