@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer, plan_quad_sections
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from mesher.mesh2d.editor import EditorMesh2D
 from tests.unit.mesh2d import test_extend_quad_layer as layer_checks
 
@@ -51,7 +51,7 @@ class SlotRepairTests(unittest.TestCase):
     def run_repair(self, mesh, outline, h=.5, **kwargs):
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
         original_outline = [np.asarray(chain).copy() for chain in outline]
-        result = extend_quad_layer(mesh, outline, h, **kwargs)
+        result = generate_layer_adaptive_mesh(mesh, outline, h, **kwargs)
         self.assert_layer(mesh, original_outline, result, old_nodes, old_elements)
         for old, actual in zip(original_outline, outline):
             np.testing.assert_array_equal(actual, old)
@@ -110,8 +110,8 @@ class SlotRepairTests(unittest.TestCase):
 
         mesh, outline = refined_slot()
         other = Mesh2D(mesh.nodes.copy(), mesh.elements.copy())
-        result = extend_quad_layer(mesh, outline, .2)
-        legacy = extend_quad_layer(other, outline, .2, repair_slots=False)
+        result = generate_layer_adaptive_mesh(mesh, outline, .2)
+        legacy = generate_layer_adaptive_mesh(other, outline, .2, repair_slots=False)
         np.testing.assert_array_equal(result.mesh.nodes, legacy.mesh.nodes)
         np.testing.assert_array_equal(result.mesh.elements, legacy.mesh.elements)
         self.assertFalse(result.diagnostics.get('slot_repairs'))
@@ -194,7 +194,7 @@ class SlotRepairTests(unittest.TestCase):
                     if distorted:
                         mesh.nodes[:, 0] += .02 * mesh.nodes[:, 1]
                     snapshot = self._snapshot(mesh)
-                    call = plan_quad_sections if preview else extend_quad_layer
+                    call = plan_quad_sections if preview else generate_layer_adaptive_mesh
                     with self.assertRaises(QuadLayerError):
                         call(mesh, outline, .5, repair_slots=distorted)
                     self.assert_unchanged(mesh, snapshot)
@@ -258,7 +258,7 @@ class SlotRepairTests(unittest.TestCase):
                 mesh, outline = _c_slot()
                 snapshot = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError) as caught:
-                    extend_quad_layer(mesh, outline, .5, pattern_lines=patterns)
+                    generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
                 if code is not None:
                     self.assertEqual(caught.exception.code, code)
                 self.assert_unchanged(mesh, snapshot)
@@ -277,7 +277,7 @@ class SlotRepairTests(unittest.TestCase):
         mesh.nodes[:, :2] *= .5
         snapshot = self._snapshot(mesh)
         with self.assertRaises(QuadLayerError) as caught:
-            extend_quad_layer(mesh, outline, .5, max_added_elements=repair_total - 1)
+            generate_layer_adaptive_mesh(mesh, outline, .5, max_added_elements=repair_total - 1)
         self.assertEqual(caught.exception.code, 'element_limit_exceeded')
         self.assertGreater(caught.exception.context['required_elements'], repair_total - 1)
         self.assert_unchanged(mesh, snapshot)
@@ -298,7 +298,7 @@ class SlotRepairTests(unittest.TestCase):
             with self.subTest(nodes=mesh.node_count):
                 snapshot = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError):
-                    extend_quad_layer(mesh, source, .5)
+                    generate_layer_adaptive_mesh(mesh, source, .5)
                 self.assert_unchanged(mesh, snapshot)
 
     def test_rebuild_retains_selected_loop_when_another_component_sorts_first(self):
@@ -328,7 +328,7 @@ class SlotRepairTests(unittest.TestCase):
 
     def test_budget_counts_both_phases_and_exact_cap_is_accepted(self):
         mesh, outline = _c_slot()
-        result = extend_quad_layer(mesh, outline, .5)
+        result = generate_layer_adaptive_mesh(mesh, outline, .5)
         total = result.diagnostics['added_elements']
         repair_count = result.diagnostics['repair_added_elements']
         self.assertGreater(repair_count, 0)
@@ -341,7 +341,7 @@ class SlotRepairTests(unittest.TestCase):
                 mesh, outline = _c_slot()
                 snapshot = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError) as caught:
-                    extend_quad_layer(mesh, outline, .5, max_added_elements=limit)
+                    generate_layer_adaptive_mesh(mesh, outline, .5, max_added_elements=limit)
                 self.assertEqual(caught.exception.code, 'element_limit_exceeded')
                 self.assertGreater(caught.exception.context['required_elements'], limit)
                 self.assert_unchanged(mesh, snapshot)
@@ -355,7 +355,7 @@ class SlotRepairTests(unittest.TestCase):
                 snapshot = self._snapshot(mesh)
                 with patch.object(_mesher, name, side_effect=ValueError('injected late failure')):
                     with self.assertRaisesRegex(ValueError, 'injected late failure'):
-                        extend_quad_layer(mesh, outline, .5)
+                        generate_layer_adaptive_mesh(mesh, outline, .5)
                 self.assert_unchanged(mesh, snapshot)
 
 

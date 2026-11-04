@@ -29,9 +29,11 @@ def check_element_limit(count, limit, *, stage, count_kind="actual", **context):
 
 
 def outer_segment_counts(source_segments, left_nodes, right_nodes,
-                         length, h, mandatory_intervals):
+                         length, h, mandatory_intervals, *, fixed_outer_boundary=False):
     """Nearest parity-compatible counts, including an empty INNER front."""
     parity = (source_segments + left_nodes + right_nodes) % 2
+    if fixed_outer_boundary:
+        return [mandatory_intervals] if mandatory_intervals % 2 == parity else []
     if mandatory_intervals == 0:
         return [0] if parity == 0 else []
     target = float(length) / h
@@ -91,7 +93,8 @@ def preflight_element_limit(plan, data):
         for left in (left_base, left_base + 1):
             for right in (right_base, right_base + 1):
                 counts = outer_segment_counts(source_segments, left, right,
-                                              float(lengths.sum()), data["h"], len(lengths))
+                                              float(lengths.sum()), data["h"], len(lengths),
+                                              fixed_outer_boundary=data.get("fixed_outer_boundary", False))
                 minima.extend(section_element_lower_bound(source_segments, count, left, right)
                               for count in counts)
         if minima:

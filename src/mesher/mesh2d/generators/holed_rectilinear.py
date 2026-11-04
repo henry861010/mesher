@@ -427,7 +427,7 @@ def _assemble(domain, rectangles, boundary_points, target, budget, *, patterns=(
     return mesh, outlines, quality
 
 
-def generate_rectilinear_mesh_with_holes(
+def generate_rectilinear_mesh_optimal(
     target_edge_size: float,
     outer_outline: ArrayLike,
     *,
@@ -504,4 +504,4 @@ def generate_rectilinear_mesh_with_holes(
     return RectilinearHolesResult(mesh, outlines[0], outlines[1:], diagnostics)
 
 
-__all__ = ["RectilinearHolesResult", "generate_rectilinear_mesh_with_holes"]
+__all__ = ["RectilinearHolesResult", "generate_rectilinear_mesh_optimal"]

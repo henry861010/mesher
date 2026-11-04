@@ -5,12 +5,9 @@ import unittest
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh
 from mesher.mesh2d.adapter.layer._mesher import _expansion_distances, _prepare
-from mesher.mesh2d.adapter.layer._repair import (
-    _Candidate, _Slot, _candidate, _check_slot_conflict, _find_slots, _regroup,
-    repair_slots,
-)
+from mesher.mesh2d.adapter.layer._repair.slots import _Candidate, _Slot, _candidate, _check_slot_conflict, _find_slots, _regroup, repair_slots
 from tests.unit.mesh2d.test_extend_quad_layer import _polyomino
 
 
@@ -60,7 +57,7 @@ class SlotRepairGeometryTests(unittest.TestCase):
         mesh, outline, _ = _polyomino(cells)
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
         with self.assertRaises(QuadLayerError) as caught:
-            extend_quad_layer(mesh, outline, .5)
+            generate_layer_adaptive_mesh(mesh, outline, .5)
         self.assertEqual(caught.exception.code, "unsupported_slot_repair")
         self.assertEqual(caught.exception.context["reason"], "interacting_slots")
         np.testing.assert_array_equal(mesh.nodes, old_nodes)

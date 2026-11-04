@@ -5,7 +5,7 @@ Run from the repository root::
     venv/bin/python benchmarks/mesh2d/benchmark_adapter_layer.py
 
 One warmup precedes five timed calls. The default acceptance limit is one
-second for the median full extend_quad_layer call, including validation and
+second for the median full generate_layer_adaptive_mesh call, including validation and
 commit. Each call receives a fresh copy of the same L-shaped input mesh.
 """
 
@@ -19,7 +19,7 @@ from time import perf_counter
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import extend_quad_layer
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
 from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 
@@ -45,7 +45,7 @@ def main():
     for iteration in range(args.warmups + args.repeats):
         mesh = Mesh2D(source.nodes.copy(), source.elements.copy())
         started = perf_counter()
-        result = extend_quad_layer(mesh, outline, element_size=50, expand_ratio=1.5)
+        result = generate_layer_adaptive_mesh(mesh, outline, element_size=50, expand_ratio=1.5)
         elapsed = perf_counter() - started
         if iteration >= args.warmups:
             timings.append(elapsed)

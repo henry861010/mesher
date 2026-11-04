@@ -7,9 +7,8 @@ from heapq import heappop, heappush
 
 import numpy as np
 
-from ._limits import (ElementLimitExceeded, bounded_outer_counts, check_element_limit,
-                      outer_segment_counts)
-from ._unit_plan import SectionPatch, UnitPlan, assemble_section, build_unit_patch, xyz_chain
+from .._limits import ElementLimitExceeded, bounded_outer_counts, check_element_limit, outer_segment_counts
+from .units import SectionPatch, UnitPlan, assemble_section, build_unit_patch, xyz_chain
 
 
 def outer_count_candidates(source_segments: int, left_nodes: int, right_nodes: int,
@@ -187,7 +186,8 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
               right: np.ndarray, h: float, tol: float, *,
               best_only: bool = False,
               _diagnostics: dict | None = None,
-              max_added_elements: int | None = None) -> list[SectionPatch]:
+              max_added_elements: int | None = None,
+              fixed_outer_boundary: bool = False) -> list[SectionPatch]:
     """Return up to two feasible target-size candidates for a LINE section.
 
     Source and outer run in the same section-travel direction. Both seams run
@@ -215,12 +215,22 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
     if any(np.any(np.linalg.norm(np.diff(chain[:, :2], axis=0), axis=1) <= tol)
            for chain in (source, outer, left, right)):
         raise ValueError("LINE boundary contains a zero-length segment")
-    length = float(np.linalg.norm(np.diff(outer[:, :2], axis=0), axis=1).sum())
-    counts = outer_count_candidates(len(source) - 1, len(left), len(right),
-                                    length, h, len(outer) - 1)
+    lengths = np.linalg.norm(np.diff(outer[:, :2], axis=0), axis=1)
+    length = float(lengths.sum())
+    if fixed_outer_boundary:
+        counts = outer_segment_counts(len(source) - 1, len(left), len(right),
+                                      length, h, len(outer) - 1,
+                                      fixed_outer_boundary=True)
+    else:
+        counts = outer_count_candidates(len(source) - 1, len(left), len(right),
+                                        length, h, len(outer) - 1)
     counts, limit_error = bounded_outer_counts(
         counts, len(source) - 1, len(left), len(right), max_added_elements)
-    sampled_candidates = [(*sample_outer(outer, count, h, tol), count) for count in counts]
+    if fixed_outer_boundary:
+        error = float(np.mean((lengths / h - 1) ** 2))
+        sampled_candidates = [(outer.copy(), error, count) for count in counts]
+    else:
+        sampled_candidates = [(*sample_outer(outer, count, h, tol), count) for count in counts]
     sampled_candidates.sort(key=lambda item: (item[1], item[2]))
     candidates = []
     build_cache: dict = {}

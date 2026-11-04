@@ -13,10 +13,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...model import Mesh2D
-from ._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
-from ._limits import ElementLimitExceeded, check_element_limit
-from ._types import QuadLayerError
+from ....model import Mesh2D
+from .._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
+from .._limits import ElementLimitExceeded, check_element_limit
+from .._types import QuadLayerError
 
 
 @dataclass(frozen=True)
@@ -420,8 +420,7 @@ def _regroup(mesh, data, nodes, quads, selected, mouths):
 
 def _validate_repair(mesh, nodes, quads, outline, data, selected, mouths, consumed):
     """Certify the complete staged repair against the ORIGINAL mesh."""
-    from ._validation import (_ccw_cells, _check_edge_geometry, _check_overlaps,
-                              _check_patterns)
+    from .._validation import _ccw_cells, _check_edge_geometry, _check_overlaps, _check_patterns
 
     tol = data["tol"]
     if not np.array_equal(nodes[:len(mesh.nodes)], mesh.nodes):
@@ -490,7 +489,7 @@ def repair_slots(mesh, data, *, max_added_elements=None, repair_max_element_size
     corners = _find_corners(data)
     if not slots and not corners:
         return None
-    from ._repair_patch import build_repair_patch
+    from .patch import build_repair_patch
 
     tol = data["tol"]
     edge_keys = np.asarray(sorted(data["old_incidence"]), dtype=np.int64).reshape(-1, 2)

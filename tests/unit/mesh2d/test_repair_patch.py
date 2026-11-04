@@ -5,10 +5,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from mesher.mesh2d.adapter.layer import _repair_adaptive, _repair_patch
+from mesher.mesh2d.adapter.layer._repair import adaptive as _repair_adaptive, patch as _repair_patch
 from mesher.mesh2d.adapter.layer._geometry import intervals_cover
 from mesher.mesh2d.adapter.layer._patterns import AxisPattern, covered_intervals, occupied_intervals
-from mesher.mesh2d.adapter.layer._repair_patch import build_repair_patch
+from mesher.mesh2d.adapter.layer._repair.patch import build_repair_patch
 from mesher.mesh2d.adapter.layer._types import QuadLayerError
 from mesher.mesh2d.adapter.unit.build_unit_1_1_x_y import _validate_patch
 

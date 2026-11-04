@@ -11,7 +11,7 @@ From the repository root::
 
 The default opens a Matplotlib window and saves examples/output/extend_quad_layer.png.
 This file is a demo: the implementation lives in mesher.mesh2d.adapter.
-Each case calls extend_quad_layer once, then plots its returned diagnostics.
+Each case calls generate_layer_adaptive_mesh once, then plots its returned diagnostics.
 Use the window toolbar to pan and zoom.
 Requires NumPy and Matplotlib (the project's visualization extra).
 """
@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import extend_quad_layer
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
 from mesher.mesh2d.adapter.visualization import (
     diagnostic_report, plot_quad_layer, save_diagnostics,
 )
@@ -145,7 +145,7 @@ def main():
     reports = []
     for row, case in zip(axes, cases):
         example = make_example(case)
-        result = extend_quad_layer(
+        result = generate_layer_adaptive_mesh(
             example.mesh, example.outline, args.element_size,
             pattern_lines=example.patterns, expand_ratio=args.expand_ratio,
             new_outline=example.new_outline,

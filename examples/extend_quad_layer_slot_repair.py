@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import extend_quad_layer
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
 from mesher.mesh2d.adapter.visualization import (
     diagnostic_report, plot_quad_layer, save_diagnostics,
 )
@@ -72,7 +72,7 @@ def main():
     reports = []
     for case, row in zip(cases, axes):
         mesh, outline, patterns = make_example(case, args.element_size)
-        result = extend_quad_layer(mesh, outline, args.element_size, pattern_lines=patterns)
+        result = generate_layer_adaptive_mesh(mesh, outline, args.element_size, pattern_lines=patterns)
         name = {'aligned': 'Aligned C slot', 'misaligned': 'Mouth offset 0.25 / unequal wall counts',
                 'pattern': 'Pattern through repair and expansion'}[case]
         plot_quad_layer(result, outline, pattern_lines=patterns, name=name, axes=row)

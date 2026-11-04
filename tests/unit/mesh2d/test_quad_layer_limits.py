@@ -7,8 +7,8 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer
-from mesher.mesh2d.adapter.layer import _corners, _line, _section_mesh
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh
+from mesher.mesh2d.adapter.layer._construction import corners as _corners, line as _line, sections as _section_mesh
 from mesher.mesh2d.adapter.layer._limits import (
     ElementLimitExceeded,
     outer_segment_counts,
@@ -41,7 +41,7 @@ class QuadLayerLimitTests(unittest.TestCase):
                 patch.object(_section_mesh, "plan_corner") as corner_builder, \
                 patch.object(_line, "sample_outer") as sampler:
             with self.assertRaises(ElementLimitExceeded) as caught:
-                extend_quad_layer(mesh, outline, 1e-8, max_added_elements=1000)
+                generate_layer_adaptive_mesh(mesh, outline, 1e-8, max_added_elements=1000)
         self.assertEqual(caught.exception.code, "element_limit_exceeded")
         self.assertEqual(caught.exception.context["stage"], "element_count_preflight")
         self.assertEqual(caught.exception.context["count_kind"], "lower_bound")
@@ -53,9 +53,9 @@ class QuadLayerLimitTests(unittest.TestCase):
 
     def test_exact_cap_and_numpy_integer_are_accepted(self):
         baseline, outline = _rectangle()
-        count = extend_quad_layer(baseline, outline, .5).diagnostics["added_elements"]
+        count = generate_layer_adaptive_mesh(baseline, outline, .5).diagnostics["added_elements"]
         mesh, outline = _rectangle()
-        result = extend_quad_layer(mesh, outline, .5, max_added_elements=np.int64(count))
+        result = generate_layer_adaptive_mesh(mesh, outline, .5, max_added_elements=np.int64(count))
         self.assertEqual(result.diagnostics["added_elements"], count)
         # Old elements are outside the budget.
         self.assertEqual(len(mesh.elements), count + 1)
@@ -63,12 +63,12 @@ class QuadLayerLimitTests(unittest.TestCase):
 
     def test_selected_ring_over_limit_fails_before_global_node_mapping(self):
         baseline, outline = _rectangle()
-        count = extend_quad_layer(baseline, outline, .5).diagnostics["added_elements"]
+        count = generate_layer_adaptive_mesh(baseline, outline, .5).diagnostics["added_elements"]
         mesh, outline = _rectangle()
         nodes, elements = mesh.nodes.copy(), mesh.elements.copy()
         with patch.object(_section_mesh, "_NodePool") as pool:
             with self.assertRaises(ElementLimitExceeded) as caught:
-                extend_quad_layer(mesh, outline, .5, max_added_elements=count - 1)
+                generate_layer_adaptive_mesh(mesh, outline, .5, max_added_elements=count - 1)
         self.assertEqual(caught.exception.context["stage"], "selected_layer")
         self.assertEqual(caught.exception.context["required_elements"], count)
         pool.assert_not_called()
@@ -76,7 +76,7 @@ class QuadLayerLimitTests(unittest.TestCase):
 
     def test_alternative_seam_candidates_are_not_added_together(self):
         baseline, outline = _rectangle()
-        count = extend_quad_layer(baseline, outline, .5).diagnostics["added_elements"]
+        count = generate_layer_adaptive_mesh(baseline, outline, .5).diagnostics["added_elements"]
         attempted_counts = []
         original_line, original_corner = _section_mesh.plan_line, _section_mesh.plan_corner
 
@@ -90,7 +90,7 @@ class QuadLayerLimitTests(unittest.TestCase):
         mesh, outline = _rectangle()
         with patch.object(_section_mesh, "plan_line", side_effect=counted(original_line)), \
                 patch.object(_section_mesh, "plan_corner", side_effect=counted(original_corner)):
-            result = extend_quad_layer(mesh, outline, .5, max_added_elements=count)
+            result = generate_layer_adaptive_mesh(mesh, outline, .5, max_added_elements=count)
         self.assertGreater(sum(attempted_counts), count)
         self.assertEqual(result.diagnostics["added_elements"], count)
 
@@ -177,14 +177,14 @@ class QuadLayerLimitTests(unittest.TestCase):
                 mesh, outline = _rectangle()
                 nodes, elements = mesh.nodes.copy(), mesh.elements.copy()
                 with self.assertRaises(QuadLayerError) as caught:
-                    extend_quad_layer(mesh, outline, .5, max_added_elements=value)
+                    generate_layer_adaptive_mesh(mesh, outline, .5, max_added_elements=value)
                 self.assertEqual(caught.exception.code, "invalid_input")
                 self.assert_unchanged(mesh, nodes, elements)
 
     def test_geometry_failures_keep_their_original_error_code(self):
         mesh, outline = _rectangle()
         with self.assertRaises(QuadLayerError) as caught:
-            extend_quad_layer(mesh, outline, .5, pattern_lines=[[[1., 3.], [1., 3.2]]])
+            generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=[[[1., 3.], [1., 3.2]]])
         self.assertEqual(caught.exception.code, "fixed_boundary_conflict")
 
 

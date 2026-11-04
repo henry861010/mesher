@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from mesher.mesh2d.adapter import extend_quad_layer
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
 from mesher.mesh2d.adapter.visualization import plot_quad_layer
 from tests.unit.mesh2d.test_quad_sections import _cells
 from tests.unit.mesh2d.test_slot_repair import _c_slot
@@ -21,7 +21,7 @@ class QuadLayerVisualizationTests(unittest.TestCase):
         import matplotlib.pyplot as plt
         cls.plt = plt
         mesh, cls.slot_outline = _c_slot()
-        cls.slot_result = extend_quad_layer(mesh, cls.slot_outline, .5)
+        cls.slot_result = generate_layer_adaptive_mesh(mesh, cls.slot_outline, .5)
 
     def tearDown(self):
         self.plt.close("all")
@@ -51,7 +51,7 @@ class QuadLayerVisualizationTests(unittest.TestCase):
 
     def test_corner_cells_and_bent_boundary_render_with_shared_repair_legend(self):
         mesh, outline = _cells({(0, 0), (1, 0), (1, 1)})
-        result = extend_quad_layer(mesh, outline, 1.)
+        result = generate_layer_adaptive_mesh(mesh, outline, 1.)
         self.assertEqual(len(result.diagnostics["corner_repairs"]), 1)
         figure, axes = self.plt.subplots(2, 3, layout="constrained")
         plot_quad_layer(self.slot_result, self.slot_outline, axes=axes[0])

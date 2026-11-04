@@ -6,8 +6,9 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer, plan_quad_sections
-from mesher.mesh2d.adapter.layer import _mesher, _repair
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
+from mesher.mesh2d.adapter.layer import _mesher
+from mesher.mesh2d.adapter.layer._repair import slots as _repair
 from mesher.mesh2d.editor import EditorMesh2D
 from tests.unit.mesh2d import test_extend_quad_layer as layer_checks
 from tests.unit.mesh2d.test_adaptive_slot_repair import _test2
@@ -38,7 +39,7 @@ class CornerRepairTests(unittest.TestCase):
     def run_corner(self, mesh, outline, size=1., **kwargs):
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
         original_outline = [np.asarray(chain).copy() for chain in outline]
-        result = extend_quad_layer(mesh, outline, size, **kwargs)
+        result = generate_layer_adaptive_mesh(mesh, outline, size, **kwargs)
         self.assert_layer(mesh, original_outline, result, old_nodes, old_elements)
         for before, after in zip(original_outline, outline):
             np.testing.assert_array_equal(after, before)
@@ -65,8 +66,8 @@ class CornerRepairTests(unittest.TestCase):
         preview = plan_quad_sections(mesh, outline, .75)
         self.assertIsNone(preview.prepared_source)
         self.assertEqual(preview.diagnostics['corner_repairs'], [])
-        result = extend_quad_layer(mesh, outline, .75)
-        legacy = extend_quad_layer(other, outline, .75, repair_slots=False)
+        result = generate_layer_adaptive_mesh(mesh, outline, .75)
+        legacy = generate_layer_adaptive_mesh(other, outline, .75, repair_slots=False)
         self.assertEqual(result.diagnostics['corner_repairs'], [])
         self.assertEqual(legacy.diagnostics['corner_repairs'], [])
         np.testing.assert_array_equal(mesh.nodes, other.nodes)
@@ -203,20 +204,20 @@ class CornerRepairTests(unittest.TestCase):
         total = result.diagnostics['added_elements']
         repair_count = result.diagnostics['repair_added_elements']
         mesh, outline = _step()
-        exact = extend_quad_layer(mesh, outline, 1., max_added_elements=total)
+        exact = generate_layer_adaptive_mesh(mesh, outline, 1., max_added_elements=total)
         self.assertEqual(exact.diagnostics['added_elements'], total)
         for limit in (total - 1, repair_count - 1):
             with self.subTest(limit=limit):
                 mesh, outline = _step()
                 before = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError) as caught:
-                    extend_quad_layer(mesh, outline, 1., max_added_elements=limit)
+                    generate_layer_adaptive_mesh(mesh, outline, 1., max_added_elements=limit)
                 self.assertEqual(caught.exception.code, 'element_limit_exceeded')
                 self.assertGreater(caught.exception.context['required_elements'], limit)
                 self.assert_unchanged(mesh, before)
 
     def test_cap_below_fixed_boundary_spacing_is_atomic(self):
-        for api in (plan_quad_sections, extend_quad_layer):
+        for api in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(api=api.__name__):
                 mesh, outline = _step()
                 before = self._snapshot(mesh)
@@ -229,12 +230,12 @@ class CornerRepairTests(unittest.TestCase):
         preview = plan_quad_sections(mesh, outline, 1., repair_slots=False)
         self.assertIsNone(preview.prepared_source)
         self.assertEqual(preview.diagnostics['corner_repairs'], [])
-        result = extend_quad_layer(mesh, outline, 1., repair_slots=False)
+        result = generate_layer_adaptive_mesh(mesh, outline, 1., repair_slots=False)
         self.assertEqual(result.diagnostics['corner_repairs'], [])
         self.assertEqual(result.diagnostics['repair_added_elements'], 0)
 
     def test_post_repair_failure_rolls_back_and_detection_runs_once(self):
-        for api in (plan_quad_sections, extend_quad_layer):
+        for api in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(api=api.__name__):
                 mesh, outline = _step()
                 before = self._snapshot(mesh)
@@ -255,7 +256,7 @@ class CornerRepairTests(unittest.TestCase):
     def test_touching_corner_repairs_fail_the_entire_transaction(self):
         # The two missing rectangles meet at the original convex lip (1, 2).
         cells = {(x, y) for x in range(3) for y in range(x + 1)}
-        for api in (plan_quad_sections, extend_quad_layer):
+        for api in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(api=api.__name__):
                 mesh, outline, _ = layer_checks._polyomino(cells)
                 before = self._snapshot(mesh)
@@ -275,7 +276,7 @@ class CornerRepairTests(unittest.TestCase):
                 mesh.replace_data(nodes=np.vstack((mesh.nodes, point)), elements=mesh.elements)
                 before = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError):
-                    extend_quad_layer(mesh, outline, 1.)
+                    generate_layer_adaptive_mesh(mesh, outline, 1.)
                 self.assert_unchanged(mesh, before)
 
     def test_cap_cannot_cross_or_contain_another_component(self):
@@ -290,14 +291,14 @@ class CornerRepairTests(unittest.TestCase):
                                   elements=np.vstack((mesh.elements, np.arange(offset, offset + 4))))
                 before = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError):
-                    extend_quad_layer(mesh, outline, 1.)
+                    generate_layer_adaptive_mesh(mesh, outline, 1.)
                 self.assert_unchanged(mesh, before)
 
     def test_four_independent_corners_are_filled_in_one_transaction(self):
         cells = {(x, y) for x in range(3) for y in range(3) if x == 1 or y == 1}
         mesh, outline, _ = layer_checks._polyomino(cells)
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
-        result = extend_quad_layer(mesh, outline, 1.)
+        result = generate_layer_adaptive_mesh(mesh, outline, 1.)
         self.assert_layer(mesh, outline, result, old_nodes, old_elements)
         self.assertEqual(len(result.outline), 4)
         self.assertEqual(result.diagnostics['slot_repairs'], [])
@@ -313,7 +314,7 @@ class CornerRepairTests(unittest.TestCase):
 
     def test_test2_two_layers_repair_slot_and_corner_in_one_transaction(self):
         mesh, outline = _test2()
-        first = extend_quad_layer(mesh, outline, 30., expand_ratio=1.5,
+        first = generate_layer_adaptive_mesh(mesh, outline, 30., expand_ratio=1.5,
                                   repair_max_element_size=20.)
         self.assertEqual(first.diagnostics['corner_repairs'], [])
         outline = EditorMesh2D.outlines_by_edge(mesh)[0]

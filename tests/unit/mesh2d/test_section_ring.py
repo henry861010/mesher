@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from mesher.mesh2d.adapter.layer._section_mesh import seam_states, solve_section_ring
+from mesher.mesh2d.adapter.layer._construction.sections import seam_states, solve_section_ring
 from mesher.mesh2d.adapter.layer._types import QuadLayerError
 
 

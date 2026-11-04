@@ -4,7 +4,7 @@ import numpy as np
 
 from mesher import Mesh2D
 from mesher.mesh2d import EditorMesh2D
-from mesher.mesh2d.adapter import extend_quad_layer
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 
 from ._fixtures import empty_mesh, two_quads
@@ -132,7 +132,7 @@ class EditorOutlinesByEdgeTests(unittest.TestCase):
         nodes, elements = mesh.nodes.copy(), mesh.elements.copy()
         outline = EditorMesh2D.outlines_by_edge(mesh)[0]
         self.assertEqual([len(edge) for edge in outline], [31] * 4)
-        result = extend_quad_layer(mesh, outline, 50, pattern_lines=[], expand_ratio=1.5)
+        result = generate_layer_adaptive_mesh(mesh, outline, 50, pattern_lines=[], expand_ratio=1.5)
         self.assertIs(result.mesh, mesh)
         np.testing.assert_array_equal(mesh.nodes[:len(nodes)], nodes)
         np.testing.assert_array_equal(mesh.elements[:len(elements)], elements)

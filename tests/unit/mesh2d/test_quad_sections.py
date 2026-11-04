@@ -6,7 +6,7 @@ import numpy as np
 from mesher import Mesh2D
 from mesher.mesh2d.adapter.layer._geometry import area
 from mesher.mesh2d.adapter.layer._mesher import _front, _prepare, _validate_old_patterns
-from mesher.mesh2d.adapter.layer._sections import partition_sections, section_polygon
+from mesher.mesh2d.adapter.layer._planning.sections import partition_sections, section_polygon
 from mesher.mesh2d.adapter.layer._types import QuadLayerError
 from mesher.mesh2d.editor import EditorMesh2D
 

@@ -9,7 +9,7 @@
 
 import numpy as np
 
-from mesher.mesh2d.generators import generate_rectilinear_mesh_with_holes
+from mesher.mesh2d.generators import generate_rectilinear_mesh_optimal
 from mesher.mesh2d.visualization import view_mesh
 
 
@@ -33,7 +33,7 @@ def main():
         [[10, 44], [30, 44]],
     ], dtype=np.float64)
 
-    result = generate_rectilinear_mesh_with_holes(
+    result = generate_rectilinear_mesh_optimal(
         target_edge_size=global_size,
         outer_outline=outer_outline,
         holes=holes,

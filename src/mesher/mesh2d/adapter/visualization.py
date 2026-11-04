@@ -1,7 +1,7 @@
 """Plot committed adapter results without planning or generating another mesh.
 
 Matplotlib is imported only when ``plot_quad_layer`` is called. Meshing stays
-in ``mesher.mesh2d.adapter.extend_quad_layer``; these helpers consume its result.
+in ``mesher.mesh2d.adapter.generate_layer_adaptive_mesh``; these helpers consume its result.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def plot_quad_layer(result: QuadLayerResult, source_outline, *, pattern_lines=()
                     name: str = "Quad4 layer", axes=None):
     """Show sections, selected units, and final quads from one committed result.
 
-    ``source_outline`` is the outline supplied to ``extend_quad_layer``. Call
+    ``source_outline`` is the outline supplied to ``generate_layer_adaptive_mesh``. Call
     before extending the same mesh again. Supply three axes to compose several
     results in one figure, or omit them to create a figure. Returns the figure.
     Neither this function nor its diagnostic helpers call a mesher or planner.

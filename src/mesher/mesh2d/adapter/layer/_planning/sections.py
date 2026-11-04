@@ -11,9 +11,9 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
-from ._patterns import AxisPattern, covered_intervals, pattern_contacts
-from ._types import QuadLayerError, QuadSectionPlan, Seam, Section
+from .._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
+from .._patterns import AxisPattern, covered_intervals, pattern_contacts
+from .._types import QuadLayerError, QuadSectionPlan, Seam, Section
 
 
 def _fail(message, *, patterns=False, **context):

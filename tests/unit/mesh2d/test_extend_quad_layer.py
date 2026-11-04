@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh
 
 
 def _rectangle():
@@ -190,7 +190,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
     def run_layer(self, mesh, outline, h=0.5, **kwargs):
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
         source = [np.asarray(edge).copy() for edge in outline]
-        result = extend_quad_layer(mesh, outline, h, **kwargs)
+        result = generate_layer_adaptive_mesh(mesh, outline, h, **kwargs)
         self.assert_layer(mesh, source, result, old_nodes, old_elements)
         for before, after in zip(source, outline):
             np.testing.assert_array_equal(before, after)
@@ -299,7 +299,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
                 mesh, outline = _rectangle()
                 snapshot = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError) as caught:
-                    extend_quad_layer(mesh, outline, 0.8, pattern_lines=patterns)
+                    generate_layer_adaptive_mesh(mesh, outline, 0.8, pattern_lines=patterns)
                 self.assertEqual(caught.exception.code, "unsupported_pattern_layout")
                 self.assert_unchanged(mesh, snapshot)
 
@@ -338,7 +338,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
         pattern = [[4.0002, 0.5], [4.0002, 1.0]]
         snapshot = self._snapshot(mesh)
         with self.assertRaises(QuadLayerError) as caught:
-            extend_quad_layer(mesh, outline, 0.5, pattern_lines=[pattern])
+            generate_layer_adaptive_mesh(mesh, outline, 0.5, pattern_lines=[pattern])
         self.assertEqual(caught.exception.code, "unsupported_pattern_layout")
         self.assert_unchanged(mesh, snapshot)
 
@@ -368,7 +368,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
                 mesh, outline = _rectangle()
                 snapshot = self._snapshot(mesh)
                 with self.assertRaises((ValueError, TypeError)):
-                    extend_quad_layer(mesh, outline, **{"element_size": 0.5, **kwargs})
+                    generate_layer_adaptive_mesh(mesh, outline, **{"element_size": 0.5, **kwargs})
                 self.assert_unchanged(mesh, snapshot)
 
     def test_invalid_outline_and_nonquad_input_are_atomic(self):
@@ -386,13 +386,13 @@ class ExtendQuadLayerTests(unittest.TestCase):
                 mesh, _ = _rectangle()
                 snapshot = self._snapshot(mesh)
                 with self.assertRaises(ValueError):
-                    extend_quad_layer(mesh, outline, 0.5)
+                    generate_layer_adaptive_mesh(mesh, outline, 0.5)
                 self.assert_unchanged(mesh, snapshot)
         mesh, outline = _rectangle()
         mesh.elements = np.array([[0, 1, 2, 2], [0, 2, 3, 3]], dtype=np.int32)
         snapshot = self._snapshot(mesh)
         with self.assertRaises(ValueError):
-            extend_quad_layer(mesh, outline, 0.5)
+            generate_layer_adaptive_mesh(mesh, outline, 0.5)
         self.assert_unchanged(mesh, snapshot)
 
     def test_pattern_cannot_split_frozen_source_or_cross_existing_element(self):
@@ -401,7 +401,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
                 mesh, outline = _rectangle()
                 snapshot = self._snapshot(mesh)
                 with self.assertRaises(ValueError):
-                    extend_quad_layer(mesh, outline, 0.5, pattern_lines=[pattern])
+                    generate_layer_adaptive_mesh(mesh, outline, 0.5, pattern_lines=[pattern])
                 self.assert_unchanged(mesh, snapshot)
 
     def test_hole_collapse_is_atomic(self):
@@ -411,7 +411,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
         outline = [[loop[i], loop[(i + 1) % 4]] for i in range(4)]
         snapshot = self._snapshot(mesh)
         with self.assertRaises(ValueError):
-            extend_quad_layer(mesh, outline, 0.5)
+            generate_layer_adaptive_mesh(mesh, outline, 0.5)
         self.assert_unchanged(mesh, snapshot)
 
     def test_narrow_u_slot_closure_without_repair_is_an_atomic_topology_error(self):
@@ -419,7 +419,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
         mesh, outline, _ = _polyomino(cells)
         snapshot = self._snapshot(mesh)
         with self.assertRaises(ValueError):
-            extend_quad_layer(mesh, outline, 0.5, repair_slots=False)
+            generate_layer_adaptive_mesh(mesh, outline, 0.5, repair_slots=False)
         self.assert_unchanged(mesh, snapshot)
 
     def test_narrow_u_slot_closure_is_repaired_by_default(self):
@@ -436,7 +436,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
                           elements=np.vstack((mesh.elements, [4, 5, 6, 7])))
         snapshot = self._snapshot(mesh)
         with self.assertRaises(ValueError):
-            extend_quad_layer(mesh, outline, 0.5)
+            generate_layer_adaptive_mesh(mesh, outline, 0.5)
         self.assert_unchanged(mesh, snapshot)
 
     def test_late_generated_patch_validation_failure_is_atomic(self):
@@ -447,7 +447,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
         with patch.object(_mesher, "_validate_patch",
                           side_effect=ValueError("injected final patch rejection")) as validate:
             with self.assertRaisesRegex(ValueError, "injected final patch rejection"):
-                extend_quad_layer(mesh, outline, 0.5)
+                generate_layer_adaptive_mesh(mesh, outline, 0.5)
         self.assertTrue(validate.called)
         self.assert_unchanged(mesh, snapshot)
 
@@ -467,7 +467,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
 
         with patch.object(_mesher, "fill_sections", side_effect=fail_after_fill) as builder:
             with self.assertRaisesRegex(QuadLayerError, "injected completed section rejection"):
-                extend_quad_layer(mesh, outline, 0.5)
+                generate_layer_adaptive_mesh(mesh, outline, 0.5)
         self.assertEqual(builder.call_count, 1)
         self.assert_unchanged(mesh, snapshot)
 
@@ -492,7 +492,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
         ]
         snapshot = self._snapshot(mesh)
         with self.assertRaises(QuadLayerError) as caught:
-            extend_quad_layer(mesh, outline, 0.5, pattern_lines=patterns)
+            generate_layer_adaptive_mesh(mesh, outline, 0.5, pattern_lines=patterns)
         self.assertEqual(caught.exception.code, "unsupported_pattern_layout")
         self.assert_unchanged(mesh, snapshot)
 

@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer
-from mesher.mesh2d.adapter.layer import _repair_adaptive, _repair_patch
-from mesher.mesh2d.adapter.layer._repair_patch import build_repair_patch
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh
+from mesher.mesh2d.adapter.layer._repair import adaptive as _repair_adaptive, patch as _repair_patch
+from mesher.mesh2d.adapter.layer._repair.patch import build_repair_patch
 from tests.unit.mesh2d.test_corner_repair import _step
 from tests.unit.mesh2d.test_extend_quad_layer import _polyomino
 from tests.unit.mesh2d.test_repair_patch import _pattern, _source, _xyz
@@ -46,7 +46,7 @@ class RepairPreflightTests(unittest.TestCase):
                     (_repair_adaptive, 'build_adaptive_face'),
                 )]
             with self.assertRaises(QuadLayerError) as caught:
-                extend_quad_layer(mesh, outline, .5, max_added_elements=1)
+                generate_layer_adaptive_mesh(mesh, outline, .5, max_added_elements=1)
             self.assertEqual(source_sizes, [2005])
             self.assertGreaterEqual(contacts.call_count, 2005)
             self.assertLess(contacts.call_count, 10 * 2005)
@@ -151,7 +151,7 @@ class RepairPreflightTests(unittest.TestCase):
             with self.subTest(corner_id=corner_id):
                 original_nodes, original_elements = mesh.nodes.copy(), mesh.elements.copy()
                 with self.assertRaises(QuadLayerError) as caught:
-                    extend_quad_layer(mesh, outline, 1., max_added_elements=1)
+                    generate_layer_adaptive_mesh(mesh, outline, 1., max_added_elements=1)
                 error = caught.exception
                 self.assertEqual(error.code, 'element_limit_exceeded')
                 self.assertEqual(error.context['stage'], 'corner_repair_count_preflight')

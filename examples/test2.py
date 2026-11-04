@@ -1,8 +1,9 @@
 import numpy as np
 from mesher.mesh2d import Mesh2D
-from mesher.mesh2d.adapter import extend_quad_layer
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
 from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh
+
 from mesher.mesh2d.visualization import view_mesh
 
 # pattern_lines = np.asarray([
@@ -46,7 +47,7 @@ mesh = editor.equivalence(editor.merge(mesh, mesh4))
 
 # layer one 30
 outline = editor.outlines_by_edge(mesh)[0]
-result = extend_quad_layer(
+result = generate_layer_adaptive_mesh(
     mesh, outline, element_size=30, expand_ratio=1.5, pattern_lines=pattern_lines,
     repair_max_element_size=20,
 )
@@ -54,14 +55,14 @@ mesh = result.mesh
 
 # layer two 100
 outline = editor.outlines_by_edge(mesh)[0]
-result = extend_quad_layer(
+result = generate_layer_adaptive_mesh(
     mesh, outline, element_size=100, expand_ratio=1.5, pattern_lines=pattern_lines,
 )
 mesh = result.mesh
 
 # layer two 200
 outline = editor.outlines_by_edge(mesh)[0]
-result = extend_quad_layer(
+result = generate_layer_adaptive_mesh(
     mesh, outline, element_size=200, expand_ratio=1.5, pattern_lines=pattern_lines,
 )
 mesh = result.mesh

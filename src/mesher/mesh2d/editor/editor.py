@@ -159,7 +159,7 @@ class EditorMesh2D:
         returned arrays.
 
         For near-axis Quad4 meshes, one result loop can be passed directly
-        to ``extend_quad_layer``; that function validates its own constraints.
+        to ``generate_layer_adaptive_mesh``; that function validates its own constraints.
         """
         return _outlines_by_edge(mesh, angle_tolerance)
 

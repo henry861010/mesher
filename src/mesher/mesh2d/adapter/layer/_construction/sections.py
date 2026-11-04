@@ -5,11 +5,11 @@ from collections import Counter
 
 import numpy as np
 
-from ._corners import plan_corner
-from ._line import plan_line
-from ._limits import ElementLimitExceeded, check_element_limit, preflight_element_limit
-from ._registry import _NodePool, _PointIndex
-from ._types import QuadLayerError
+from .corners import plan_corner
+from .line import plan_line
+from .._limits import ElementLimitExceeded, check_element_limit, preflight_element_limit
+from .._registry import _NodePool, _PointIndex
+from .._types import QuadLayerError
 
 
 def _xyz(points):
@@ -82,6 +82,7 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
     """Stage a layer; no caller-owned mesh data is changed during candidate search."""
     tol, h = data["tol"], data["h"]
     limit = data.get("max_added_elements")
+    fixed_outer_boundary = data.get("fixed_outer_boundary", False)
     preflight_element_limit(plan, data)
     states = {seam.id: seam_states(seam, tol) for seam in plan.seams}
     candidates = []
@@ -103,11 +104,13 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                     if section.kind == "LINE":
                         patches = plan_line(source_chains[0], outer, left, right, h, tol,
                                             best_only=True, _diagnostics=attempt_stats,
-                                            max_added_elements=limit)
+                                            max_added_elements=limit,
+                                            fixed_outer_boundary=fixed_outer_boundary)
                     else:
                         corner = np.r_[plan.front[section.corner], 0.0]
                         patches = plan_corner(section.kind, source_chains, outer, left, right,
-                                              corner, h, tol, max_added_elements=limit)
+                                              corner, h, tol, max_added_elements=limit,
+                                              fixed_outer_boundary=fixed_outer_boundary)
                     if patches:
                         for candidate in patches:
                             check_element_limit(len(candidate.quads), limit,
@@ -115,7 +118,8 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                         options[left_count, right_count] = min(
                             patches, key=lambda patch: (patch.size_error, patch.quality))
                     else:
-                        rejected.append(f"{left_count}/{right_count}: nearest legal outer counts "
+                        counts = "fixed outer count" if fixed_outer_boundary else "nearest legal outer counts"
+                        rejected.append(f"{left_count}/{right_count}: {counts} "
                                         "have no valid unit assembly")
                 except ElementLimitExceeded as error:
                     error.context.setdefault("section_id", section.id)

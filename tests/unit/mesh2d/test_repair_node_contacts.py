@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer, plan_quad_sections
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from tests.unit.mesh2d import test_extend_quad_layer as layer_checks
 from tests.unit.mesh2d.test_corner_repair import _step
 from tests.unit.mesh2d.test_slot_repair import _c_slot
@@ -22,7 +22,7 @@ class RepairNodeContactTests(unittest.TestCase):
         )
         for kind, fixture, size, points in cases:
             for point in points:
-                for operation in (plan_quad_sections, extend_quad_layer):
+                for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
                     with self.subTest(kind=kind, point=point, operation=operation.__name__):
                         mesh, outline = fixture()
                         node_id = mesh.node_count
@@ -39,7 +39,7 @@ class RepairNodeContactTests(unittest.TestCase):
                         self.assert_unchanged(mesh, before)
 
     def test_rotated_translated_slot_mouth_rejects_an_unrelated_node(self):
-        for operation in (plan_quad_sections, extend_quad_layer):
+        for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 mesh, outline = _c_slot()
                 mesh.nodes = np.vstack((mesh.nodes, [3., 1.5, 0.]))
@@ -50,7 +50,7 @@ class RepairNodeContactTests(unittest.TestCase):
                 self.assert_unchanged(mesh, before)
 
     def test_slanted_mouth_checks_all_existing_anchor_candidates(self):
-        for operation in (plan_quad_sections, extend_quad_layer):
+        for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 mesh, outline = _c_slot(2.25)
                 # Each of the two candidate slopes meets one isolated node.
@@ -71,7 +71,7 @@ class RepairNodeContactTests(unittest.TestCase):
             (_step, 1., np.array([0., 2.]), np.array([-1., 0.])),
         ):
             for factor in (.5, 4.):
-                for operation in (plan_quad_sections, extend_quad_layer):
+                for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
                     with self.subTest(fixture=fixture.__name__, factor=factor,
                                       operation=operation.__name__):
                         mesh, outline = fixture()
@@ -95,7 +95,7 @@ class RepairNodeContactTests(unittest.TestCase):
                 before = self._snapshot(mesh)
                 preview = plan_quad_sections(mesh, outline, size)
                 self.assert_unchanged(mesh, before)
-                result = extend_quad_layer(mesh, outline, size)
+                result = generate_layer_adaptive_mesh(mesh, outline, size)
                 np.testing.assert_array_equal(mesh.nodes[:len(before[2])], before[2])
                 np.testing.assert_array_equal(mesh.elements[:len(before[3])], before[3])
                 self.assertFalse(np.any(mesh.elements == remote_id))
@@ -114,7 +114,7 @@ class RepairNodeContactTests(unittest.TestCase):
         before = self._snapshot(mesh)
         preview = plan_quad_sections(mesh, outline, .5)
         self.assert_unchanged(mesh, before)
-        result = extend_quad_layer(mesh, outline, .5)
+        result = generate_layer_adaptive_mesh(mesh, outline, .5)
         np.testing.assert_array_equal(mesh.nodes[:len(before[2])], before[2])
         self.assertFalse(np.any(mesh.elements == node_id))
         for diagnostics in (preview.diagnostics, result.diagnostics):

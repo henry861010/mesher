@@ -3,8 +3,9 @@ import unittest
 
 import numpy as np
 
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer
-from mesher.mesh2d.adapter.layer import _mesher, _sections
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh
+from mesher.mesh2d.adapter.layer import _mesher
+from mesher.mesh2d.adapter.layer._planning import sections as _sections
 from mesher.mesh2d.adapter.layer._geometry import area
 from mesher.mesh2d.editor import EditorMesh2D
 from tests.unit.mesh2d.test_adaptive_slot_repair import _test2
@@ -18,7 +19,7 @@ class RepairedEndpointSectionsTests(unittest.TestCase):
             with self.subTest(turns=turns):
                 mesh, outline = _test2()
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] @ np.linalg.matrix_power(rotation, turns).T
-                extend_quad_layer(mesh, outline, 30., expand_ratio=1.5,
+                generate_layer_adaptive_mesh(mesh, outline, 30., expand_ratio=1.5,
                                   repair_max_element_size=20.)
                 outline = EditorMesh2D.outlines_by_edge(mesh)[0]
                 nodes, elements = mesh.nodes.copy(), mesh.elements.copy()

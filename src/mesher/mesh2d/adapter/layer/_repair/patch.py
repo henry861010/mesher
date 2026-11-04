@@ -11,13 +11,13 @@ from math import ceil, floor
 
 import numpy as np
 
-from ..unit.build_unit_1_1_x_y import _validate_patch
-from ._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
-from ._limits import ElementLimitExceeded, check_element_limit
-from ._patch import _four_sided_units
-from ._patterns import AxisPattern, pattern_contacts
-from ._types import QuadLayerError
-from ._unit_plan import CoordinatePool
+from ...unit.build_unit_1_1_x_y import _validate_patch
+from .._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
+from .._limits import ElementLimitExceeded, check_element_limit
+from .._construction.patch import _four_sided_units
+from .._patterns import AxisPattern, pattern_contacts
+from .._types import QuadLayerError
+from .._construction.units import CoordinatePool
 
 
 @dataclass
@@ -362,7 +362,7 @@ def _build_faces(points, source_ids, mouth, faces, free, counts, tol, limit, cac
         sizing = {"ring_count": 0, "ring_target_sizes": [],
                   "stop_reason": "no_coarsening", "core_method": "direct"}
         try:
-            from ._repair_adaptive import build_adaptive_face
+            from .adaptive import build_adaptive_face
             try:
                 built, sizing = build_adaptive_face(
                     boundary, boundary_size, max_size, tol, available, cache, legacy)

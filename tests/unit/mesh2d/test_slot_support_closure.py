@@ -4,9 +4,9 @@ import unittest
 
 import numpy as np
 
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer, plan_quad_sections
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from mesher.mesh2d.adapter.layer._mesher import _expansion_distances, _prepare
-from mesher.mesh2d.adapter.layer._repair import _find_slots
+from mesher.mesh2d.adapter.layer._repair.slots import _find_slots
 from tests.unit.mesh2d import test_extend_quad_layer as layer_checks
 from tests.unit.mesh2d.test_slot_repair import _c_slot
 
@@ -28,7 +28,7 @@ class SlotSupportClosureTests(unittest.TestCase):
         before = self._snapshot(mesh)
         preview = plan_quad_sections(mesh, outline, size, **kwargs)
         self.assert_unchanged(mesh, before)
-        result = extend_quad_layer(mesh, outline, size, **kwargs)
+        result = generate_layer_adaptive_mesh(mesh, outline, size, **kwargs)
         self.assert_layer(mesh, outline, result, before[2], before[3])
         self.assertEqual(len(result.diagnostics['slot_repairs']), 1)
         prepared = preview.prepared_source
@@ -85,7 +85,7 @@ class SlotSupportClosureTests(unittest.TestCase):
         self.assert_pattern_covered(mesh, pattern)
 
     def test_opt_out_retains_atomic_front_collision_failure(self):
-        for operation in (plan_quad_sections, extend_quad_layer):
+        for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 mesh, outline = _sheared_slot()
                 before = self._snapshot(mesh)
@@ -100,7 +100,7 @@ class SlotSupportClosureTests(unittest.TestCase):
         mesh, outline = _sheared_slot()
         self.assert_repaired(mesh, outline, .4999, new_outline=target)
         # A rectangular target does not itself trigger repair of an open slot.
-        for operation in (plan_quad_sections, extend_quad_layer):
+        for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 mesh, outline = _sheared_slot()
                 before = self._snapshot(mesh)

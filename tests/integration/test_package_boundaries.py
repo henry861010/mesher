@@ -64,6 +64,44 @@ class PackageBoundaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "")
 
+    def test_adapter_public_exports_include_full_and_layer_apis(self):
+        from mesher.mesh2d import adapter
+        from mesher.mesh2d.adapter import layer, unit
+
+        expected = {
+            "generate_layer_adaptive_mesh", "plan_quad_sections", "QuadLayerResult",
+            "QuadSectionPlan", "PreparedLayerSource", "Seam", "Section",
+            "QuadLayerError", "UnmeshableDirectQuadLayout",
+        }
+        self.assertEqual(set(adapter.__all__), expected | {
+            "generate_full_adaptive_mesh", "FullAdaptiveMeshResult",
+        })
+        self.assertEqual(set(layer.__all__), expected)
+        for name in expected:
+            with self.subTest(name=name):
+                self.assertIs(getattr(adapter, name), getattr(layer, name))
+        for name in ("build_unit_1_1_1_x", "build_unit_1_1_x_y", "build_unit_1_x_y_z"):
+            with self.subTest(name=name):
+                self.assertTrue(callable(getattr(unit, name)))
+
+    def test_adapter_modules_import_without_optional_dependencies(self):
+        repository_root = Path(__file__).resolve().parents[2]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository_root / "src")
+        result = subprocess.run(
+            [sys.executable, "-c", (
+                "import importlib, pkgutil, sys; import mesher.mesh2d.adapter as adapter; "
+                "[importlib.import_module(info.name) for info in "
+                "pkgutil.walk_packages(adapter.__path__, adapter.__name__ + '.')]; "
+                "optional = {'matplotlib', 'pyvista', 'PySide6', 'shapely', "
+                "'process_flow_kernel'}; "
+                "print(','.join(sorted(optional.intersection(sys.modules))))"
+            )],
+            check=False, capture_output=True, text=True, env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
     def test_mesh_control_contract_import_does_not_load_meshing_runtime(self):
         repository_root = Path(__file__).resolve().parents[2]
         environment = os.environ.copy()

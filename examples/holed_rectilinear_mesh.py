@@ -22,7 +22,7 @@ import numpy as np
 from mesher import Mesh2D
 from mesher.mesh2d.generators import (
     generate_rectilinear_mesh,
-    generate_rectilinear_mesh_with_holes,
+    generate_rectilinear_mesh_optimal,
 )
 
 
@@ -185,7 +185,7 @@ def main():
     args = parser.parse_args()
 
     outer, holes, patterns = build_fixture()
-    result = generate_rectilinear_mesh_with_holes(
+    result = generate_rectilinear_mesh_optimal(
         args.target_size, outer, holes=holes, pattern_lines=patterns
     )
     reference = build_global_projection_reference(

@@ -7,9 +7,9 @@ from itertools import product
 
 import numpy as np
 
-from ...model import Mesh2D, _validate_zero_z
-from ..unit import build_unit_1_1_1_x, build_unit_1_1_x_y, build_unit_1_x_y_z
-from ..unit.build_unit_1_1_x_y import _validate_patch
+from ....model import Mesh2D, _validate_zero_z
+from ...unit import build_unit_1_1_1_x, build_unit_1_1_x_y, build_unit_1_x_y_z
+from ...unit.build_unit_1_1_x_y import _validate_patch
 
 
 @dataclass

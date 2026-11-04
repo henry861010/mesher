@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..unit.build_unit_1_1_x_y import _validate_patch
-from ._limits import ElementLimitExceeded, check_element_limit
-from ._unit_plan import CoordinatePool, UnitPlan, build_unit_patch, merge_unit_plans
+from ...unit.build_unit_1_1_x_y import _validate_patch
+from .._limits import ElementLimitExceeded, check_element_limit
+from .units import CoordinatePool, UnitPlan, build_unit_patch, merge_unit_plans
 
 
 def _check_units(units, sides, tol):

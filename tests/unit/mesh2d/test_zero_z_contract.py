@@ -7,7 +7,7 @@ import numpy as np
 
 from mesher import Mesh2D
 from mesher.mesh2d import EditorMesh2D
-from mesher.mesh2d.adapter import extend_quad_layer, plan_quad_sections
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh, plan_quad_sections
 from mesher.mesh2d.adapter.unit import (
     build_unit_1_1_1_x, build_unit_1_1_x_y, build_unit_1_x_y_z,
 )
@@ -94,7 +94,7 @@ class ZeroZOperationTests(unittest.TestCase):
             'outline': lambda m: EditorMesh2D.outline(m),
             'outlines_by_edge': lambda m: EditorMesh2D.outlines_by_edge(m),
             'plan_layer': lambda m: plan_quad_sections(m, OUTLINE, .5),
-            'extend_layer': lambda m: extend_quad_layer(m, OUTLINE, .5),
+            'extend_layer': lambda m: generate_layer_adaptive_mesh(m, OUTLINE, .5),
             'unit111x': lambda m: build_unit_1_1_1_x(m, *sides),
             'unit11xy': lambda m: build_unit_1_1_x_y(m, *sides),
             'unit1xyz': lambda m: build_unit_1_x_y_z(m, *sides),
@@ -130,8 +130,8 @@ class ZeroZOperationTests(unittest.TestCase):
         for scale in (1., 1000.):
             mesh = rectangle()
             mesh.nodes[:, :2] *= scale
-            result = extend_quad_layer(mesh, OUTLINE, .5 * scale)
-            extend_quad_layer(mesh, result.outline, .5 * scale)
+            result = generate_layer_adaptive_mesh(mesh, OUTLINE, .5 * scale)
+            generate_layer_adaptive_mesh(mesh, result.outline, .5 * scale)
             np.testing.assert_array_equal(mesh.nodes[:, 2], 0.)
             results.append(mesh)
         np.testing.assert_array_equal(results[0].elements, results[1].elements)
@@ -141,7 +141,7 @@ class ZeroZOperationTests(unittest.TestCase):
             mesh.nodes[:, :2] *= scale
             mesh.nodes[1, 2] = 1e-14 * scale
             with self.assertRaisesRegex(ValueError, 'Z=0; node 1'):
-                extend_quad_layer(mesh, OUTLINE, .5 * scale)
+                generate_layer_adaptive_mesh(mesh, OUTLINE, .5 * scale)
 
     def test_extrusion_validates_z_but_generates_real_layer_heights(self):
         from mesher.mesh3d.extrusion import Dragger

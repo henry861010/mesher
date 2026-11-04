@@ -23,8 +23,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from mesher.mesh2d.adapter.layer import _line
-from mesher.mesh2d.adapter.layer._unit_plan import quality_score
+from mesher.mesh2d.adapter.layer._construction import line as _line
+from mesher.mesh2d.adapter.layer._construction.units import quality_score
 
 
 def main():

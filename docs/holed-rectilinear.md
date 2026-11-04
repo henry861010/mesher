@@ -1,6 +1,6 @@
 # Rectilinear global mesh around holes
 
-`generate_rectilinear_mesh_with_holes` builds a conforming Quad4 mesh for an
+`generate_rectilinear_mesh_optimal` builds a conforming Quad4 mesh for an
 orthogonal domain with supplied holes. Its normal local strategy stops pattern
 lines at the first outer or hole boundary, so the meshes on opposite sides of
 a hole can use different grid coordinates. The holes remain empty. Their returned
@@ -12,9 +12,9 @@ adaptive meshes; that integration is independent of this generator.
 ```python
 import numpy as np
 
-from mesher.mesh2d.generators import generate_rectilinear_mesh_with_holes
+from mesher.mesh2d.generators import generate_rectilinear_mesh_optimal
 
-result = generate_rectilinear_mesh_with_holes(
+result = generate_rectilinear_mesh_optimal(
     target_edge_size=2.0,
     outer_outline=np.array([[0, 0], [12, 0], [12, 8], [0, 8]]),
     holes=[np.array([[4, 2], [7, 2], [7, 6], [4, 6]])],

@@ -5,10 +5,10 @@ import unittest
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer, plan_quad_sections
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 
 
-_APIS = (plan_quad_sections, extend_quad_layer)
+_APIS = (plan_quad_sections, generate_layer_adaptive_mesh)
 
 
 class _FailingFloat:

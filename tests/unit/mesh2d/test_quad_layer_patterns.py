@@ -6,7 +6,7 @@ import warnings
 import numpy as np
 
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer, plan_quad_sections
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 
 
 def _rectangle():
@@ -65,7 +65,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(reached, high, delta=1e-8)
 
     def assert_atomic_error(self, mesh, outline, patterns, *, code=None, **kwargs):
-        for operation in (plan_quad_sections, extend_quad_layer):
+        for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 snapshot = self._snapshot(mesh)
                 with warnings.catch_warnings(record=True) as emitted:
@@ -91,7 +91,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 plan = plan_quad_sections(mesh, outline, .5, pattern_lines=patterns)
                 self.assert_unchanged(mesh, snapshot)
                 np.testing.assert_allclose(plan.edge_expansion, [.5, .4, .5, .5])
-                result = extend_quad_layer(mesh, outline, .5, pattern_lines=patterns)
+                result = generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
                 self.assert_frozen_prefix(mesh, snapshot)
                 front = mesh.nodes[np.concatenate(result.outline), :2]
                 np.testing.assert_allclose(front.min(axis=0), [-.5, -.5])
@@ -105,7 +105,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
         plan = plan_quad_sections(mesh, outline, .5, pattern_lines=patterns)
         self.assert_unchanged(mesh, snapshot)
         np.testing.assert_allclose(plan.edge_expansion, [.5] * 4)
-        extend_quad_layer(mesh, outline, .5, pattern_lines=patterns)
+        generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
         self.assert_frozen_prefix(mesh, snapshot)
         self.assert_axis_covered(mesh, [-.5, 3.], [4.5, 3.])
 
@@ -118,7 +118,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 plan = plan_quad_sections(mesh, outline, .5, pattern_lines=patterns)
                 self.assertEqual(plan.diagnostics["pattern_chord_count"], 2)
                 self.assert_unchanged(mesh, snapshot)
-                result = extend_quad_layer(mesh, outline, .5, pattern_lines=patterns)
+                result = generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
                 self.assert_frozen_prefix(mesh, snapshot)
                 self.assert_axis_covered(mesh, [1., -.5], [1., 3.5])
                 locked = [seam for seam in result.diagnostics["seam_states"]
@@ -145,7 +145,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 front = (plan.front - shift) @ rotation / scale
                 np.testing.assert_allclose(front.min(axis=0), [-.5, -.5], atol=1e-8)
                 np.testing.assert_allclose(front.max(axis=0), [4.5, 3.4], atol=1e-8)
-                extend_quad_layer(mesh, outline, .5 * scale, pattern_lines=patterns)
+                generate_layer_adaptive_mesh(mesh, outline, .5 * scale, pattern_lines=patterns)
                 self.assert_frozen_prefix(mesh, snapshot)
                 xy = (mesh.nodes[:, :2] - shift) @ rotation / scale
                 self.assert_axis_covered(mesh, [-.5, 3.4], [4.5, 3.4], xy=xy)
@@ -163,7 +163,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
         self.assert_unchanged(mesh, snapshot)
         self.assertEqual({index for section in plan.sections for index in section.pattern_ids},
                          {0, 1, 2})
-        result = extend_quad_layer(mesh, outline, .5, pattern_lines=patterns)
+        result = generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
         self.assert_frozen_prefix(mesh, snapshot)
         np.testing.assert_array_equal(patterns, original)
         self.assertEqual({index for section in result.diagnostics["section_details"]
@@ -210,7 +210,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 snapshot = self._snapshot(mesh)
                 plan_quad_sections(mesh, outline, .5, pattern_lines=patterns)
                 self.assert_unchanged(mesh, snapshot)
-                extend_quad_layer(mesh, outline, .5, pattern_lines=patterns)
+                generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
                 self.assert_frozen_prefix(mesh, snapshot)
                 self.assert_axis_covered(mesh, [0., 3.4], [4.5, 3.4])
 
@@ -230,7 +230,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 plan = plan_quad_sections(mesh, outline, .5, pattern_lines=[pattern])
                 self.assert_unchanged(mesh, snapshot)
                 np.testing.assert_allclose(plan.edge_expansion, [.5] * 4)
-                extend_quad_layer(mesh, outline, .5, pattern_lines=[pattern])
+                generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=[pattern])
                 self.assert_frozen_prefix(mesh, snapshot)
 
     def test_extreme_finite_patterns_fail_without_overflow_warnings_or_mutation(self):

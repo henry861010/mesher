@@ -7,7 +7,7 @@ import numpy as np
 
 from mesher.mesh2d.adapter.layer._geometry import intervals_cover
 from mesher.mesh2d.adapter.layer._patterns import covered_intervals, occupied_intervals
-from mesher.mesh2d.adapter.layer._repair_patch import build_repair_patch
+from mesher.mesh2d.adapter.layer._repair.patch import build_repair_patch
 from mesher.mesh2d.adapter.layer._types import QuadLayerError
 from mesher.mesh2d.adapter.unit.build_unit_1_1_x_y import _validate_patch
 from tests.unit.mesh2d.test_repair_patch import _pattern, _xyz

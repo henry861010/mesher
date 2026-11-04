@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer, plan_quad_sections
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from mesher.mesh2d.adapter.layer import _mesher
 from tests.unit.mesh2d import test_extend_quad_layer as layer_checks
 from tests.unit.mesh2d.test_corner_repair import _step
@@ -51,8 +51,8 @@ class NewOutlineTests(unittest.TestCase):
     def test_none_retains_automatic_extension(self):
         automatic, outline = layer_checks._rectangle()
         explicit, _ = layer_checks._rectangle()
-        first = extend_quad_layer(automatic, outline, .5)
-        second = extend_quad_layer(explicit, outline, .5, new_outline=None)
+        first = generate_layer_adaptive_mesh(automatic, outline, .5)
+        second = generate_layer_adaptive_mesh(explicit, outline, .5, new_outline=None)
         np.testing.assert_array_equal(automatic.nodes, explicit.nodes)
         np.testing.assert_array_equal(automatic.elements, explicit.elements)
         for before, after in zip(first.outline, second.outline):
@@ -189,7 +189,7 @@ class NewOutlineTests(unittest.TestCase):
         # At .75 the existing automatic expansion does not repair this step.
         # A rectangular target therefore has incompatible corner topology.
         target = np.array([[-1., -1.], [-1., 4.], [4., 4.], [4., -1.]])
-        for operation in (plan_quad_sections, extend_quad_layer):
+        for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 with self.assertRaises(QuadLayerError):
                     operation(mesh, outline, .75, new_outline=target)
@@ -241,7 +241,7 @@ class NewOutlineTests(unittest.TestCase):
              [4.5, 4.], [4.5, -.5]],
         )
         for index, target in enumerate(invalid):
-            for operation in (plan_quad_sections, extend_quad_layer):
+            for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
                 with self.subTest(target=index, operation=operation.__name__):
                     mesh, outline = layer_checks._rectangle()
                     snapshot = self._snapshot(mesh)
@@ -252,7 +252,7 @@ class NewOutlineTests(unittest.TestCase):
     def test_incomplete_pattern_to_custom_target_is_atomic(self):
         mesh, outline, _ = layer_checks._polyomino({(x, y) for x in range(4) for y in range(3)})
         snapshot = self._snapshot(mesh)
-        for operation in (plan_quad_sections, extend_quad_layer):
+        for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 with self.assertRaises(QuadLayerError):
                     operation(mesh, outline, .5, new_outline=_target(),
@@ -261,11 +261,11 @@ class NewOutlineTests(unittest.TestCase):
 
     def test_custom_target_honors_output_budget_atomically(self):
         baseline, outline = layer_checks._rectangle()
-        count = extend_quad_layer(baseline, outline, .5, new_outline=_target()).diagnostics['added_elements']
+        count = generate_layer_adaptive_mesh(baseline, outline, .5, new_outline=_target()).diagnostics['added_elements']
         mesh, outline = layer_checks._rectangle()
         snapshot = self._snapshot(mesh)
         with self.assertRaises(QuadLayerError):
-            extend_quad_layer(mesh, outline, .5, new_outline=_target(), max_added_elements=count-1)
+            generate_layer_adaptive_mesh(mesh, outline, .5, new_outline=_target(), max_added_elements=count-1)
         self.assert_unchanged(mesh, snapshot)
         result = self.run_layer(mesh, outline, new_outline=_target(), max_added_elements=count)
         self.assertEqual(result.diagnostics['added_elements'], count)
@@ -275,7 +275,7 @@ class NewOutlineTests(unittest.TestCase):
         snapshot = self._snapshot(mesh)
         with patch.object(_mesher, '_validate_patch', side_effect=QuadLayerError('injected failure')):
             with self.assertRaisesRegex(QuadLayerError, 'injected failure'):
-                extend_quad_layer(mesh, outline, .5, new_outline=_target())
+                generate_layer_adaptive_mesh(mesh, outline, .5, new_outline=_target())
         self.assert_unchanged(mesh, snapshot)
 
 

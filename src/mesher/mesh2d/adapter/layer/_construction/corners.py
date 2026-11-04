@@ -5,10 +5,9 @@ import heapq
 
 import numpy as np
 
-from ._limits import (ElementLimitExceeded, bounded_outer_counts,
-                      outer_segment_counts)
-from ._unit_plan import SectionPatch, assemble_section
-from ._patch import _four_sided_units
+from .._limits import ElementLimitExceeded, bounded_outer_counts, outer_segment_counts
+from .units import SectionPatch, assemble_section
+from .patch import _four_sided_units
 
 
 def _join(*chains: np.ndarray) -> np.ndarray:
@@ -16,14 +15,16 @@ def _join(*chains: np.ndarray) -> np.ndarray:
 
 
 def _outer_candidates(outer, source_segments, left_count, right_count, h, tol,
-                      max_added_elements=None, limit_errors=None):
+                      max_added_elements=None, limit_errors=None, *,
+                      fixed_outer_boundary=False):
     """Two nearest parity-compatible perimeter counts, retaining every anchor."""
     lengths = np.linalg.norm(np.diff(outer[:, :2], axis=0), axis=1)
     if np.any(lengths <= tol):
         raise ValueError("corner outer boundary contains a zero-length interval")
     minimum = len(lengths)
     counts = outer_segment_counts(source_segments, left_count, right_count,
-                                  float(lengths.sum()), h, minimum)
+                                  float(lengths.sum()), h, minimum,
+                                  fixed_outer_boundary=fixed_outer_boundary)
     counts, rejected = bounded_outer_counts(
         counts, source_segments, left_count, right_count, max_added_elements)
     if rejected is not None:
@@ -33,6 +34,10 @@ def _outer_candidates(outer, source_segments, left_count, right_count, h, tol,
     if not len(lengths):
         if counts:
             yield outer.copy(), 0.0
+        return
+    if fixed_outer_boundary:
+        if counts:
+            yield outer.copy(), float(np.mean((lengths / h - 1) ** 2))
         return
     candidates = []
     for total in counts:
@@ -83,7 +88,8 @@ def _inner_sides(source_chains, outer, left, right, split, kind):
 def plan_corner(kind: str, source_chains: tuple[np.ndarray, ...], outer: np.ndarray,
                 left: np.ndarray, right: np.ndarray, corner_front: np.ndarray,
                 h: float, tol: float, *,
-                max_added_elements: int | None = None) -> list[SectionPatch]:
+                max_added_elements: int | None = None,
+                fixed_outer_boundary: bool = False) -> list[SectionPatch]:
     """Produce feasible concrete patches for one fixed seam-state pair."""
     if kind not in {"OUTER", "INNER", "INNER_LEFT", "INNER_RIGHT", "INNER_BOTH"}:
         raise ValueError("unknown corner section kind")
@@ -92,7 +98,8 @@ def plan_corner(kind: str, source_chains: tuple[np.ndarray, ...], outer: np.ndar
     results = []
     limit_errors = []
     for sampled, error in _outer_candidates(outer, count, len(left), len(right), h, tol,
-                                            max_added_elements, limit_errors):
+                                            max_added_elements, limit_errors,
+                                            fixed_outer_boundary=fixed_outer_boundary):
         matches = np.flatnonzero(np.linalg.norm(sampled[:, :2] - corner_front[:2], axis=1) <= tol)
         if len(matches) != 1:
             raise ValueError("corner front point must remain a mandatory anchor")

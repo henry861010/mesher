@@ -107,7 +107,7 @@ both endpoints on each edge. The tolerance is an angle in radians. It orients
 exteriors clockwise and holes counterclockwise so existing mesh stays on the
 right, including for clockwise input elements. Each loop starts at its lowest
 directed corner edge. For near-axis Quad4 meshes, pass one loop directly to
-`extend_quad_layer(mesh, outlines_by_edge[0], element_size)`.
+`generate_layer_adaptive_mesh(mesh, outlines_by_edge[0], element_size)`.
 
 Operations use batched masks, spatial-cell grouping, and index lookups without a
 global node-pair distance matrix or cross-call caches. Run the 25k/50k/100k
@@ -166,7 +166,7 @@ The case collection includes a reproducible 100,000-element performance comparis
 
 ## Rectilinear grids with holes
 
-`generate_rectilinear_mesh_with_holes()` meshes a simple axis-aligned outer
+`generate_rectilinear_mesh_optimal()` meshes a simple axis-aligned outer
 polygon minus separated, strictly interior holes. Both outer and hole polygons
 may be concave. Its normal local strategy stops finite horizontal/vertical
 patterns and corner rays at the first geometry boundary, allowing different
@@ -175,9 +175,9 @@ maximum edge size, and at most one extra cut per hole makes every boundary node
 count even.
 
 ```python
-from mesher.mesh2d.generators import generate_rectilinear_mesh_with_holes
+from mesher.mesh2d.generators import generate_rectilinear_mesh_optimal
 
-result = generate_rectilinear_mesh_with_holes(
+result = generate_rectilinear_mesh_optimal(
     2.0,
     [[0, 0], [12, 0], [12, 10], [0, 10]],
     holes=[[[4, 3], [8, 3], [8, 7], [4, 7]]],
@@ -206,12 +206,65 @@ See the [algorithm and input contract](docs/holed-rectilinear.md), or run
 to compare local meshing with full coordinate projection. Add
 `--no-show --plot output.png --diagnostics output.json` to save the comparison.
 
+## Full adaptive mesh
+
+`generate_full_adaptive_mesh()` completes a global orthogonal domain around
+existing focus meshes. Every exterior grows outward and every internal hole
+grows inward once per supplied size. Multiple disconnected focus regions and
+islands nested inside holes are supported. The remaining exterior and hole
+cores are filled with `generate_rectilinear_mesh_optimal()` using the last size.
+
+```python
+from mesher.mesh2d.adapter import generate_full_adaptive_mesh
+from mesher.mesh2d.generators import generate_rectilinear_mesh
+
+mesh = generate_rectilinear_mesh(1.0, [0, 4], [0, 4])
+result = generate_full_adaptive_mesh(
+    mesh,
+    [1.0, 2.0],
+    outer_outline=[[-8, -8], [12, -8], [12, 12], [-8, 12]],
+    expand_ratio=1.5,
+    pattern_lines=[],
+)
+assert result.mesh is mesh
+final_outer_node_ids = result.outer_outline  # Clockwise, implicit closure.
+first_boundary_last_layer = result.layer_outlines[-1][0]  # Logical edge chains.
+```
+
+Sizes must be a nonempty sequence of finite positive numbers; repeated and
+decreasing values retain their input order. The global generator fixes the
+complete interface nodes **before** the final transition layer is built.
+That layer uses exactly those nodes and edges. Original coordinates, node IDs,
+and elements remain unchanged; only matching interface nodes are shared.
+All calls are staged on a private mesh, with one final commit. Any failure
+leaves the caller's arrays unchanged.
+
+Input cells must be strictly convex CCW Quad4s with Z=0. Each source boundary
+must have an even number of segments, since a preserved odd cycle cannot bound
+a completely filled Quad4 mesh. Source outlines follow the single-layer
+near-axis constraints. The global outer outline and finite patterns must be
+axis aligned. Patterns also retain the single-layer restrictions below.
+Touching or overlapping regions, boundary crossings, premature hole collapse,
+and infeasible fixed interfaces raise `QuadLayerError`; no sizes or layer
+counts are silently adjusted. The existing global coordinate tolerance of
+`1e-3` and each underlying call's one-million-element limit apply independently.
+
+`FullAdaptiveMeshResult.layer_outlines` is indexed by layer, original boundary,
+logical edge, then node ID. Boundary order follows the initial
+`EditorMesh2D.outlines_by_edge()` result. `diagnostics["boundaries"]` records
+the exterior/hole kind and parent index; `diagnostics["layers"]` and
+`diagnostics["global_regions"]` retain construction diagnostics. Error and
+diagnostic indices are zero based.
+
+Run `PYTHONPATH=src venv/bin/python examples/full_adaptive_mesh.py --no-show`
+for a multiple-focus example with an internal hole; omit `--no-show` to view it.
+
 ## Single-layer direct Quad4 extension
 
 ```python
 import numpy as np
 from mesher import Mesh2D
-from mesher.mesh2d.adapter import extend_quad_layer
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
 
 mesh = Mesh2D(
     [[0, 0], [4, 0], [4, 3], [0, 3]],
@@ -219,7 +272,7 @@ mesh = Mesh2D(
 )
 outline = [[0, 3], [3, 2], [2, 1], [1, 0]]  # clockwise exterior
 patterns = [[[0, 3.4], [4, 3.4]]]             # finite parallel guide
-result = extend_quad_layer(
+result = generate_layer_adaptive_mesh(
     mesh, outline, element_size=0.8,
     pattern_lines=patterns, expand_ratio=1.0,
 )
@@ -228,7 +281,7 @@ assert result.mesh is mesh
 ```
 
 The adapter requires at least one existing planar Quad4 and adds strictly convex,
-CCW Quad4 cells. Both `extend_quad_layer()` and `plan_quad_sections()` reject an
+CCW Quad4 cells. Both `generate_layer_adaptive_mesh()` and `plan_quad_sections()` reject an
 empty element array with `QuadLayerError(code="empty_mesh")`; they do not initialize
 a layer from boundary nodes alone. Existing coordinates, node IDs, elements, and
 source segments stay unchanged. The complete layer is validated before an atomic commit; errors
@@ -258,7 +311,7 @@ new_outline = np.array([
     [1.35, 3.6], [4.8, 3.6], [4.8, 0.65], [4.8, -0.4],
     [2.15, -0.4], [-0.2, -0.4], [-0.2, 1.2], [-0.2, 3.6],
 ])
-result = extend_quad_layer(mesh, outline, 0.5, new_outline=new_outline)
+result = generate_layer_adaptive_mesh(mesh, outline, 0.5, new_outline=new_outline)
 ```
 
 The target must be a simple axis-aligned loop. After ignoring intermediate
@@ -358,7 +411,7 @@ the offending quantity, and the normalized limit. There is no override for this
 range. Within it, pattern intersections and coverage use local axis coordinates
 so extending a guide's remote tails does not reduce precision near the mesh.
 
-`extend_quad_layer()` performs both levels internally in one call:
+`generate_layer_adaptive_mesh()` performs both levels internally in one call:
 
 1. **Sections describe geometry.** Determine `OUTER`, `INNER`, `INNER_LEFT`,
    `INNER_RIGHT`, and `INNER_BOTH` corners first. Their reserved ranges and
@@ -387,7 +440,7 @@ that every possible quadrangulation is infeasible.
 
 `plan_quad_sections()` is an optional read-only preview of the section level,
 importable from `mesher.mesh2d.adapter`. It is not a required step before
-`extend_quad_layer()`. It accepts the same `new_outline` geometry argument.
+`generate_layer_adaptive_mesh()`. It accepts the same `new_outline` geometry argument.
 Its `QuadSectionPlan` contains `sections`, `seams`, `front`, and `edge_expansion`.
 For a supplied target, `front` contains its logical corners and section outer
 boundaries retain its intermediate points. `edge_expansion` reports the actual
@@ -402,7 +455,7 @@ and `original_node_count` / `original_element_count`. Section source IDs then
 refer to that snapshot, rather than only the caller's input arrays. Without
 repair, `prepared_source` is `None` and the original ID semantics are unchanged.
 This preview verifies geometric
-partitioning; full unit feasibility is determined during `extend_quad_layer()`.
+partitioning; full unit feasibility is determined during `generate_layer_adaptive_mesh()`.
 It has no element-budget argument and does not guarantee that construction fits
 within the budget of a later extension call.
 `result.diagnostics` records section details, seam states, units and their global
@@ -452,7 +505,7 @@ collisions, or topology changes can make a layer infeasible. `QuadLayerError`
 and `UnmeshableDirectQuadLayout` include the failure context. Expansion is fixed:
 there is no thin-collar retry or automatic shrinking on failure.
 
-`extend_quad_layer(..., max_added_elements=1_000_000)` limits the number of new
+`generate_layer_adaptive_mesh(..., max_added_elements=1_000_000)` limits the number of new
 Quad4 elements in this call, not the existing mesh size or the sum of candidate
 trials. Slot repair, corner repair, and expansion share this total budget;
 expansion uses the budget remaining after repair. The argument accepts positive
@@ -497,7 +550,7 @@ and requires the median full extension call to be below one second by default:
 `venv/bin/python benchmarks/mesh2d/benchmark_adapter_layer.py`.
 
 The implementation lives in `src/mesher/mesh2d/adapter/`; files in `examples/`
-only demonstrate its public API. Examples call `extend_quad_layer()` once per
+only demonstrate its public API. Examples call `generate_layer_adaptive_mesh()` once per
 case and draw the returned mesh or its section, unit, and element diagnostics
 without planning or generating another mesh. The adapter plot draws slot and
 corner fills separately, including all repair cells and their new boundaries.
@@ -517,7 +570,7 @@ counts, global element ranges, quality, and timing from the same run as the PNG.
 [The test2 regression example](examples/test2.py) uses source spacing 5 and
 successive expansion calls.
 Run `python examples/test2.py` to open the PyVista viewer. Adjust
-`repair_max_element_size` directly in its `extend_quad_layer()` call to change
+`repair_max_element_size` directly in its `generate_layer_adaptive_mesh()` call to change
 the repair interior target cap. The example does not save output files or
 print diagnostics. PyVista is provided by the optional `visualization` dependency.
 

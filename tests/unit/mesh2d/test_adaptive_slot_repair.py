@@ -5,8 +5,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from mesher.mesh2d.adapter import QuadLayerError, extend_quad_layer, plan_quad_sections
-from mesher.mesh2d.adapter.layer import _mesher, _repair, _repair_adaptive, _repair_patch
+from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
+from mesher.mesh2d.adapter.layer import _mesher
+from mesher.mesh2d.adapter.layer._repair import slots as _repair, adaptive as _repair_adaptive, patch as _repair_patch
 from mesher.mesh2d.adapter.layer._limits import ElementLimitExceeded
 from tests.unit.mesh2d import test_extend_quad_layer as layer_checks
 from tests.unit.mesh2d.test_slot_repair import _blocks, _c_slot
@@ -58,7 +59,7 @@ class AdaptiveSlotRepairTests(unittest.TestCase):
     def test_test2_fine_mouth_and_adaptive_interior_improve_quality(self):
         mesh, outline = _test2()
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
-        result = extend_quad_layer(mesh, outline, 50., expand_ratio=1.5,
+        result = generate_layer_adaptive_mesh(mesh, outline, 50., expand_ratio=1.5,
                                    pattern_lines=_TEST2_PATTERNS)
         self.assert_layer(mesh, outline, result, old_nodes, old_elements)
         repairs = result.diagnostics['slot_repairs']
@@ -99,7 +100,7 @@ class AdaptiveSlotRepairTests(unittest.TestCase):
                 self.assertFalse(plan.prepared_source.nodes.flags.writeable)
                 self.assertFalse(plan.prepared_source.elements.flags.writeable)
                 if cap == 10.:
-                    result = extend_quad_layer(mesh, outline, 50., repair_max_element_size=cap)
+                    result = generate_layer_adaptive_mesh(mesh, outline, 50., repair_max_element_size=cap)
                     source = plan.prepared_source
                     np.testing.assert_array_equal(mesh.nodes[:len(source.nodes)], source.nodes)
                     np.testing.assert_array_equal(mesh.elements[:len(source.elements)], source.elements)
@@ -109,7 +110,7 @@ class AdaptiveSlotRepairTests(unittest.TestCase):
     def test_invalid_cap_is_rejected_even_when_slot_repair_is_disabled(self):
         invalid = (0., -1., float('nan'), float('inf'), -float('inf'), True,
                    np.bool_(False), '1.0', np.array([1.]), np.array(1.), 1 + 1j)
-        for api in (plan_quad_sections, extend_quad_layer):
+        for api in (plan_quad_sections, generate_layer_adaptive_mesh):
             for cap in invalid:
                 with self.subTest(api=api.__name__, cap=repr(cap)):
                     mesh, outline = _c_slot()
@@ -122,7 +123,7 @@ class AdaptiveSlotRepairTests(unittest.TestCase):
                     self.assert_unchanged(mesh, before)
 
     def test_cap_below_local_boundary_size_is_atomic(self):
-        for api in (plan_quad_sections, extend_quad_layer):
+        for api in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(api=api.__name__):
                 mesh, outline = _c_slot()
                 before = self._snapshot(mesh)
@@ -160,12 +161,12 @@ class AdaptiveSlotRepairTests(unittest.TestCase):
             with self.subTest(case=index):
                 mesh, outline = fixture()
                 old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
-                result = extend_quad_layer(mesh, outline, .5)
+                result = generate_layer_adaptive_mesh(mesh, outline, .5)
                 self.assert_layer(mesh, outline, result, old_nodes, old_elements)
                 self.assertEqual(len(result.diagnostics['slot_repairs']), 1)
 
     def test_repair_runs_once_and_post_repair_topology_failure_is_atomic(self):
-        for api in (plan_quad_sections, extend_quad_layer):
+        for api in (plan_quad_sections, generate_layer_adaptive_mesh):
             for fail in (False, True):
                 with self.subTest(api=api.__name__, fail=fail):
                     mesh, outline = _c_slot()
@@ -193,18 +194,18 @@ class AdaptiveSlotRepairTests(unittest.TestCase):
 
     def test_adaptive_repair_and_expansion_share_exact_element_budget(self):
         mesh, outline = _test2()
-        result = extend_quad_layer(mesh, outline, 50.)
+        result = generate_layer_adaptive_mesh(mesh, outline, 50.)
         total = result.diagnostics['added_elements']
         repair = result.diagnostics['repair_added_elements']
         mesh, outline = _test2()
-        exact = extend_quad_layer(mesh, outline, 50., max_added_elements=total)
+        exact = generate_layer_adaptive_mesh(mesh, outline, 50., max_added_elements=total)
         self.assertEqual(exact.diagnostics['added_elements'], total)
         for limit in (total - 1, repair - 1):
             with self.subTest(limit=limit):
                 mesh, outline = _test2()
                 before = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError) as caught:
-                    extend_quad_layer(mesh, outline, 50., max_added_elements=limit)
+                    generate_layer_adaptive_mesh(mesh, outline, 50., max_added_elements=limit)
                 self.assertEqual(caught.exception.code, 'element_limit_exceeded')
                 self.assertGreater(caught.exception.context['required_elements'], limit)
                 self.assert_unchanged(mesh, before)

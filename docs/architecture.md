@@ -41,8 +41,75 @@ retain their existing private helper imports. Editor and utility tests mirror
 these packages under `tests/unit/mesh2d/`, and editor performance checks live in
 `benchmarks/mesh2d/`.
 
-The single-layer implementation lives in `mesh2d.adapter`. Its public
-`extend_quad_layer()` entry point performs geometry planning and mesh construction
+The single-layer implementation lives in `mesh2d.adapter`. Its files are grouped
+by responsibility, with explicit public exports in package `__init__.py` files:
+
+```text
+mesh2d/adapter/
+├── __init__.py          # Public layer APIs and result/error types
+├── visualization.py     # Optional plotting and diagnostic export
+├── unit/                # Reusable low-level Quad4 templates
+└── layer/
+    ├── __init__.py      # Same public layer API
+    ├── _mesher.py       # Pipeline orchestration and atomic commit
+    ├── _types.py        # Results, section plans, and exceptions
+    ├── _planning/
+    │   ├── source.py    # Input validation and coordinate normalization
+    │   ├── front.py     # Automatic and explicit expansion fronts
+    │   └── sections.py  # Geometric sections and seams
+    ├── _construction/
+    │   ├── units.py     # Unit plans, caching, and local assembly
+    │   ├── line.py      # LINE section construction
+    │   ├── corners.py   # Corner section construction
+    │   ├── patch.py     # Four-sided patch construction
+    │   └── sections.py  # Cyclic section solver and global assembly
+    ├── _repair/
+    │   ├── slots.py     # Slot/corner detection and staged source repair
+    │   ├── patch.py     # Repair boundaries, patterns, and face filling
+    │   └── adaptive.py  # Inward coarsening and core filling
+    ├── _geometry.py     # Shared geometric predicates and spatial index
+    ├── _patterns.py     # Shared axis-pattern operations
+    ├── _registry.py     # Node identity and point lookup
+    ├── _limits.py       # Element budgets and count-only preflight
+    └── _validation.py   # Patch topology and geometry validation
+```
+
+`_mesher` coordinates planning, repair, construction, and final validation.
+Planning depends on shared geometry and types, without importing repair or
+construction. Repair may reuse construction primitives; construction never
+imports repair or the pipeline. Unit templates depend on the mesh model and
+other unit templates, without importing the layer implementation. Shared
+geometry, patterns, types, registries, limits, and validators remain directly
+under `layer/` because multiple stages use them.
+
+The adapter also exports `generate_full_adaptive_mesh` and
+`FullAdaptiveMeshResult`. Its private `_full` orchestration composes the layer
+and rectilinear generators; `_full_geometry` classifies all original boundaries
+into an alternating exterior/hole containment tree. Every boundary receives the
+requested layers. The remaining domains are the global exterior and each hole
+core, excluding their immediate focus children. They are meshed independently.
+Global meshes determine final interface nodes before the last adaptive layers;
+a private fixed-boundary layer mode preserves that complete interface. Explicit
+node mappings join those interfaces without renumbering source data, and final
+topology/geometry validation precedes one caller commit. Errors are atomic
+across the complete operation. This orchestration remains NumPy-only and does
+not import Mesh25D or process-flow modules.
+
+Use `mesher.mesh2d.adapter` (or `mesher.mesh2d.adapter.layer`) for the layer API,
+`mesher.mesh2d.adapter.unit` for unit builders, and
+`mesher.mesh2d.adapter.visualization` for plotting and diagnostic export.
+Modules and packages prefixed with `_` are implementation details; their paths
+may change. Importing the adapter does not load optional plotting libraries.
+
+The historical `old/` implementation and empty `comp/` placeholders are preserved
+in [the adapter archive](../archive/mesh2d_adapter/README.md), outside `src/` and
+the installed package. They are reference material, not supported runtime code.
+This follows Python's [package/subpackage model](https://docs.python.org/3/tutorial/modules.html#packages)
+and the [PyPA src-layout separation](https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/);
+the responsibility groups above are specific to this project.
+
+The public
+`generate_layer_adaptive_mesh()` entry point performs geometry planning and mesh construction
 in one call; callers do not coordinate those internal stages. The optional
 `plan_quad_sections()` API provides a read-only geometry preview: it calculates
 edge expansion and the new front, reserves corner sections, then allocates the
@@ -90,7 +157,7 @@ planning or slot detection. Core failure and topology changes after repair
 propagate as atomic failures. Repair targets never replace the requested
 outer expansion size.
 
-`extend_quad_layer()` uses the same internal section planner. Section builders
+`generate_layer_adaptive_mesh()` uses the same internal section planner. Section builders
 produce and isolate-test unit plans for candidate seam node counts; a cyclic
 solver chooses compatible states around the entire layer. Neighboring sections
 share seam node IDs. Unit builders generate strictly convex Quad4 cells, and

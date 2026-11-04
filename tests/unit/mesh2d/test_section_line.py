@@ -6,12 +6,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from mesher.mesh2d.adapter.layer._line import (
-    outer_count_candidates,
-    plan_line,
-    sample_outer,
-)
-from mesher.mesh2d.adapter.layer._unit_plan import build_unit_patch, quality_score
+from mesher.mesh2d.adapter.layer._construction.line import outer_count_candidates, plan_line, sample_outer
+from mesher.mesh2d.adapter.layer._construction.units import build_unit_patch, quality_score
 from mesher import Mesh2D
 from mesher.mesh2d.adapter.unit import build_unit_1_x_y_z
 from mesher.mesh2d.adapter.unit.build_unit_1_1_1_x import (
@@ -19,7 +15,7 @@ from mesher.mesh2d.adapter.unit.build_unit_1_1_1_x import (
     _validate_cyclic_boundary,
 )
 from mesher.mesh2d.adapter.unit.build_unit_1_1_x_y import _validate_patch
-import mesher.mesh2d.adapter.layer._line as line_module
+import mesher.mesh2d.adapter.layer._construction.line as line_module
 
 
 def _fixture(n=20, width=100.0, height=50.0, left_nodes=2, right_nodes=2):

@@ -5,11 +5,11 @@ from unittest.mock import patch
 
 import numpy as np
 
-from mesher.mesh2d.adapter import (QuadLayerError, extend_quad_layer,
+from mesher.mesh2d.adapter import (QuadLayerError, generate_layer_adaptive_mesh,
                                    plan_quad_sections)
 from mesher.mesh2d.adapter.layer._geometry import area, collinear_interval, intervals_cover
 from mesher.mesh2d.editor import EditorMesh2D
-from mesher.mesh2d.adapter.layer import _line
+from mesher.mesh2d.adapter.layer._construction import line as _line
 from tests.unit.mesh2d.test_quad_sections import _cells
 
 
@@ -25,6 +25,16 @@ class SectionIntegrationTests(unittest.TestCase):
                           if x < 1 or x >= 3 or y < 1 or y >= 3})
         outline = next(loop for loop in EditorMesh2D().outlines_by_edge(mesh)
                        if area(np.vstack([mesh.nodes[edge[:-1], :2] for edge in loop])) > 0.)
+        return mesh, outline
+
+    @staticmethod
+    def _nonuniform_rectangle(rotation=0):
+        xs = np.r_[0., 500., np.arange(1000., 1101., 5.), 1600., 2100.]
+        mesh, outline = _cells({(x, y) for x in range(len(xs) - 1) for y in range(2)})
+        mesh.nodes[:, 0] = xs[mesh.nodes[:, 0].astype(int)]
+        mesh.nodes[:, 1] *= 500.
+        for _ in range(rotation):
+            mesh.nodes[:, :2] = mesh.nodes[:, [1, 0]] * [-1, 1]
         return mesh, outline
 
     def assert_pattern_covered(self, mesh, pattern):
@@ -65,7 +75,7 @@ class SectionIntegrationTests(unittest.TestCase):
                 mesh, outline = self._l_shape()
                 before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
                 plan = plan_quad_sections(mesh, outline, 1.6, pattern_lines=patterns)
-                result = extend_quad_layer(mesh, outline, 1.6, pattern_lines=patterns)
+                result = generate_layer_adaptive_mesh(mesh, outline, 1.6, pattern_lines=patterns)
                 self.assertEqual(result.diagnostics['sections'], {'OUTER': 5, 'LINE': 6, expected: 1})
                 self.assertEqual([section.kind for section in plan.sections],
                                  [section['kind'] for section in result.diagnostics['section_details']])
@@ -125,8 +135,62 @@ class SectionIntegrationTests(unittest.TestCase):
         mesh, outline = _cells({(x, y) for x in range(4) for y in range(3)})
         before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
         with self.assertRaises(QuadLayerError) as caught:
-            extend_quad_layer(mesh, outline, .5, pattern_lines=[[[1., 3.], [1., 3.25]]])
+            generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=[[[1., 3.], [1., 3.25]]])
         self.assertEqual(caught.exception.code, 'unsupported_pattern_layout')
+        np.testing.assert_array_equal(mesh.nodes, before_nodes)
+        np.testing.assert_array_equal(mesh.elements, before_elements)
+
+    def test_local_fine_run_survives_public_expansion_in_all_directions(self):
+        for rotation in range(4):
+            with self.subTest(rotation=rotation):
+                mesh, outline = self._nonuniform_rectangle(rotation)
+                before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
+                plan = plan_quad_sections(mesh, outline, 500.)
+                np.testing.assert_array_equal(mesh.nodes, before_nodes)
+                np.testing.assert_array_equal(mesh.elements, before_elements)
+                self.assertFalse(plan.front.flags.writeable)
+                result = generate_layer_adaptive_mesh(mesh, outline, 500.)
+                self.assert_built_partition(mesh, before_nodes, before_elements, result)
+                lines = [detail for detail in result.diagnostics['section_details']
+                         if detail['kind'] == 'LINE' and len(detail['source_chains'][0]) == 25]
+                self.assertEqual(len(lines), 2)
+                for detail in lines:
+                    points = mesh.nodes[detail['outer_ids'], :2].copy()
+                    for _ in range(rotation):
+                        points = points[:, [1, 0]] * [1, -1]
+                    values = np.sort(points[:, 0])
+                    for endpoint in (1000., 1100.):
+                        self.assertEqual(np.count_nonzero(np.isclose(values, endpoint, atol=1e-8,
+                                                                    rtol=0.)), 1)
+                    dense = values[(values >= 1000. - 1e-8) & (values <= 1100. + 1e-8)]
+                    self.assertLessEqual(np.max(np.diff(dense)), 10. + 1e-8)
+
+    def test_local_fine_run_preserves_explicit_outer_anchor(self):
+        mesh, outline = self._nonuniform_rectangle()
+        before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
+        target = np.array([[-500., -500.], [-500., 1500.], [1007.5, 1500.],
+                           [2600., 1500.], [2600., -500.]])
+        original_target = target.copy()
+        result = generate_layer_adaptive_mesh(mesh, outline, 500., new_outline=target)
+        self.assert_built_partition(mesh, before_nodes, before_elements, result)
+        np.testing.assert_array_equal(target, original_target)
+        front = mesh.nodes[np.unique(np.concatenate(result.outline)), :2]
+        for point in [*target, [1000., 1500.], [1100., 1500.]]:
+            self.assertEqual(np.count_nonzero(np.linalg.norm(front - point, axis=1) < 1e-8), 1)
+
+    def test_local_fine_run_obeys_exact_budget_and_rejects_atomically(self):
+        baseline, outline = self._nonuniform_rectangle()
+        count = generate_layer_adaptive_mesh(baseline, outline, 500.).diagnostics['added_elements']
+        mesh, outline = self._nonuniform_rectangle()
+        before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
+        result = generate_layer_adaptive_mesh(mesh, outline, 500., max_added_elements=count)
+        self.assertEqual(result.diagnostics['added_elements'], count)
+        self.assert_built_partition(mesh, before_nodes, before_elements, result)
+        mesh, outline = self._nonuniform_rectangle()
+        before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
+        with self.assertRaises(QuadLayerError) as caught:
+            generate_layer_adaptive_mesh(mesh, outline, 500., max_added_elements=count - 1)
+        self.assertEqual(caught.exception.code, 'element_limit_exceeded')
         np.testing.assert_array_equal(mesh.nodes, before_nodes)
         np.testing.assert_array_equal(mesh.elements, before_elements)
 
@@ -134,7 +198,7 @@ class SectionIntegrationTests(unittest.TestCase):
         mesh, outline = _cells({(x, y) for x in range(4) for y in range(3)})
         before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
         with patch.object(_line, "build_unit_patch", wraps=_line.build_unit_patch) as calls:
-            result = extend_quad_layer(mesh, outline, .5)
+            result = generate_layer_adaptive_mesh(mesh, outline, .5)
         diagnostics = result.diagnostics
         lines = [detail for detail in diagnostics["section_details"] if detail["kind"] == "LINE"]
         self.assertEqual(diagnostics["line_planner"], "outer_first")
@@ -150,7 +214,7 @@ class SectionIntegrationTests(unittest.TestCase):
         before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
         with patch.object(_line, "build_unit_patch", side_effect=ValueError("invalid unit")) as calls:
             with self.assertRaises(QuadLayerError) as caught:
-                extend_quad_layer(mesh, outline, .5)
+                generate_layer_adaptive_mesh(mesh, outline, .5)
         self.assertEqual(caught.exception.code, "unmeshable_section_layout")
         self.assertEqual(caught.exception.context["stage"], "section_builder")
         self.assertEqual(caught.exception.context["line_planner"], "outer_first")
@@ -165,7 +229,7 @@ class SectionIntegrationTests(unittest.TestCase):
                     [[2, 3], [2, 2.4]], [[1, 2], [1.6, 2]]]
         before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
         plan = plan_quad_sections(mesh, outline, .6, pattern_lines=patterns)
-        result = extend_quad_layer(mesh, outline, .6, pattern_lines=patterns)
+        result = generate_layer_adaptive_mesh(mesh, outline, .6, pattern_lines=patterns)
         self.assertEqual(plan.diagnostics['sections'], {'INNER_BOTH': 4})
         self.assertEqual(result.diagnostics['sections'], {'INNER_BOTH': 4})
         self.assertEqual(len(result.diagnostics['seam_states']), 4)
@@ -187,7 +251,7 @@ class SectionIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(locked), 1)
                 self.assertEqual(len(locked[0].points), len(levels))
                 self.assertEqual(locked[0].pattern_ids, tuple(range(len(patterns))))
-                result = extend_quad_layer(mesh, outline, .5, pattern_lines=patterns)
+                result = generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
                 state = next(state for state in result.diagnostics['seam_states']
                              if state['seam_id'] == locked[0].id)
                 self.assertIn(state['node_count'], (len(levels), len(levels) + 1))
@@ -205,7 +269,7 @@ class SectionIntegrationTests(unittest.TestCase):
         locked = [seam for seam in plan.seams if seam.pattern_ids]
         self.assertEqual(len(locked), 1)
         self.assertEqual(locked[0].pattern_ids, (0, 1))
-        result = extend_quad_layer(mesh, outline, .5, pattern_lines=patterns)
+        result = generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
         owners = [section for section in result.diagnostics['section_details']
                   if locked[0].id in (section['left_seam'], section['right_seam'])]
         self.assertEqual(len(owners), 2)
@@ -217,7 +281,7 @@ class SectionIntegrationTests(unittest.TestCase):
                 mesh, outline = self._small_hole()
                 before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
                 with self.assertRaises(QuadLayerError) as caught:
-                    extend_quad_layer(mesh, outline, h)
+                    generate_layer_adaptive_mesh(mesh, outline, h)
                 self.assertEqual(caught.exception.code, code)
                 if code == 'unmeshable_section_layout':
                     self.assertEqual(caught.exception.context['stage'], 'section_partition')

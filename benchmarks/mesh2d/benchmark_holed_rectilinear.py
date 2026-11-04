@@ -85,7 +85,7 @@ def _worker(case, count):
     startup_peak = _peak_mib()
     outer, holes, target, expected_elements = _fixture(case, count, np)
     started = perf_counter()
-    result = module.generate_rectilinear_mesh_with_holes(target, outer, holes=holes)
+    result = module.generate_rectilinear_mesh_optimal(target, outer, holes=holes)
     seconds = perf_counter() - started
     peak = _peak_mib()
 

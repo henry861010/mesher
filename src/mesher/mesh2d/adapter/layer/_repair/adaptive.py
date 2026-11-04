@@ -9,11 +9,11 @@ from math import ceil
 
 import numpy as np
 
-from ..unit.build_unit_1_1_x_y import _validate_patch
-from ._geometry import area, cross
-from ._limits import ElementLimitExceeded, check_element_limit
-from ._line import _plan_count
-from ._unit_plan import CoordinatePool, UnitPlan, merge_unit_plans, quality_score
+from ...unit.build_unit_1_1_x_y import _validate_patch
+from .._geometry import area, cross
+from .._limits import ElementLimitExceeded, check_element_limit
+from .._construction.line import _plan_count
+from .._construction.units import CoordinatePool, UnitPlan, merge_unit_plans, quality_score
 
 
 def _logical_sides(boundary, tol):
