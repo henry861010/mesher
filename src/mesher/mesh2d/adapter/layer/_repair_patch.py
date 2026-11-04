@@ -12,7 +12,7 @@ from math import ceil, floor
 import numpy as np
 
 from ..unit.build_unit_1_1_x_y import _validate_patch
-from ._geometry import area, cross, on_segment, point_location, segment_contacts
+from ._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
 from ._limits import ElementLimitExceeded, check_element_limit
 from ._patch import _four_sided_units
 from ._patterns import AxisPattern, pattern_contacts
@@ -80,12 +80,14 @@ def _source_path(chains, tol, free_boundary=None):
         _fail("the repair boundary contains a zero-length segment")
     if abs(area(polygon)) <= tol * np.linalg.norm(np.ptp(polygon, axis=0)):
         _fail("the slot repair polygon has no usable area")
+    lower, upper = np.minimum(polygon, following), np.maximum(polygon, following)
+    index = BoxIndex(lower, upper, tol)
     for i, (a, b) in enumerate(zip(polygon, following)):
         adjacent = segment_contacts(a, b, b, polygon[(i + 2) % len(polygon)], tol)
         if len(adjacent) > 1 and np.linalg.norm(adjacent[-1] - adjacent[0]) > tol:
             _fail("the repair boundary doubles back along an adjacent segment")
-        for j in range(i + 2, len(polygon)):
-            if i == 0 and j == len(polygon) - 1:
+        for j in index.query(lower[i] - tol, upper[i] + tol):
+            if j <= i + 1 or (i == 0 and j == len(polygon) - 1):
                 continue
             if segment_contacts(a, b, polygon[j], polygon[(j + 1) % len(polygon)], tol):
                 _fail("the slot repair polygon intersects itself")
@@ -435,6 +437,12 @@ def build_repair_patch(source_chains, patterns, h, tol, *, max_added_elements=No
                                  code="invalid_input", parameter="repair_max_element_size",
                                  stage="input_validation")
         max_size = min(float(h), max(boundary_size, float(value)))
+    # Frozen source segments and mandatory free-boundary intervals cannot
+    # disappear. A Quad4 disk has even boundary B and Q = B/2 + I - 1;
+    # round an odd minimum B upward without assuming any interior nodes.
+    boundary_min = len(source) - 1 + len(free_boundary) - 1
+    check_element_limit((boundary_min + 1) // 2 - 1, max_added_elements,
+                        stage="slot_repair_count_preflight", count_kind="lower_bound")
     chords, anchors, pattern_ids = _pattern_geometry(source, patterns, tol, free_boundary)
     points, source_ids, mouth, faces, free, pattern_edges = _face_graph(
         source, chords, anchors, tol, free_boundary)

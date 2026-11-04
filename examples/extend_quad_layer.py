@@ -5,6 +5,7 @@ From the repository root::
     venv/bin/python examples/extend_quad_layer.py
     venv/bin/python examples/extend_quad_layer.py --case pattern
     venv/bin/python examples/extend_quad_layer.py --case hole
+    venv/bin/python examples/extend_quad_layer.py --case custom
     venv/bin/python examples/extend_quad_layer.py --no-show --plot output.png
     venv/bin/python examples/extend_quad_layer.py --no-show --diagnostics output.json
 
@@ -36,6 +37,7 @@ class Example:
     outline: list[list[int]]
     patterns: np.ndarray
     note: str
+    new_outline: np.ndarray | None = None
 
 
 def _cell_mesh(cells: set[tuple[int, int]], spacing: float):
@@ -74,6 +76,19 @@ def _exterior_outline(mesh: Mesh2D) -> list[list[int]]:
 
 def make_example(case: str) -> Example:
     """Editable inputs: source geometry, outline, and finite pattern guides."""
+    if case == "custom":
+        mesh, _ = _cell_mesh({(x, y) for x in range(8) for y in range(6)}, 0.5)
+        # A complete target polygon with asymmetric offsets and uneven anchors.
+        # Start halfway along its top edge; the final edge closes implicitly.
+        new_outline = np.asarray([
+            [1.35, 3.6], [4.8, 3.6], [4.8, 0.65], [4.8, -0.4],
+            [2.15, -0.4], [-0.2, -0.4], [-0.2, 1.2], [-0.2, 3.6],
+        ])
+        return Example("Rectangle / custom outline", mesh, _exterior_outline(mesh),
+                       np.empty((0, 2, 2)),
+                       "Pink circles mark the supplied points; target-size sampling adds the rest.",
+                       new_outline=new_outline)
+
     if case == "hole":
         mesh, ids = _cell_mesh({(x, y) for x in range(12) for y in range(12)
                                 if not (4 <= x < 8 and 4 <= y < 8)}, 0.25)
@@ -108,7 +123,7 @@ def make_example(case: str) -> Example:
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--case", choices=("all", "basic", "pattern", "hole"), default="all")
+    parser.add_argument("--case", choices=("all", "basic", "pattern", "hole", "custom"), default="all")
     parser.add_argument("--element-size", type=float, default=0.3)
     parser.add_argument("--expand-ratio", type=float, default=1.5)
     parser.add_argument("--plot", type=Path,
@@ -121,7 +136,7 @@ def main():
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    cases = ("basic", "pattern", "hole") if args.case == "all" else (args.case,)
+    cases = ("basic", "pattern", "hole", "custom") if args.case == "all" else (args.case,)
     figure, axes = plt.subplots(len(cases), 3, squeeze=False,
                                 figsize=(16, 5.1 * len(cases)), layout="constrained")
     figure.suptitle("Single-layer Quad4 extension: sections → units → mesh\n"
@@ -133,9 +148,15 @@ def main():
         result = extend_quad_layer(
             example.mesh, example.outline, args.element_size,
             pattern_lines=example.patterns, expand_ratio=args.expand_ratio,
+            new_outline=example.new_outline,
         )
         plot_quad_layer(result, example.outline, pattern_lines=example.patterns,
                         name=example.name, axes=row)
+        if example.new_outline is not None:
+            row[2].scatter(*example.new_outline.T, s=60, facecolors="none",
+                           edgecolors="#c3346b", linewidths=1.7, zorder=8,
+                           label="Supplied outline points")
+            row[2].legend(loc="center", fontsize=8, framealpha=0.9)
         reports.append(diagnostic_report(result, name=example.name,
                                          element_size=args.element_size,
                                          expand_ratio=args.expand_ratio))

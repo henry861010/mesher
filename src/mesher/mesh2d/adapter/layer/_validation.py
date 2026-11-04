@@ -203,6 +203,14 @@ def validate_patch(mesh, nodes, quads, outline, data):
             if key in expected:
                 _failure("source and front boundary segments overlap")
             expected[key] = (int(b), int(a))
+    if "outline_anchors" in data:
+        front_points = nodes[np.unique(np.concatenate(outline)), :2]
+        anchor_index = BoxIndex(front_points, front_points, tol)
+        for i, point in enumerate(data["outline_anchors"]):
+            candidates = anchor_index.query(point - tol, point + tol)
+            if not np.any(np.linalg.norm(front_points[candidates] - point, axis=1) <= tol):
+                _failure("the new outline omitted a specified point",
+                         parameter="new_outline", point_index=i)
     for key, owners in incidence.items():
         if key in expected:
             if len(owners) != 1 or owners[0][1:] != expected[key]:

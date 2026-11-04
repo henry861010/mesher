@@ -384,6 +384,8 @@ def _validate_sections(sections, seams, data):
 def partition_sections(data) -> QuadSectionPlan:
     """Partition normalized prepared geometry without creating or moving nodes."""
     chords, anchors = _admit_patterns(data)
+    if "outline_anchors" in data:
+        anchors = np.vstack((data["outline_anchors"], anchors))
     registry = _Seams(data, anchors)
     corners = _make_corners(data, chords, registry)
     _share_repaired_endpoint_seams(data, corners, registry)

@@ -137,7 +137,7 @@ def _find_slots(data):
     if area(data["source"]) >= 0:
         return []
     chains, directions, tol = data["chains"], data["directions"], data["tol"]
-    expansion = data["expansion"]
+    supports = data["supports"]
     count = len(chains)
     slots = []
     for back in range(count):
@@ -150,12 +150,12 @@ def _find_slots(data):
         widths = _widths(chains[first], chains[last], tangent, across, tol)
         if widths is None or float(np.min(widths)) <= tol:
             continue
-        reach = float(expansion[first] + expansion[last])
-        if reach < float(np.min(widths)) - tol:
+        # Opposing cardinal normals give a single gap between the actual
+        # planned fronts. Near-axis walls must use the same extreme supports
+        # as expansion, rather than a pointwise translation of each old wall.
+        gap = -float(supports[first] + supports[last])
+        if gap > tol:
             continue
-        if reach < float(np.max(widths)) - tol:
-            _fail("only part of a slot would close in this expansion",
-                  reason="partial_slot_closure", stage="slot_detection", source_edges=(first, back, last))
         before, after = (first - 1) % count, (last + 1) % count
         if (float(cross(directions[before], directions[first])) >= 0
                 or float(cross(directions[last], directions[after])) >= 0):
@@ -263,7 +263,7 @@ def _free_boundary(candidate):
 
 
 def _validate_empty(candidate, mesh, data, edge_keys, edge_points, edge_index, cell_index):
-    """A cap may meet old topology only at its two existing endpoint IDs."""
+    """A repair boundary may meet old nodes only at its two endpoint IDs."""
     tol = data["tol"]
     boundary = _free_boundary(candidate)
     endpoint_ids = (int(candidate.source_ids[0]), int(candidate.source_ids[-1]))
@@ -279,14 +279,16 @@ def _validate_empty(candidate, mesh, data, edge_keys, edge_points, edge_index, c
                            for node, endpoint in zip(endpoint_ids, endpoints)):
                     _fail("a repair mouth crosses existing mesh or would create a hanging node",
                           reason="mouth_hits_existing_mesh")
-        if candidate.free_boundary is not None:
-            # Include isolated old nodes, which are absent from the edge index.
-            lower, upper = np.minimum(a, b) - tol, np.maximum(a, b) + tol
-            nearby = np.flatnonzero(np.all((mesh.nodes[:, :2] >= lower)
-                                           & (mesh.nodes[:, :2] <= upper), axis=1))
-            if any(int(node) not in endpoint_ids and on_segment(mesh.nodes[node, :2], a, b, tol)
-                   for node in nearby):
-                _fail("a corner cap meets an unrelated original node", reason="mouth_hits_existing_mesh")
+        # Slot mouths and corner caps share this rule. Isolated old nodes are
+        # absent from the edge index; equal coordinates do not grant ownership
+        # of a source endpoint with a different node ID.
+        lower, upper = np.minimum(a, b) - tol, np.maximum(a, b) + tol
+        nearby = np.flatnonzero(np.all((mesh.nodes[:, :2] >= lower)
+                                       & (mesh.nodes[:, :2] <= upper), axis=1))
+        for node in nearby:
+            if int(node) not in endpoint_ids and on_segment(mesh.nodes[node, :2], a, b, tol):
+                _fail("a repair boundary meets an unrelated original node",
+                      reason="mouth_hits_existing_mesh", node_id=int(node))
     for j in cell_index.query(candidate.polygon.min(axis=0), candidate.polygon.max(axis=0)):
         cell = mesh.nodes[mesh.elements[j], :2]
         if (point_location(cell.mean(axis=0), candidate.polygon, tol) == 1

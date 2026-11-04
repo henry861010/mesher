@@ -1,9 +1,8 @@
 """Planar predicates and spatial queries; these never create mesh elements."""
 from __future__ import annotations
 
-from collections import defaultdict
+from dataclasses import dataclass
 from fractions import Fraction
-from math import floor
 
 import numpy as np
 
@@ -17,46 +16,76 @@ def area(p):
     return float(np.sum(cross(p, np.roll(p, -1, axis=0))) * 0.5)
 
 
+@dataclass(frozen=True, slots=True)
+class _BoxNode:
+    lower: np.ndarray
+    upper: np.ndarray
+    ids: np.ndarray | None = None
+    left: _BoxNode | None = None
+    right: _BoxNode | None = None
+
+
 class BoxIndex:
-    """Static box grid with bounded storage for unusually long primitives."""
+    """Static, balanced AABB tree with each primitive stored in one leaf.
+
+    Local median splits keep distant components from crowding unrelated
+    geometry into one query bucket. Bounds include the constructor tolerance;
+    queries retain inclusive intersection and return ascending original IDs.
+    """
+    _LEAF_SIZE = 32
+
     def __init__(self, lower, upper, tol=0.0):
         self.lower = np.asarray(lower).reshape(-1, 2) - tol
         self.upper = np.asarray(upper).reshape(-1, 2) + tol
-        self.bins = defaultdict(list)
-        self.large = []
-        if not len(self.lower):
-            self.origin, self.step = np.zeros(2), np.ones(2)
-            return
-        self.origin = self.lower.min(axis=0)
-        extent = self.upper.max(axis=0) - self.origin
-        self.step = np.maximum(extent / max(1, int(np.sqrt(len(lower)))), 1e-15)
-        for i, (lo, hi) in enumerate(zip(self.lower, self.upper)):
-            bounds = self._bounds(lo, hi)
-            if (bounds[1] - bounds[0] + 1) * (bounds[3] - bounds[2] + 1) > 1024:
-                self.large.append(i)
-            else:
-                for x in range(bounds[0], bounds[1] + 1):
-                    for y in range(bounds[2], bounds[3] + 1):
-                        self.bins[x, y].append(i)
+        centers = .5 * self.lower + .5 * self.upper
+        self._root = (self._build(np.arange(len(self.lower)), centers)
+                      if len(self.lower) else None)
 
-    def _bounds(self, lo, hi):
-        a, b = (lo - self.origin) / self.step, (hi - self.origin) / self.step
-        return floor(a[0]), floor(b[0]), floor(a[1]), floor(b[1])
+    def _build(self, ids, centers):
+        lower, upper = self.lower[ids].min(axis=0), self.upper[ids].max(axis=0)
+        if len(ids) <= self._LEAF_SIZE:
+            return _BoxNode(lower, upper, ids)
+        local = centers[ids]
+        # Halving before subtraction avoids overflow for distant finite bounds.
+        # argmax chooses X when both centroid spans are equal.
+        axis = int(np.argmax(.5 * local.max(axis=0) - .5 * local.min(axis=0)))
+        values, middle = local[:, axis], len(ids) // 2
+        pivot = np.partition(values, middle)[middle]
+        left = values < pivot
+        needed = middle - int(np.count_nonzero(left))
+        # Root IDs start sorted, and Boolean indexing preserves that invariant.
+        # Equal centroids therefore split by original ID without another sort,
+        # including when every centroid is identical.
+        equal = np.flatnonzero(values == pivot)
+        left[equal[:needed]] = True
+        return _BoxNode(lower, upper, left=self._build(ids[left], centers),
+                        right=self._build(ids[~left], centers))
 
-    def query(self, lo, hi):
-        bounds = self._bounds(np.asarray(lo), np.asarray(hi))
-        if (bounds[1] - bounds[0] + 1) * (bounds[3] - bounds[2] + 1) > 4096:
-            ids = np.arange(len(self.lower))
-        else:
-            found = set(self.large)
-            for x in range(bounds[0], bounds[1] + 1):
-                for y in range(bounds[2], bounds[3] + 1):
-                    found.update(self.bins.get((x, y), ()))
-            ids = np.asarray(sorted(found), dtype=int)
-        if not len(ids):
-            return ids
+    def _filter_leaf(self, ids, lo, hi):
         return ids[np.all(self.upper[ids] >= lo, axis=1)
                    & np.all(self.lower[ids] <= hi, axis=1)]
+
+    def query(self, lo, hi):
+        if self._root is None:
+            return np.empty(0, dtype=int)
+        lo, hi = np.asarray(lo), np.asarray(hi)
+        stack, matches = [self._root], []
+        while stack:
+            node = stack.pop()
+            if (node.upper[0] < lo[0] or node.lower[0] > hi[0]
+                    or node.upper[1] < lo[1] or node.lower[1] > hi[1]):
+                continue
+            if node.ids is None:
+                stack.extend((node.right, node.left))
+            else:
+                found = self._filter_leaf(node.ids, lo, hi)
+                if len(found):
+                    matches.append(found)
+        if not matches:
+            return np.empty(0, dtype=int)
+        if len(matches) == 1:
+            return matches[0]
+        return np.sort(np.concatenate(matches))
 
 
 def on_segment(p, a, b, tol):

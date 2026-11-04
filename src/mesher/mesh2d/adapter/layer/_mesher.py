@@ -8,7 +8,7 @@ from time import perf_counter
 import numpy as np
 
 from ...model import Mesh2D, _validate_zero_z
-from ._geometry import (BoxIndex, area, cross, intervals_cover,
+from ._geometry import (BoxIndex, area, cross, intervals_cover, on_segment,
                         point_location, segment_contacts)
 from ._patterns import (PATTERN_RANGE_LIMIT, AxisPattern, covered_intervals,
                         occupied_intervals, pattern_contacts)
@@ -21,6 +21,17 @@ from ._types import (PreparedLayerSource, QuadLayerError, QuadLayerResult,
 
 def _fail(message, code="invalid_input", **context):
     raise QuadLayerError(message, code=code, **context)
+
+
+def _input_scalar(value, parameter):
+    try:
+        return float(value)
+    except QuadLayerError:
+        raise
+    except (TypeError, ValueError, OverflowError) as error:
+        raise QuadLayerError(f"{parameter} must be a finite scalar",
+                             code="invalid_input", stage="input_validation",
+                             parameter=parameter) from error
 
 
 def _edge_incidence(elements):
@@ -96,16 +107,18 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
         raise QuadLayerError(str(exc)) from exc
     if not len(mesh.elements):
         _fail("layer extension requires at least one existing Quad4 element", "empty_mesh")
-    try:
-        h, ratio, axis_tol = float(element_size), float(expand_ratio), float(axis_tolerance)
-    except (TypeError, ValueError) as exc:
-        raise QuadLayerError("size, ratio and tolerance must be finite scalars") from exc
+    h = _input_scalar(element_size, "element_size")
+    ratio = _input_scalar(expand_ratio, "expand_ratio")
+    axis_tol = _input_scalar(axis_tolerance, "axis_tolerance")
     if not np.isfinite(h) or h <= 0:
-        _fail("element_size must be finite and positive")
+        _fail("element_size must be finite and positive",
+              stage="input_validation", parameter="element_size")
     if not np.isfinite(ratio) or ratio < 1:
-        _fail("expand_ratio must be finite and at least 1")
+        _fail("expand_ratio must be finite and at least 1",
+              stage="input_validation", parameter="expand_ratio")
     if not np.isfinite(axis_tol) or not 0 <= axis_tol < 1:
-        _fail("axis_tolerance must be finite and in [0, 1)")
+        _fail("axis_tolerance must be finite and in [0, 1)",
+              stage="input_validation", parameter="axis_tolerance")
     if not np.all(np.isfinite(mesh.nodes)):
         _fail("all mesh nodes must be finite")
     if len(mesh.elements) and (np.any(mesh.elements < 0) or np.any(mesh.elements >= len(mesh.nodes))):
@@ -114,17 +127,31 @@ def _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tole
         _fail("input elements must be Quad4 with four distinct node IDs", "quad_only_input")
     try:
         if len(outline) < 4:
-            _fail("outline needs at least four logical edges")
+            _fail("outline needs at least four logical edges",
+                  stage="input_validation", parameter="outline")
         ids = []
-        for chain in outline:
-            raw = np.asarray(chain)
-            if raw.ndim != 1 or len(raw) < 2 or not np.issubdtype(raw.dtype, np.integer):
-                _fail("each outline edge must be a chain of at least two integer node IDs")
-            if np.any(raw < 0) or np.any(raw >= len(mesh.nodes)):
-                _fail("outline contains out-of-range node IDs")
-            ids.append(raw.astype(np.int64, copy=True))
-    except TypeError as exc:
-        raise QuadLayerError("outline must be a sequence of node-index chains") from exc
+        for edge_index, chain in enumerate(outline):
+            context = dict(stage="input_validation", parameter="outline", edge_index=edge_index)
+            try:
+                raw = np.asarray(chain)
+                if raw.ndim != 1 or len(raw) < 2 or not np.issubdtype(raw.dtype, np.integer):
+                    _fail("each outline edge must be a chain of at least two integer node IDs",
+                          **context)
+                if np.any(raw < 0) or np.any(raw >= len(mesh.nodes)):
+                    _fail("outline contains out-of-range node IDs", **context)
+                ids.append(raw.astype(np.int64, copy=True))
+            except QuadLayerError:
+                raise
+            except (TypeError, ValueError, OverflowError) as error:
+                raise QuadLayerError(
+                    "each outline edge must be a chain of at least two integer node IDs",
+                    code="invalid_input", **context) from error
+    except QuadLayerError:
+        raise
+    except (TypeError, ValueError, OverflowError) as error:
+        raise QuadLayerError("outline must be a sequence of node-index chains",
+                             code="invalid_input", stage="input_validation",
+                             parameter="outline") from error
     if any(a[-1] != b[0] for a, b in zip(ids, ids[1:] + ids[:1])):
         _fail("each edge end must equal the next edge start, including loop closure")
     flat = np.concatenate([edge[:-1] for edge in ids])
@@ -231,11 +258,17 @@ def _expansion_distances(data):
 
 
 def _front(data):
-    chains, normals, tol = data["chains"], data["normals"], data["tol"]
+    chains, normals = data["chains"], data["normals"]
     supports = _expansion_distances(data)
     front = np.asarray([np.linalg.solve(np.asarray((normals[i - 1], normals[i])),
                                        np.asarray((supports[i - 1], supports[i])))
                         for i in range(len(chains))])
+    _validate_front(data, front)
+
+
+def _validate_front(data, front):
+    """Certify either an automatically expanded or explicitly supplied front."""
+    tol = data["tol"]
     if (not np.all(np.isfinite(front))
             or np.max(np.abs(front)) > np.sqrt(np.finfo(float).max) / 16):
         raise UnmeshableDirectQuadLayout("expanded front exceeds the numeric coordinate range")
@@ -256,6 +289,98 @@ def _front(data):
     if point_location(inner[0], outer, tol) != 1:
         _fail("source and front do not bound a single annular layer", "topology_change")
     data.update(front=front, outer=outer, inner=inner)
+
+
+def _normalize_new_outline(new_outline, data):
+    """Read an ordered XY loop without moving any of its mandatory points."""
+    context = dict(parameter="new_outline", stage="input_validation")
+    try:
+        points = np.asarray(new_outline, dtype=float)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise QuadLayerError("new_outline must be finite XY points with shape (n, 2)",
+                             code="invalid_input", **context) from error
+    if (points.ndim != 2 or points.shape[1] != 2 or len(points) < 4
+            or not np.all(np.isfinite(points))):
+        _fail("new_outline must be finite XY points with shape (n, 2), n >= 4", **context)
+    with np.errstate(over="ignore", invalid="ignore"):
+        points = (points - data["origin"]) / data["scale"]
+    if (not np.all(np.isfinite(points))
+            or np.max(np.abs(points)) > np.sqrt(np.finfo(float).max) / 16):
+        _fail("new_outline exceeds the numeric coordinate range",
+              "numeric_range_exceeded", **context)
+    tol = data["tol"]
+    if np.linalg.norm(points[-1] - points[0]) <= tol:
+        points = points[:-1]
+    if len(points) < 4:
+        _fail("new_outline needs at least four distinct corners", **context)
+    directions = _new_outline_directions(points, tol)
+    turns = np.sum(directions * np.roll(directions, 1, axis=0), axis=1)
+    if np.any(turns < 0):
+        _fail("new_outline cannot reverse along an adjacent edge", **context)
+    try:
+        _simple_loop(points, tol, "new_outline")
+    except QuadLayerError as error:
+        error.context.update(context)
+        raise
+    if abs(area(points)) <= tol:
+        _fail("new_outline has zero area", **context)
+    return points
+
+
+def _new_outline_directions(points, tol):
+    vectors = np.roll(points, -1, axis=0) - points
+    axes = np.argmax(np.abs(vectors), axis=1)
+    rows = np.arange(len(points))
+    along = vectors[rows, axes]
+    invalid = (np.abs(along) <= tol) | (np.abs(vectors[rows, 1 - axes]) > tol)
+    if np.any(invalid):
+        _fail("new_outline edges must be nonzero horizontal or vertical segments",
+              parameter="new_outline", stage="input_validation",
+              edge_index=int(np.flatnonzero(invalid)[0]))
+    directions = np.zeros_like(vectors)
+    directions[rows, axes] = np.sign(along)
+    return directions
+
+
+def _specified_front(data, points):
+    """Match an explicit target to the final, possibly repaired source loop."""
+    tol = data["tol"]
+    context = dict(parameter="new_outline", stage="expansion")
+    if np.sign(area(points)) != np.sign(area(data["source"])):
+        points = points[::-1]
+    directions = _new_outline_directions(points, tol)
+    corners = np.flatnonzero(np.any(directions != np.roll(directions, 1, axis=0), axis=1))
+    front = points[corners]
+    matches = []
+    if len(corners) == len(data["chains"]):
+        matches = [i for i in range(len(corners))
+                   if np.array_equal(np.roll(directions[corners], -i, axis=0),
+                                     data["directions"])]
+    if len(matches) != 1:
+        _fail("new_outline must have the same cyclic turns as the prepared source",
+              "unsupported_new_outline", source_edge_count=len(data["chains"]),
+              target_edge_count=len(corners), **context)
+    shift = matches[0]
+    # Include the wraparound run when the input begins in the middle of an edge.
+    for first, last in zip(corners, np.roll(corners, -1)):
+        indices = np.arange(first, last if last > first else last + len(points)) % len(points)
+        if any(not on_segment(points[i], points[first], points[last], tol) for i in indices):
+            _fail("new_outline points must follow their logical straight edge", **context)
+    front = np.roll(front, -shift, axis=0).copy()
+    anchors = np.roll(points, -int(corners[shift]), axis=0).copy()
+    supports = np.sum(front * data["normals"], axis=1)
+    expansion = [float(support - np.max(chain @ normal))
+                 for support, chain, normal in zip(supports, data["chains"], data["normals"])]
+    if any(distance <= tol for distance in expansion):
+        _fail("new_outline edges must lie strictly on the expansion side of the prepared source",
+              "topology_change", **context)
+    try:
+        _validate_front(data, front)
+    except QuadLayerError as error:
+        error.context.update(context)
+        raise
+    data.update(supports=supports.tolist(), expansion=expansion,
+                snapped=[None] * len(front), outline_anchors=anchors)
 
 
 def _validate_old_patterns(mesh, data):
@@ -321,7 +446,7 @@ def _world_repair_diagnostics(value, data, key=None):
 
 def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance,
                   *, repair_slots=True, max_added_elements=None,
-                  repair_max_element_size=None):
+                  repair_max_element_size=None, new_outline=None):
     if not isinstance(repair_slots, (bool, np.bool_)):
         _fail("repair_slots must be a boolean", stage="input_validation", parameter="repair_slots")
     if repair_max_element_size is not None:
@@ -343,6 +468,7 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
     except QuadLayerError as error:
         error.context.setdefault("stage", "input_validation")
         raise
+    target = None if new_outline is None else _normalize_new_outline(new_outline, data)
     try:
         _validate_old_patterns(mesh, data)
     except QuadLayerError as error:
@@ -394,7 +520,8 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
     actions = []
     if prepared_source is not None:
         actions.append(("pattern_validation", lambda: _validate_old_patterns(working, data)))
-    actions.extend((("expansion", lambda: _front(data)),
+    actions.extend((("expansion", lambda: (_front(data) if target is None
+                                           else _specified_front(data, target))),
                     ("section_partition", lambda: partition_sections(data))))
     for stage, action in actions:
         try:
@@ -408,6 +535,7 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
 
 
 def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
+                       new_outline=None,
                        expand_ratio: float = 1.0,
                        axis_tolerance: float = 1e-3,
                        repair_slots: bool = True,
@@ -422,6 +550,9 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
     the original strict single-layer behavior.
     ``repair_max_element_size`` has the same interior target-size semantics as
     :func:`extend_quad_layer`, including automatic sizing when it is None.
+    ``new_outline`` also follows that function's contract: an ordered XY target
+    loop matching the repaired source. ``front`` contains its logical corners;
+    section outer boundaries retain the supplied collinear points as anchors.
     At least one existing Quad4 is required. Pattern lengths and endpoint
     L-infinity distances from the source bounding box cannot exceed one million
     times its largest XY span. This preview has no element budget and makes no
@@ -429,7 +560,8 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
     """
     data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio,
                               axis_tolerance, repair_slots=repair_slots,
-                              repair_max_element_size=repair_max_element_size)
+                              repair_max_element_size=repair_max_element_size,
+                              new_outline=new_outline)
 
     def world(points):
         result = points * data["scale"] + data["origin"]
@@ -445,6 +577,7 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
 
 
 def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
+                      new_outline=None,
                       expand_ratio: float = 1.0,
                       axis_tolerance: float = 1e-3,
                       max_added_elements: int = 1_000_000,
@@ -458,6 +591,17 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     edge. A parallel pattern within ``element_size * expand_ratio`` determines
     that whole edge's expansion; otherwise the expansion is ``element_size``.
 
+    ``new_outline=None`` keeps that automatic expansion. Otherwise, supply an
+    ordered finite XY array of shape ``(n, 2)`` describing the complete target
+    loop. The last point connects to the first; a repeated closing point is
+    optional. Either winding and any starting point are accepted. Target edges
+    must be horizontal or vertical, with the same cyclic turns as the prepared
+    source after repairs, and strictly on each source edge's expansion side.
+    All supplied points, including collinear points, are mandatory within the
+    geometric tolerance. Additional points target ``element_size`` subject to
+    Quad4 parity; this is not a hard maximum segment length. Patterns still
+    constrain mesh edges but never move or snap an explicitly supplied target.
+
     Closing simple exterior slots and covered isolated stair corners are filled
     first, unless ``repair_slots=False``. A stair corner is covered when either
     incident wall's planned expansion reaches the complete opposite leg.
@@ -466,6 +610,9 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     directions even when individual segments are oblique. Patterns are applied
     again to that prepared outline. Both stages share one output budget and
     one atomic commit; original node and element IDs remain unchanged.
+    With ``new_outline``, repair decisions still use the original size, ratio,
+    and patterns. Only the subsequent expansion uses the explicit target. An
+    incompatible target fails atomically; it does not trigger another repair.
 
     Repair mouth and chord sampling target the median frozen segment length,
     capped at ``element_size``. Interior targets double inward up to
@@ -506,14 +653,15 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
     data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio,
                               axis_tolerance, repair_slots=repair_slots,
                               max_added_elements=max_added_elements,
-                              repair_max_element_size=repair_max_element_size)
+                              repair_max_element_size=repair_max_element_size,
+                              new_outline=new_outline)
     working = data["_source_mesh"]
     repair_count = len(working.elements) - len(mesh.elements)
     data["max_added_elements"] = max_added_elements - repair_count
     local_nodes = working.nodes.copy()
     local_nodes[:, :2] = data["xy"]
     try:
-        nodes, quads, new_outline, registry_diagnostics = fill_sections(
+        nodes, quads, result_outline, registry_diagnostics = fill_sections(
             local_nodes, plan, data, element_offset=len(working.elements))
     except QuadLayerError as error:
         if error.code == "element_limit_exceeded":
@@ -522,13 +670,13 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
         error.context.setdefault("stage", "section_assembly")
         raise
     try:
-        _validate_patch(working, nodes, quads, new_outline, data)
+        _validate_patch(working, nodes, quads, result_outline, data)
         all_quads = np.vstack((working.elements[len(mesh.elements):], quads)) if repair_count else quads
         if repair_count:
             original_data = dict(data["_original_data"])
             original_data.update(front=data["front"], outer=data["front"],
                                  inner=original_data["source"], tol=data["tol"])
-            _validate_patch(mesh, nodes, all_quads, new_outline, original_data)
+            _validate_patch(mesh, nodes, all_quads, result_outline, original_data)
     except QuadLayerError as error:
         error.context.setdefault("stage", "final_validation")
         raise
@@ -551,4 +699,4 @@ def extend_quad_layer(mesh: Mesh2D, outline, element_size: float, *, pattern_lin
                    "snapped_patterns": data["snapped"], "elapsed_seconds": perf_counter() - start}
     # This is the only mutation of the caller's mesh.
     mesh.replace_data(nodes=world_nodes, elements=elements)
-    return QuadLayerResult(mesh=mesh, outline=new_outline, diagnostics=diagnostics)
+    return QuadLayerResult(mesh=mesh, outline=result_outline, diagnostics=diagnostics)

@@ -199,17 +199,21 @@ class SlotRepairTests(unittest.TestCase):
                         call(mesh, outline, .5, repair_slots=distorted)
                     self.assert_unchanged(mesh, snapshot)
 
-    def test_partial_closure_of_near_axis_walls_is_not_filled(self):
+    def test_near_axis_walls_are_filled_when_the_planned_supports_close(self):
         mesh, outline = _c_slot()
-        # Valid under the original XY tolerance, but width varies from .9995
-        # to 1.0005. Two .5 expansions close only part of the common interval.
+        # Pointwise widths vary, but the actual cardinal front supports
+        # overlap. Repair must use that same geometry and cover the full slot.
         upper = mesh.nodes[:, 1] >= 2.
         mesh.nodes[upper, 1] += .0005 * (mesh.nodes[upper, 0] - 2.)
         snapshot = self._snapshot(mesh)
-        with self.assertRaises(QuadLayerError) as caught:
-            extend_quad_layer(mesh, outline, .5)
-        self.assertEqual(caught.exception.context.get('reason'), 'partial_slot_closure')
+        preview = plan_quad_sections(mesh, outline, .5)
         self.assert_unchanged(mesh, snapshot)
+        result = self.run_repair(mesh, outline, .5)
+        self.assertEqual(len(result.diagnostics['slot_repairs']), 1)
+        np.testing.assert_array_equal(mesh.nodes[:len(preview.prepared_source.nodes)],
+                                      preview.prepared_source.nodes)
+        np.testing.assert_array_equal(mesh.elements[:len(preview.prepared_source.elements)],
+                                      preview.prepared_source.elements)
 
     def test_supported_repair_patterns_have_complete_mesh_edge_coverage(self):
         cases = (

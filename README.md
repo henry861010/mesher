@@ -164,6 +164,48 @@ triangles using the diagonal that maximizes their smallest angle; the original
 nodes and cell boundary are preserved.
 The case collection includes a reproducible 100,000-element performance comparison.
 
+## Rectilinear grids with holes
+
+`generate_rectilinear_mesh_with_holes()` meshes a simple axis-aligned outer
+polygon minus separated, strictly interior holes. Both outer and hole polygons
+may be concave. Its normal local strategy stops finite horizontal/vertical
+patterns and corner rays at the first geometry boundary, allowing different
+grids on opposite sides of a hole. Local equal subdivisions enforce the requested
+maximum edge size, and at most one extra cut per hole makes every boundary node
+count even.
+
+```python
+from mesher.mesh2d.generators import generate_rectilinear_mesh_with_holes
+
+result = generate_rectilinear_mesh_with_holes(
+    2.0,
+    [[0, 0], [12, 0], [12, 10], [0, 10]],
+    holes=[[[4, 3], [8, 3], [8, 7], [4, 7]]],
+    pattern_lines=[[[1, 4.2], [3, 4.2]]],
+    max_elements=1_000_000,
+)
+mesh = result.mesh
+hole_node_ids = result.hole_outlines[0]  # Complete CCW loop; implicit closure.
+assert len(hole_node_ids) % 2 == 0
+```
+
+The result contains clockwise `outer_outline`, counterclockwise
+`hole_outlines` in input order, and diagnostics for parity repairs and mesh
+quality. Input coordinates and retained pattern endpoints remain exact;
+`coordinate_tolerance` rejects ambiguous geometric contacts rather than
+merging coordinates. Close mandatory features can still create thin cells.
+If no representable local parity-repair cut exists, a global grid fallback keeps
+the boundary constraints and may produce more cells; diagnostics report which
+strategy was used. `max_elements` defaults to one million and must be a positive
+integer. Budget, invalid-geometry, and numerical-range errors raise `ValueError`
+instead of triggering fallback.
+This NumPy-only generator is independent of the adaptive and Mesh25D workflows.
+
+See the [algorithm and input contract](docs/holed-rectilinear.md), or run
+`PYTHONPATH=src venv/bin/python examples/holed_rectilinear_mesh.py`
+to compare local meshing with full coordinate projection. Add
+`--no-show --plot output.png --diagnostics output.json` to save the comparison.
+
 ## Single-layer direct Quad4 extension
 
 ```python
@@ -201,9 +243,45 @@ otherwise the expansion is `element_size`. Coincident guides do not stop growth.
 `axis_tolerance` (default `1e-3`) limits transverse deviation relative to each
 logical edge's length. The new front is axis aligned; old coordinates never move.
 
+Both entry points accept `new_outline=None`. Supply an ordered `(n, 2)` array
+of finite XY coordinates to set the complete target boundary, including any
+points that must become boundary nodes. The loop closes implicitly; repeating
+the first point at the end is also accepted. Its start point and winding can
+differ from the source, and it may start in the middle of a straight edge.
+For example, this target uses different offsets on all four sides and unevenly
+spaced mandatory points:
+
+```python
+mesh = Mesh2D([[0, 0], [4, 0], [4, 3], [0, 3]], [[0, 1, 2, 3]])
+outline = [[0, 3], [3, 2], [2, 1], [1, 0]]
+new_outline = np.array([
+    [1.35, 3.6], [4.8, 3.6], [4.8, 0.65], [4.8, -0.4],
+    [2.15, -0.4], [-0.2, -0.4], [-0.2, 1.2], [-0.2, 3.6],
+])
+result = extend_quad_layer(mesh, outline, 0.5, new_outline=new_outline)
+```
+
+The target must be a simple axis-aligned loop. After ignoring intermediate
+collinear points for corner matching, its directed edges must correspond to
+the source's logical edges in cyclic order. If repair is enabled, this matching
+uses the **repaired source outline**. The target must leave a positive gap on
+the left of every corresponding source edge and form one nonintersecting layer;
+it cannot cut through the source or any staged repair. All supplied boundary
+points are retained, and additional points are inserted according to
+`element_size` and quadrilateral parity. Size remains a target, not a hard
+maximum edge length. Unsupported geometry or an infeasible Quad4 layout fails
+without modifying the mesh.
+
+With `new_outline`, slot and corner repair still run first using the existing
+`element_size`, `pattern_lines`, and `expand_ratio` rules. The supplied target
+replaces only the subsequent outer expansion. Patterns remain boundary/chord
+constraints but do not snap or move that target. No second repair pass is
+triggered by the custom target. Omit `new_outline`, or pass `None`, to retain
+automatic front generation.
+
 Both entry points default to `repair_slots=True`. This switch enables both
 C/U-shaped slot repair and isolated concave-corner repair. Before expanding,
-the adapter uses this call's actual expansion distances, including pattern
+the adapter uses this call's automatically planned expansion distances, including pattern
 snapping, to detect either of these cases:
 
 - Opposing walls of a parallel C/U-shaped slot close. The adapter fills the
@@ -214,7 +292,9 @@ snapping, to detect either of these cases:
   the full vertical leg length, the adapter fills the entire missing rectangle.
   Equality triggers repair; both directions need not reach their opposite leg.
 
-For near-axis corner legs, detection uses the actual planned supports and the
+For near-axis slot walls, closure detection uses the actual planned axis-aligned
+front supports. Fronts that meet within tolerance or cross trigger full slot
+repair. Near-axis corner detection also uses the planned supports and the
 furthest cap projection. Original source coordinates are never snapped or moved.
 
 Each supported region is filled in a temporary Quad4 mesh. The adapter rebuilds
@@ -245,12 +325,16 @@ repairs regions once from the original outline. A failed core or a later
 topology change reports an error instead of starting another repair pass.
 
 Opposing walls need not have matching node positions or counts. A mouth joins
-existing nodes; it never inserts a hanging node into an old edge. A slightly
-slanted mouth can be combined with neighboring, same-direction segments into a
-monotone logical X/Y chain. The original input still passes the usual XY check;
-only these internally prepared chains use the relaxed geometry check. Their
-new front uses the furthest source support in the expansion direction and stays
-axis aligned. Consequently, local layer thickness can exceed `element_size`
+existing nodes; it never inserts a hanging node into an old edge. Slot mouths
+and corner caps may meet original nodes only at their two source endpoint IDs.
+Other original nodes on those boundaries, including unused nodes and distinct
+IDs at the same endpoint coordinates, reject that repair candidate. The adapter
+does not merge or remove them; a slot may still use another valid mouth anchor.
+A slightly slanted mouth can be combined with neighboring, same-direction
+segments into a monotone logical X/Y chain. The original input still passes the
+usual XY check; only these internally prepared chains use the relaxed geometry
+check. Their new front uses the furthest source support in the expansion
+direction and stays axis aligned. Consequently, local layer thickness can exceed `element_size`
 by the transverse mouth misalignment. Patterns are applied again to the rebuilt
 logical outline, so a merged edge can have a different snapped expansion.
 
@@ -285,9 +369,9 @@ so extending a guide's remote tails does not reduce precision near the mesh.
    calls. Ordinary seams use 2 or 3 nodes, meaning 1 or 2 segments. Mandatory
    seam points are preserved, and neighboring sections share the same node IDs.
 
-For a `LINE`, the outer edge is sampled **before pairing**: endpoints and finite
-pattern intersections stay fixed, and additional nodes fill the intervals as
-close to `element_size` as parity permits. At most two nearest legal total
+For a `LINE`, the outer edge is sampled **before pairing**: endpoints, supplied
+`new_outline` points, and finite pattern intersections stay fixed. Additional
+nodes fill the intervals as close to `element_size` as parity permits. At most two nearest legal total
 segment counts are considered, ordered by outer size error, then fewer segments.
 The first feasible count is accepted. From alternating ends, each segment on
 the shorter chain is paired with the nearest allowed node on the longer chain
@@ -303,7 +387,12 @@ that every possible quadrangulation is infeasible.
 
 `plan_quad_sections()` is an optional read-only preview of the section level,
 importable from `mesher.mesh2d.adapter`. It is not a required step before
-`extend_quad_layer()`. Its `QuadSectionPlan` contains `sections`, `seams`, `front`, and `edge_expansion`.
+`extend_quad_layer()`. It accepts the same `new_outline` geometry argument.
+Its `QuadSectionPlan` contains `sections`, `seams`, `front`, and `edge_expansion`.
+For a supplied target, `front` contains its logical corners and section outer
+boundaries retain its intermediate points. `edge_expansion` reports the actual
+distances from the prepared source; the extension's `snapped_patterns` entries
+are all `None` because patterns did not choose the target.
 Sections retain their source node chains, outer boundary, and left/right seam
 IDs; seam coordinates run from source to front. When repair is needed, preview
 also constructs the temporary slot and corner fills. Its optional
@@ -372,8 +461,12 @@ floating-point values, `None`, and nonpositive values are invalid. A result
 exactly at the limit is allowed. Each call, including a subsequent layer, has
 its own limit; successful diagnostics record `max_added_elements`.
 
-Before outer-layer sampling or unit construction, a count-only pass checks a
-lower bound over all sections against the remaining budget. Oversized candidates are excluded before sampling or further
+After validating a repair boundary and its size cap, a count-only check uses its
+boundary segment count to reject a proven budget overflow before repair-local
+pattern processing or sampling. Original-input and pattern validation still
+precede repair detection. Before outer-layer sampling or unit construction,
+another count-only pass checks a lower bound over all sections against the
+remaining budget. Oversized candidates are excluded before sampling or further
 assembly. The actual chosen layer is checked before global node mapping and
 again before commit. A refusal caused by the limit reports
 `QuadLayerError(code="element_limit_exceeded")`, with the limit, a known lower
@@ -412,8 +505,10 @@ corner fills separately, including all repair cells and their new boundaries.
 Run [the visual example](examples/extend_quad_layer.py) with
 `python examples/extend_quad_layer.py`. It opens a Matplotlib window and saves
 `examples/output/extend_quad_layer.png`, comparing **sections, selected units,
-and the final mesh** for a cross, finite pattern chords, and a hole. Use
-`--case pattern` to focus on guides or `--no-show --plot output.png` to save
+and the final mesh** for a cross, finite pattern chords, a hole, and a custom
+target outline. Use `--case pattern` to focus on guides, `--case custom` to see
+asymmetric expansion with supplied boundary points highlighted in pink, or
+`--no-show --plot output.png` to save
 without opening a window. The example prints elapsed time and the final quality
 summary, also shown in the mesh panel.
 Use `--diagnostics output.json` to retain the section/unit records, chosen seam

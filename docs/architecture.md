@@ -52,9 +52,11 @@ source node chains. Sections need not themselves be convex. Left/right refer
 to outline traversal, and seam points run from source to front.
 
 Both APIs enable slot repair by default. Original-input and pattern validation
-precede closure detection. Supported parallel slots are filled in a temporary
-Quad4 mesh, preserving all old nodes and elements; the selected boundary is
-then rebuilt and grouped into monotone logical X/Y chains. Only this prepared
+precede closure detection. Parallel-slot closure uses the gap between the actual
+planned axis-aligned front supports, including near-axis source walls; fronts
+that meet within tolerance or cross trigger repair. Supported slots are filled
+in a temporary Quad4 mesh, preserving all old nodes and elements; the selected
+boundary is then rebuilt and grouped into monotone logical X/Y chains. Only this prepared
 source may contain slanted repair-mouth segments. Axial support expansion and
 pattern snapping run on the rebuilt outline before the existing section planner.
 Preview exposes this temporary source through `QuadSectionPlan.prepared_source`:
@@ -127,13 +129,22 @@ original pattern IDs. Old-cell constraints cover the entire finite pattern,
 including other components of the input mesh. Non-pattern geometry retains the
 general segment predicates and its existing tolerances.
 
+Spatial broad-phase queries use a static balanced AABB tree with at most 32
+primitives per leaf. Splits use the widest centroid axis and stable original-ID
+ties, so distant components do not change a global grid resolution. Queries
+retain inclusive tolerance-expanded bounds and return sorted original IDs.
+Repair-boundary self-intersection checks use the same index to select pairs
+before applying the existing exact segment-contact predicate.
+
 Layer construction accepts `max_added_elements` (default one million positive
 integer elements), counting repair and expansion together. Repair candidates
 consume only their selected output count; the section planner uses the remaining
-budget. A count-only preflight computes the minimum section lower bounds across
-seam/outer-count candidates before outer-layer sampling or unit construction.
-Candidate guards exclude proven oversized
-boundaries and stop assembly when actual counts exceed the limit. The selected
+budget. After repair geometry and size-cap validation, a count-only preflight
+checks the boundary-segment lower bound before repair-local pattern processing
+or sampling. A separate preflight computes the minimum section lower bounds
+across seam/outer-count candidates before outer-layer sampling or unit
+construction. Candidate guards exclude proven oversized boundaries and stop
+assembly when actual counts exceed the limit. The selected
 ring's actual count is checked before global node mapping and before commit.
 Limit failures retain `element_limit_exceeded` rather than being swallowed by
 geometry fallbacks. Candidate retries do not consume a cumulative budget. The
