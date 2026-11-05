@@ -53,6 +53,5 @@ def resolve_controls(
         except ValueError as exc:
             raise ValueError(f"{context}: {exc}") from exc
         xy.extend(xy_constraints)
-        if xy_constraints:
-            sources.append(context)
+        sources.extend([context] * len(xy_constraints))
     return ResolvedControls(xy, z, sources)

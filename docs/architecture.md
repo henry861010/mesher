@@ -275,11 +275,34 @@ are outside the timer, while validation and atomic commit are included.
 `mesh25d` exposes `build_mesh(geometry_structure, mesh_control, progress=...)`.
 Internally, geometry extraction supplies footprint patterns, KOZ boundaries,
 source provenance, priorities, and material assignments. The 2D stage in
-`plan2d.py` combines patterns and XY constraints into grid/circular operations
+`plan2d.py` combines patterns and XY constraints into grid/adapter/circular operations
 and builds `Mesh2D`. The 3D stage in `plan3d.py` combines assignments and resolved
 Z constraints into `layer_infos`, converts 2D winding, and invokes the existing
 Dragger to build `Mesh3D`.
 `_get_assignments` was moved verbatim into geometry extraction.
+
+The syntax-only input contract accepts optional top-level `regionMeshing`
+(`grid` by default, or experimental `adapter`), retaining its existing schema
+version and three-value settings result. `region_adapter.py` owns the optional
+XY strategy: normalize interior orthogonal regions with even/odd loop nesting,
+generate seeds through the public holed rectilinear API, grow each region's
+intermediate layers with fivefold target sizes, and merge them for one full
+adaptive completion at the computed global planar size. All source meshes are
+private. Boundary containment and cross-region clearance are checked between
+stages; errors retain control provenance and adapter diagnostics. There is no
+automatic grid fallback. Inactive regions keep the existing grid path.
+
+Physical/KOZ segments and circular support cuts constrain seed generation,
+intermediate layers, and final completion. The full adapter's optional
+`coordinate_tolerance` defaults to `1e-3`; Mesh25D passes its pattern tolerance
+so narrow KOZ features stay distinct. The meshing envelope remains the existing
+symmetry-restricted grid envelope, including circular support margins. Circular
+imprint/extension run after adaptive construction, followed by the unchanged
+Z plan, winding conversion, material allocation, and extrusion. Shapely geometry
+normalization remains confined to Mesh25D; the adapter itself stays NumPy-only.
+When a region intersects a planned circular extension annulus, the circular
+plan is recomputed as imprint-only with the corresponding grid envelope and
+support cuts, preventing extension from replacing that region's refinement.
 
 `process_flow` owns worker transport and CDB serialization. It calls `mesh25d`
 without owning meshing or geometry translation. The CDB writer remains here

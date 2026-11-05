@@ -27,11 +27,12 @@ def build_mesh(
 
     Symmetry is centered on the combined root body XY bounds, falling back to
     all footprints when the root has no bodies. Control references follow the
-    retained geometry. XY regions contribute axis-aligned cuts before the base
-    grid fills remaining gaps using the global planar element size.
+    retained geometry. XY regions use grid cuts by default; regionMeshing=
+    'adapter' opts into local Quad4 meshes with fivefold target-size transitions.
     """
     stage = _start_stage(progress, "validating", "Checking geometry input.")
     element_size, symmetry, _ = mesh_control_settings(mesh_control)
+    region_meshing = mesh_control.get("regionMeshing", "grid")
     normalized_symmetry = normalize_symmetry(symmetry)
     validate_geometry_semantic_keys(geometry_structure)
     root = _root_container(geometry_structure)
@@ -45,6 +46,7 @@ def build_mesh(
     )
     plan2d = plan_2d(
         geometry.pattern, controls, element_size=element_size, domain=geometry.domain,
+        region_meshing=region_meshing,
     )
     plan3d = plan_layers(
         extract_assignments(geometry.container), controls.z, element_size=element_size,
@@ -64,10 +66,16 @@ def build_mesh(
             "assignmentCount": sum(len(info["assignments"]) for info in layer_infos[:-1]),
             "planarElementSize": plan2d.element_size,
             "symmetry": normalized_symmetry.value,
+            "regionMeshing": region_meshing,
+            **({"adapterRegions": plan2d.adaptive.region_summary() if plan2d.adaptive else []}
+               if region_meshing == "adapter" else {}),
         },
     )
 
-    stage = _start_stage(progress, "building_2d_mesh", "Generating base grid.")
+    stage = _start_stage(
+        progress, "building_2d_mesh",
+        "Generating adaptive region mesh." if plan2d.adaptive else "Generating base grid.",
+    )
     mesh_2d = build_2d_mesh(plan2d, progress=progress)
     _complete_stage(
         progress, "building_2d_mesh", stage,

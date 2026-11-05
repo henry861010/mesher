@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -28,6 +28,9 @@ from .domain import (
 from .geometry.patterns import Pattern2D
 from .progress import ProgressCallback, _emit_progress, _emit_item_completed
 
+if TYPE_CHECKING:
+    from .region_adapter import AdapterPlan
+
 JsonObject = dict[str, Any]
 _CIRCLE_PROJECTION_TOLERANCE_RATIO = 0.2
 # 判斷 node 是否在 guide segment 上面；而非用來找 segment 附近 node。
@@ -47,6 +50,8 @@ class Plan2D:
     x_lines: list[float]
     y_lines: list[float]
     circle_source_refs: dict[_CirclePattern, list[str]]
+    region_meshing: str = "grid"
+    adaptive: AdapterPlan | None = None
 
     @property
     def feature_total(self) -> int:
@@ -59,8 +64,11 @@ def plan_2d(
     *,
     element_size: float,
     domain: ModelDomain,
+    region_meshing: str = "grid",
 ) -> Plan2D:
     """Combine patterns and sizing requests before executing mesh algorithms."""
+    if region_meshing not in ("grid", "adapter"):
+        raise ValueError("region_meshing must be 'grid' or 'adapter'.")
     base_face = pattern.base_face
     if base_face is None:
         raise ValueError("Cannot plan a mesh without a geometry footprint.")
@@ -99,19 +107,7 @@ def plan_2d(
         tolerance=circle_clearance_tolerance,
     )
 
-    x_lines: list[float] = []
-    y_lines: list[float] = []
-    extended_patterns = circle_plan.extended_patterns
-    for face in all_faces:
-        if (
-            face.get("type") == "CIRCLE"
-            and _circle_pattern_from_face(face) in extended_patterns
-        ):
-            continue
-        xs, ys = _face_grid_lines(face)
-        x_lines.extend(xs)
-        y_lines.extend(ys)
-
+    control_bounds = None
     if controls.xy:
         bounds = [face_bounds(face) for face in all_faces]
         x_bounds, y_bounds = _restrict_grid_lines_to_domain(
@@ -119,35 +115,88 @@ def plan_2d(
             [min(bound[1] for bound in bounds), max(bound[3] for bound in bounds)],
             domain,
         )
-        _add_xy_control_lines(
-            controls.xy, x_lines, y_lines,
-            x_bounds=(min(x_bounds), max(x_bounds)),
-            y_bounds=(min(y_bounds), max(y_bounds)),
-        )
+        control_bounds = (min(x_bounds), min(y_bounds), max(x_bounds), max(y_bounds))
 
-    _add_circle_support_lines(
-        list(circle_plan.imprint_patterns),
-        circle_band_width,
-        x_lines,
-        y_lines,
-    )
-    x_lines, y_lines = _restrict_grid_lines_to_domain(
-        x_lines,
-        y_lines,
-        domain,
-    )
+    # At most one replan: circular extension rebuilds its annulus, so a fine
+    # seed in that annulus requires imprint-only construction instead.
+    while True:
+        x_lines, y_lines, support_segments = _base_grid_lines(
+            all_faces, circle_plan, circle_band_width, domain,
+        )
+        adaptive = None
+        if control_bounds is not None:
+            left, bottom, right, top = control_bounds
+            if region_meshing == "grid":
+                # Preserve the legacy order: controls precede the final symmetry
+                # restriction, and their cuts span the existing geometry bounds.
+                _add_xy_control_lines(
+                    controls.xy, x_lines, y_lines,
+                    x_bounds=(left, right), y_bounds=(bottom, top),
+                )
+                x_lines, y_lines = _restrict_grid_lines_to_domain(x_lines, y_lines, domain)
+            else:
+                from .region_adapter import plan_region_adapter
+
+                adaptive = plan_region_adapter(
+                    controls, faces=all_faces, control_bounds=control_bounds,
+                    outer_bounds=(min(x_lines), min(y_lines), max(x_lines), max(y_lines)),
+                    pattern_lines=[*pattern_segments, *support_segments],
+                    element_size=planar_element_size,
+                    coordinate_tolerance=pattern.coordinate_tolerance,
+                )
+        if adaptive and any(
+            adaptive.intersects_annulus(extension.center, extension.inner.radius, extension.outer.radius)
+            for extension in circle_plan.extensions
+        ):
+            circle_plan = _CircleMeshingPlan(tuple(circle_patterns), ())
+            _validate_circle_clearances(
+                list(circle_plan.imprint_patterns), circle_band_width,
+                tolerance=circle_clearance_tolerance,
+            )
+            continue
+        break
 
     return Plan2D(
         pattern, planar_element_size, circle_patterns, circle_plan,
-        pattern_segments, x_lines, y_lines, circle_source_refs,
+        pattern_segments, x_lines, y_lines, circle_source_refs, region_meshing, adaptive,
     )
+
+
+def _base_grid_lines(all_faces, circle_plan, band_width, domain):
+    x_lines, y_lines = [], []
+    extended = circle_plan.extended_patterns
+    for face in all_faces:
+        if face.get("type") == "CIRCLE" and _circle_pattern_from_face(face) in extended:
+            continue
+        xs, ys = _face_grid_lines(face)
+        x_lines.extend(xs)
+        y_lines.extend(ys)
+    support_x, support_y = [], []
+    _add_circle_support_lines(list(circle_plan.imprint_patterns), band_width, support_x, support_y)
+    x_lines.extend(support_x)
+    y_lines.extend(support_y)
+    x_lines, y_lines = _restrict_grid_lines_to_domain(x_lines, y_lines, domain)
+    left, right, bottom, top = min(x_lines), max(x_lines), min(y_lines), max(y_lines)
+    # Constrain circle supports and diameter bounds without projecting any
+    # region's fine seed subdivisions through the rest of the model.
+    for circle in circle_plan.imprint_patterns:
+        support_x.extend([circle.center_x - circle.radius, circle.center_x + circle.radius])
+        support_y.extend([circle.center_y - circle.radius, circle.center_y + circle.radius])
+    segments = [((x, bottom), (x, top)) for x in sorted(set(support_x)) if left <= x <= right]
+    segments.extend(((left, y), (right, y)) for y in sorted(set(support_y)) if bottom <= y <= top)
+    return x_lines, y_lines, segments
 
 
 def build_2d_mesh(plan: Plan2D, *, progress: ProgressCallback | None = None) -> Mesh2D:
-    mesh = generate_rectilinear_mesh(
-        plan.element_size, plan.x_lines, plan.y_lines,
-        coordinate_tolerance=plan.pattern.coordinate_tolerance,
-    )
+    if plan.adaptive is None:
+        mesh = generate_rectilinear_mesh(
+            plan.element_size, plan.x_lines, plan.y_lines,
+            coordinate_tolerance=plan.pattern.coordinate_tolerance,
+        )
+    else:
+        from .region_adapter import build_region_adapter
+
+        mesh = build_region_adapter(plan.adaptive, progress=progress)
     _imprint_circle_patterns(
         mesh, list(plan.circle_plan.imprint_patterns),
         guide_segments=plan.pattern_segments, element_size=plan.element_size,

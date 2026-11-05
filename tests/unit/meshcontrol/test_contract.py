@@ -53,6 +53,27 @@ class MeshControlContractTests(unittest.TestCase):
             value = {**document(), "symmetry": symmetry}
             self.assertEqual(mesh_control_settings(value), (500.0, symmetry, 0))
 
+    def test_optional_region_meshing_preserves_schema_settings_and_input(self):
+        for optional in ({}, {"regionMeshing": "grid"}, {"regionMeshing": "adapter"}):
+            value = {**document(control("3D_REGION", "absolute")), **optional}
+            before = copy.deepcopy(value)
+            with self.subTest(optional=optional):
+                self.assertEqual(mesh_control_settings(value), (500.0, "full", 1))
+                self.assertEqual(value, before)
+                self.assertEqual(value["schemaVersion"], "1.0.0")
+
+    def test_region_meshing_rejects_unknown_values_and_non_strings(self):
+        for mode in ("", "Grid", "automatic", " adapter ", None, True, 1, [], {}):
+            with self.subTest(mode=mode), self.assertRaisesRegex(
+                ValueError, r"meshControl\.regionMeshing must be one of: grid, adapter"
+            ):
+                validate_mesh_control({**document(), "regionMeshing": mode})
+
+    def test_region_meshing_is_global_and_not_a_control_field(self):
+        entry = {**control("3D_REGION", "absolute"), "regionMeshing": "adapter"}
+        with self.assertRaisesRegex(ValueError, r"controls\[0\].*unsupported field.*regionMeshing"):
+            validate_mesh_control(document(entry))
+
     def test_reference_kinds_and_intersected_key_and_id_are_accepted(self):
         references = [
             {"kind": "root"}, {"kind": "container", "key": "hbm"},

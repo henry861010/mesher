@@ -255,7 +255,10 @@ axis aligned. Patterns also retain the single-layer restrictions below.
 Touching or overlapping regions, boundary crossings, premature hole collapse,
 and infeasible fixed interfaces raise `QuadLayerError`; no sizes or layer
 counts are silently adjusted. The existing global coordinate tolerance of
-`1e-3` and each underlying call's one-million-element limit apply independently.
+`coordinate_tolerance=1e-3` and each underlying call's one-million-element limit
+apply independently. Supply a smaller `coordinate_tolerance` when distinct
+features require finer geometric resolution; this tolerance validates boundary
+separation and global completion without snapping source coordinates.
 
 `FullAdaptiveMeshResult.layer_outlines` is indexed by layer, original boundary,
 logical edge, then node ID. Boundary order follows the initial
@@ -690,13 +693,77 @@ Success writes JSON metadata as the final stdout line. Progress events retain
 the `PROCESS_FLOW_PROGRESS ` stderr prefix. `Z_SECTION_AVG`, `Z_SECTION_TOP`,
 `Z_SECTION_BOT`, `Z_SECTION_CENTER`, and `Z_POINT` are applied through shared
 control objects. Overlapping Z constraints use the smallest active size.
-`3D_REGION` adds XY grid lines from its box or polygon region. Each interval
+By default, `3D_REGION` adds XY grid lines from its box or polygon region. Each interval
 between consecutive vertex coordinates is split evenly into
 `max(1, floor(length / elementSize))` segments. Controls contribute their cuts
 independently; their union is clipped to the model bounds and symmetry domain.
 The grid then fills remaining gaps using the global planar element size.
 Lines span the model, so refinement also affects points outside the region
 along the same X/Y projections. The region's Z extent adds no Z constraints.
+
+### Experimental region adapter
+
+The optional top-level `regionMeshing` setting selects one strategy for the
+whole build: `"grid"` (the default above) or `"adapter"`. Existing JSON files,
+Python calls, and the three-argument worker CLI keep working unchanged.
+For a box model with XY bounds `[0, 0]` to `[12, 12]`, this control creates a
+fine central mesh and transitions to the surrounding global mesh:
+
+```python
+mesh_control = {
+    "schemaVersion": "1.0.0",
+    "unitSystem": "um",
+    "mesher": "process_flow_2_5d",
+    "globalElementSize": 1.0,
+    "symmetry": "full",
+    "regionMeshing": "adapter",
+    "controls": [{
+        "method": "3D_REGION",
+        "coordinateMode": "absolute",
+        "label": "Central refinement",
+        "elementSize": 0.2,
+        "region": {
+            "type": "box",
+            "min": {"x": 4, "y": 4, "z": 0},
+            "max": {"x": 8, "y": 8, "z": 1},
+        },
+    }],
+}
+mesh = build_mesh(structure, mesh_control)
+```
+
+Each active region gets its own conforming Quad4 seed. Its target size is
+`min(elementSize, G)`, where `G` is the existing computed planar size, including
+any circular/KOZ refinement. Subsequent targets multiply by five until capped
+at `G`: for example, `0.1 → 0.5 → 2.5 → 10`. Different regions can use different
+sequences. After their intermediate layers, one shared final layer at `G`
+connects them to global completion. Even a seed already sized at `G` needs that
+final layer. Fivefold growth is a **target-size policy**, not an exact 5-to-1
+connectivity guarantee at corners or fixed interfaces; the adapter's separate
+LINE parameters retain their defaults.
+
+The initial supported scope is separated interior boxes and orthogonal polygon
+regions, including supported holes and disconnected parts. Polygon loop order
+and winding do not change the even/odd nesting interpretation. Physical and
+KOZ polygon boundaries must also be orthogonal. Regions touching or crossing
+the retained model bounds/symmetry cut, overlapping or touching regions,
+insufficient space for transitions, collapsing holes, and unsupported adapter
+layouts fail explicitly. A completely outside region is ignored; when no
+active regions remain, the existing base-grid path is used. Transition
+construction preserves material/KOZ constraints and circle support cuts,
+then the existing circular operations and 3D extrusion run. The region's Z
+extent still has no effect on layer sizing.
+If a seed intersects an annulus that concentric-circle extension would rebuild,
+circle planning uses imprint-only construction to preserve the refinement.
+Unaffected extension plans retain the existing optimization.
+
+Adapter mode is experimental and **never retries with the grid strategy**.
+Errors identify the control index/label and preserve the adapter error code,
+stage, and boundary/layer context. Change `regionMeshing` to `"grid"` to use
+the original algorithm. Failed worker runs do not publish partial CDB files
+or replace an existing output. Analysis progress reports `regionMeshing` and,
+in adapter mode, `adapterRegions` with each source, seed size, and transition
+targets; layer completion events report the targets actually constructed.
 
 ## Optional tools
 

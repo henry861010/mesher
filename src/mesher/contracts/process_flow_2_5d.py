@@ -14,6 +14,7 @@ JsonObject = dict[str, Any]
 SCHEMA_VERSION = "1.0.0"
 UNIT_SYSTEM = "um"
 MESHER = "process_flow_2_5d"
+REGION_MESHING_MODES = ("grid", "adapter")
 SYMMETRY_MODES = (
     "full",
     "upper_half",
@@ -50,6 +51,7 @@ def mesh_control_settings(mesh_control: JsonObject) -> tuple[float, str, int]:
             "symmetry",
             "controls",
         },
+        optional={"regionMeshing"},
     )
     if mesh_control["schemaVersion"] != SCHEMA_VERSION:
         raise ValueError(f"meshControl.schemaVersion must be {SCHEMA_VERSION!r}.")
@@ -66,6 +68,11 @@ def mesh_control_settings(mesh_control: JsonObject) -> tuple[float, str, int]:
     if not isinstance(symmetry, str) or symmetry not in SYMMETRY_MODES:
         allowed = ", ".join(SYMMETRY_MODES)
         raise ValueError(f"meshControl.symmetry must be one of: {allowed}.")
+
+    region_meshing = mesh_control.get("regionMeshing", "grid")
+    if not isinstance(region_meshing, str) or region_meshing not in REGION_MESHING_MODES:
+        allowed = ", ".join(REGION_MESHING_MODES)
+        raise ValueError(f"meshControl.regionMeshing must be one of: {allowed}.")
 
     controls = mesh_control["controls"]
     if not isinstance(controls, list):

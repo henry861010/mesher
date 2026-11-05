@@ -505,6 +505,7 @@ class BuilderIntegrationTests(unittest.TestCase):
                         "assignmentCount": 1,
                         "planarElementSize": 1.0,
                         "symmetry": "full",
+                        "regionMeshing": "grid",
                     },
                 },
                 {

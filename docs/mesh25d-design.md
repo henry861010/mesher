@@ -89,7 +89,8 @@ flowchart TB
 
 XY 使用端定義 `XYRegionControl`，包含 `region`（既有 2D face 格式）與
 `element_size`。Z methods 回傳空的 XY controls。`3D_REGION` 只回傳絕對座標
-XY 投影，不保留 Z 範圍、不增加 Z constraints。每個 control 獨立收集 BOX／
+XY 投影，不保留 Z 範圍、不增加 Z constraints。預設 `regionMeshing="grid"`
+時，每個 control 獨立收集 BOX／
 POLYGON 所有 loops 頂點的 x、y 座標，分別排序、去重；每個相鄰座標區間以
 `max(1, floor(區間長度 / element_size))` 段平均分配，保留各頂點切線。
 例如長度 20、尺寸 5 產生 `0,5,10,15,20`；尺寸 6 則為
@@ -101,6 +102,27 @@ geometry、KOZ 與 circle support 的 `x_lines`／`y_lines` 後，由原 grid ge
 依 global planar element size 補滿間隙。各 x、y 切線貫穿模型，會沿投影方向
 影響 region 外網格；polygon 不新增沿斜邊的切線。若 global 尺寸更細，control
 產生的等分區間仍會再細分。既有圓形／KOZ 導致的 planar 尺寸調整維持不變。
+
+JSON 頂層可指定 `regionMeshing="adapter"`，由 `plan2d` 轉交
+`region_adapter`，整次 build 使用同一策略。各區域先以
+`min(region.elementSize, planarElementSize)` 建立 Quad4 細網格，再依各自尺寸
+每層放大五倍，最後限制於 global planar size。例如 `0.1 → 0.5 → 2.5 → 10`；
+前兩層各自建構，最後合併後以 `generate_full_adaptive_mesh(..., [10])` 完成。
+這是目標尺寸比例，轉角與固定介面不保證單元數恰好五轉一。
+
+第一版支援保留模型域內、互不接觸的矩形與正交 polygon，含可處理的孔洞；
+孔洞及分離部分使用奇偶包含語意。幾何與 KOZ 邊界、circle support cuts 在
+seed、每個過渡層與 global completion 都必須保留，且傳遞 pattern 的
+coordinate tolerance。adapter 在 circular imprint／extension 之前執行，
+Z controls、材料配置與擠出流程保持原行為。
+若 region 與同心圓 extension 將重建的環帶相交，則重新規劃為 imprint-only，
+同步更新底網格範圍與支援線，避免已生成的細網格被 extension 覆蓋。
+
+貼邊、越界、重疊、接觸、斜邊、過渡碰撞與孔洞塌縮均明確報錯，不自動退回
+grid；完全位於保留域外的 controls 仍忽略，沒有有效 region 時沿用底網格。
+錯誤保留 adapter code／context 並對應 control 索引與 label。進度資料包含
+`regionMeshing`、`adapterRegions` 的 seed／過渡尺寸，以及已完成過渡層的目標。
+原本 JSON 可不增加欄位，worker CLI 參數與 CDB 成功輸出格式不變。
 
 Z constraints 保留 `start`、`end`、`element_size`、`method`，其中 `method`
 只作診斷資訊。`Z_POINT` 只增加邊界；重疊區間使用 global size 與有效 controls

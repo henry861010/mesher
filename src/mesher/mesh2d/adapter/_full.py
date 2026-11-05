@@ -204,6 +204,7 @@ def generate_full_adaptive_mesh(
     pattern_lines=(),
     max_transition_count: int = 10,
     min_size_ratio: float = 0.5,
+    coordinate_tolerance: float = 1e-3,
 ) -> FullAdaptiveMeshResult:
     """Fill an orthogonal domain around existing focus meshes with Quad4s.
 
@@ -222,7 +223,9 @@ def generate_full_adaptive_mesh(
     Patterns retain the existing layer constraints and must also be exactly
     horizontal or vertical for global generation. Each underlying call retains
     its one-million-element budget; this API does not impose a cumulative limit.
-    Global geometry validation uses its default absolute tolerance of 1e-3.
+    ``coordinate_tolerance`` is the finite, non-negative absolute tolerance
+    for boundary separation and global geometry validation; it defaults to
+    1e-3. Coordinates are not snapped by this tolerance.
 
     ``max_transition_count`` and ``min_size_ratio`` have the single-layer
     API's LINE constraints and defaults (10 and 0.5). They apply to ordinary
@@ -239,7 +242,9 @@ def generate_full_adaptive_mesh(
         max_transition_count, min_size_ratio)
     sizes, ratio, patterns = _call(lambda: _inputs(element_sizes, expand_ratio, pattern_lines),
                                     stage="input_validation")
-    topology = _call(lambda: discover_boundaries(mesh, outer_outline), stage="input_validation")
+    topology = _call(lambda: discover_boundaries(
+        mesh, outer_outline, coordinate_tolerance=coordinate_tolerance),
+        stage="input_validation")
     working = Mesh2D(mesh.nodes, mesh.elements)
     outlines = topology.outlines
     layer_outlines, layer_diagnostics = [], []
