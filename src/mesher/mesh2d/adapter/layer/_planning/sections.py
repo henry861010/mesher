@@ -15,6 +15,8 @@ from .._geometry import BoxIndex, area, cross, on_segment, point_location, segme
 from .._patterns import AxisPattern, covered_intervals, pattern_contacts
 from .._types import QuadLayerError, QuadSectionPlan, Seam, Section
 from .dense import DenseLinePartition
+from .fixed_corners import fixed_corner_layouts
+from .mapping import target_node_id
 
 
 def _fail(message, *, patterns=False, **context):
@@ -385,13 +387,46 @@ def _validate_sections(sections, seams, data):
 def partition_sections(data) -> QuadSectionPlan:
     """Partition normalized prepared geometry without creating or moving nodes."""
     chords, anchors = _admit_patterns(data)
+    fixed = data.get("fixed_outer_boundary", False)
+    if fixed:
+        for point in anchors:
+            if (any(on_segment(point, a, b, data["tol"]) for a, b in _loop_segments(data["front"]))
+                    and target_node_id(point, data) is None):
+                _fail("a pattern contact is missing from the fixed outline_o", patterns=True,
+                      parameter="outline_o", point=(point * data["scale"] + data["origin"]).tolist())
     if "outline_anchors" in data:
         anchors = np.vstack((data["outline_anchors"], anchors))
     registry = _Seams(data, anchors)
     corners = _make_corners(data, chords, registry)
     _share_repaired_endpoint_seams(data, corners, registry)
+    if not fixed:
+        return _partition_sections(data, chords, anchors, registry, corners)
+    last_error = None
+    for attempt, (items, mapped, diagnostics) in enumerate(
+            fixed_corner_layouts(data, chords, registry, corners), 1):
+        trial = _Seams(data, anchors)
+        trial.items = items
+        for corner in mapped:
+            corner.outer = _clean(corner.outer, data["tol"])
+        try:
+            plan = _partition_sections(data, chords, anchors, trial, mapped)
+        except QuadLayerError as error:
+            if error.code not in {"unmeshable_section_layout", "unsupported_pattern_layout"}:
+                raise
+            last_error = error
+            continue
+        return replace(plan, diagnostics={**plan.diagnostics, "corner_mappings": diagnostics,
+                                         "corner_mapping_attempts": attempt})
+    if last_error is not None:
+        raise last_error
+    _fail("no existing outer nodes form compatible corner interfaces",
+          parameter="outline_o", stage="fixed_boundary_plan")
+
+
+def _partition_sections(data, chords, anchors, registry, corners):
+    """Build LINE/dense sections for one complete corner assignment."""
     sections = []
-    dense = DenseLinePartition(data)
+    dense = DenseLinePartition(data, [chord.points[[0, -1]] for chord in chords])
 
     def append(kind, source_chains, outer, left, right, *, source_edge=None, corner=None):
         outer = _with_anchors(outer, anchors, data["tol"])
@@ -454,4 +489,6 @@ def partition_sections(data) -> QuadSectionPlan:
                            tuple(map(float, data["expansion"])),
                            {"path": "corner_first", "sections": dict(Counter(section.kind for section in sections)),
                             "section_count": len(sections), "seam_count": len(seams),
-                            "pattern_chord_count": len(chords), **dense.diagnostics()})
+                            "pattern_chord_count": len(chords),
+                            "fixed_outer_boundary": data.get("fixed_outer_boundary", False),
+                            "corner_mappings": [], **dense.diagnostics()})

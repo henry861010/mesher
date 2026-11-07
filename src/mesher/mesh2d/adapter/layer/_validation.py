@@ -7,6 +7,7 @@ from collections import defaultdict
 import numpy as np
 
 from ._geometry import BoxIndex, area, cross, intervals_cover, segment_contacts
+from ._old_mesh import edge_membership, edge_owner_count, old_edge_keys
 from ._patterns import covered_intervals, occupied_intervals
 from ._types import QuadLayerError, UnmeshableDirectQuadLayout
 
@@ -217,16 +218,22 @@ def validate_patch(mesh, nodes, quads, outline, data):
     if not set(expected).issubset(incidence):
         _failure("the layer omitted a source or front boundary segment")
 
+    new_keys = np.asarray(sorted(incidence), dtype=np.int64).reshape(-1, 2)
+    old_keys = old_edge_keys(mesh.elements, data)
+    shared_keys = {tuple(map(int, key)) for key in new_keys[edge_membership(new_keys, old_keys)]}
     source_keys = {tuple(sorted(map(int, edge))) for edge in data["frozen"]}
     front_keys = set(expected).difference(source_keys)
-    shared_front = front_keys.intersection(data["old_incidence"])
-    for key in shared_front:
-        old_owners = data["old_incidence"][key]
-        if not set(key).issubset(target_ids) or len(old_owners) != 1:
+    shared_front = front_keys.intersection(shared_keys)
+    old_cells = _ccw_cells(data["xy"][mesh.elements])
+    old_cell_index = None
+    if shared_front:
+        old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
+    for key in sorted(shared_front):
+        if (not set(key).issubset(target_ids)
+                or edge_owner_count(key, mesh.elements, data["xy"], old_cell_index, tol) != 1):
             raise QuadLayerError("the target would create a nonconforming shared edge",
                                  code="topology_change", parameter="outline_o", edge=key)
-    unexpected_old_edges = (set(incidence).intersection(data["old_incidence"])
-                            .difference(source_keys | shared_front))
+    unexpected_old_edges = shared_keys.difference(source_keys | shared_front)
     if unexpected_old_edges:
         raise QuadLayerError("the layer meets old mesh away from its source boundary",
                              code="topology_change", edge=min(unexpected_old_edges))
@@ -245,8 +252,6 @@ def validate_patch(mesh, nodes, quads, outline, data):
         _failure("new Quad4 cells do not cover the complete planned band",
                  actual_area=actual_area, expected_area=expected_area)
 
-    new_keys = np.asarray(sorted(incidence), dtype=np.int64).reshape(-1, 2)
-    old_keys = np.asarray(sorted(data["old_incidence"]), dtype=np.int64).reshape(-1, 2)
     new_edges = nodes[new_keys, :2]
     old_edges = data["xy"][old_keys]
     new_edge_index = BoxIndex(new_edges.min(axis=1), new_edges.max(axis=1), tol)
@@ -254,9 +259,9 @@ def validate_patch(mesh, nodes, quads, outline, data):
     _check_edge_geometry(new_keys, new_edges, old_keys, old_edges,
                          new_edge_index, old_edge_index, tol)
 
-    old_cells = _ccw_cells(data["xy"][mesh.elements])
     new_cell_index = BoxIndex(new_cells.min(axis=1), new_cells.max(axis=1), tol)
-    old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
+    if old_cell_index is None:
+        old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
     _check_overlaps(new_cells, old_cells, new_cell_index, old_cell_index, tol)
     _check_patterns(data["pattern_records"], new_cells, old_cells, new_cell_index, old_cell_index,
                     new_edges, old_edges, new_edge_index, old_edge_index, tol)

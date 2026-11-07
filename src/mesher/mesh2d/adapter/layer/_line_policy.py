@@ -11,11 +11,11 @@ from ._types import QuadLayerError
 DEFAULT_MAX_TRANSITION_COUNT = 20
 
 
-def validate_dense_parameters(small_element_size, dense_region_tolerance):
-    """Absolute world-coordinate lengths; None disables dense partitioning."""
+def validate_dense_parameters(small_element_size, dense_mapping_angle):
+    """World-length threshold and angular mapping limit in degrees."""
     values = []
     for name, value, optional in (("small_element_size", small_element_size, True),
-                                   ("dense_region_tolerance", dense_region_tolerance, False)):
+                                   ("dense_mapping_angle", dense_mapping_angle, False)):
         if optional and value is None:
             values.append(None)
             continue
@@ -25,8 +25,8 @@ def validate_dense_parameters(small_element_size, dense_region_tolerance):
             number = float(value) if valid else float("nan")
         except (ValueError, OverflowError):
             number = float("nan")
-        if not math.isfinite(number) or (number <= 0 if optional else number < 0):
-            requirement = "positive or None" if optional else "non-negative"
+        if not math.isfinite(number) or (number <= 0 if optional else not 0 <= number < 90):
+            requirement = "positive or None" if optional else "in [0, 90) degrees"
             raise QuadLayerError(f"{name} must be finite and {requirement}",
                                  code="invalid_input", stage="input_validation", parameter=name)
         values.append(number)

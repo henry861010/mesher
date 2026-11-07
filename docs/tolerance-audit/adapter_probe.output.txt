@@ -1,0 +1,25 @@
+prepare OK {'length': 1, 'deviation': 0, 'normalized_tol': np.float64(2.842170943040401e-14), 'physical_tol': np.float64(2.842170943040401e-14)}
+prepare QuadLayerError outline_i edges must be near a global X or Y axis invalid_input {'parameter': 'outline_i', 'edge_index': 1}
+prepare OK {'length': 1000, 'deviation': 0.5, 'normalized_tol': np.float64(2.842170943040401e-14), 'physical_tol': np.float64(2.843592028511921e-11)}
+layer_pattern_tilt 0 OK 8
+layer_pattern_tilt 1e-10 QuadLayerError patterns must be nonzero horizontal or vertical segments invalid_input {'pattern_index': 0, 'stage': 'input_validation'}
+layer_pattern_tilt 0.0005 QuadLayerError patterns must be nonzero horizontal or vertical segments invalid_input {'pattern_index': 0, 'stage': 'input_validation'}
+holed_outline_tilt 0 OK 4
+holed_outline_tilt 1e-10 ValueError outer_outline edges must be exactly axis aligned None None
+holed_outline_tilt 0.0005 ValueError outer_outline edges must be exactly axis aligned None None
+holed_pattern_tilt 0 OK 4
+holed_pattern_tilt 1e-10 ValueError pattern_lines[0] must be nonzero and exactly axis aligned None None
+holed_pattern_tilt 0.0005 ValueError pattern_lines[0] must be nonzero and exactly axis aligned None None
+sort_chain [0. 1.]
+rect_chain [0, 0.00075, 0.0015] ValueError After _densify, need at least 2 x-lines and 2 y-lines. None None
+rect_chain [0, 0.00075, 0.0015, 1] OK [0.0, 1.0, 0.0, 1.0]
+holed_close_patterns 0 OK {'elements': 4, 'min_edge': 1.0}
+holed_close_patterns 0.0005 OK {'elements': 6, 'min_edge': 0.0004999999999999449}
+holed_close_patterns 1e-10 OK {'elements': 6, 'min_edge': 1.000000082740371e-10}
+rect_float_count 0.3 OK 3
+rect_float_count 0.30000000000000004 OK 4
+rect_numeric_densify 0 OK {'nodes': 40401, 'unique_coordinates': 40401, 'min_edge': 9.999999999999593e-06, 'zero_edges': 0}
+rect_numeric_densify 1000000000000.0 OK {'nodes': 39597, 'unique_coordinates': 3417, 'min_edge': 0.0, 'zero_edges': 72000}
+dense_translate 0 OK {'lengths': [0.3, 0.3, 0.30000000000000004], 'dense_sections': 0, 'dense_seams': 0, 'mappings': []}
+dense_translate 1 OK {'lengths': [0.30000000000000004, 0.30000000000000004, 0.2999999999999998], 'dense_sections': 2, 'dense_seams': 2, 'mappings': [{'source_edge': 1, 'source_index': 2, 'source_node': 6, 'endpoint': 'begin', 'seam_id': 8, 'target_node': None, 'target': [1.6, 2.0], 'angle': 0.0, 'status': 'mapped', 'reason': 'projected_contact'}, {'source_edge': 3, 'source_index': 1, 'source_node': 2, 'endpoint': 'end', 'seam_id': 9, 'target_node': None, 'target': [1.6, -1.0], 'angle': 0.0, 'status': 'mapped', 'reason': 'projected_contact'}]}
+dense_translate 10 OK {'lengths': [0.3000000000000007, 0.29999999999999893, 0.3000000000000007], 'dense_sections': 2, 'dense_seams': 4, 'mappings': [{'source_edge': 1, 'source_index': 1, 'source_node': 5, 'endpoint': 'begin', 'seam_id': 8, 'target_node': None, 'target': [10.3, 2.0], 'angle': 0.0, 'status': 'mapped', 'reason': 'projected_contact'}, {'source_edge': 1, 'source_index': 2, 'source_node': 6, 'endpoint': 'end', 'seam_id': 9, 'target_node': None, 'target': [10.6, 2.0], 'angle': 0.0, 'status': 'mapped', 'reason': 'projected_contact'}, {'source_edge': 3, 'source_index': 1, 'source_node': 2, 'endpoint': 'begin', 'seam_id': 10, 'target_node': None, 'target': [10.6, -1.0], 'angle': 0.0, 'status': 'mapped', 'reason': 'projected_contact'}, {'source_edge': 3, 'source_index': 2, 'source_node': 1, 'endpoint': 'end', 'seam_id': 11, 'target_node': None, 'target': [10.3, -1.0], 'angle': 0.0, 'status': 'mapped', 'reason': 'projected_contact'}]}

@@ -28,14 +28,13 @@ class OutlineLoopTests(unittest.TestCase):
                     if _area(hole.nodes[ids, :2]) > 0)
         yield hole, loop, .2
 
-    def test_starts_windings_and_explicit_closure_produce_identical_results(self):
+    def test_starts_and_explicit_closure_produce_identical_results(self):
         for source, loop, size in self.fixtures():
             baseline = None
-            for reverse, start, closed in ((False, 0, False), (False, 1, True),
-                                           (False, len(loop)-1, False), (True, 0, True),
-                                           (True, 1, False), (True, len(loop)-1, True)):
-                with self.subTest(nodes=source.node_count, reverse=reverse, start=start, closed=closed):
-                    supplied = np.roll(np.asarray(loop)[::-1] if reverse else loop, start)
+            for start, closed in ((0, False), (1, True), (len(loop)-1, False),
+                                  (0, True), (1, False), (len(loop)-1, True)):
+                with self.subTest(nodes=source.node_count, start=start, closed=closed):
+                    supplied = np.roll(loop, start)
                     if closed:
                         supplied = np.r_[supplied, supplied[0]]
                     supplied.setflags(write=False)
@@ -56,29 +55,35 @@ class OutlineLoopTests(unittest.TestCase):
                         self.assertEqual(result.outline, baseline[2])
                         np.testing.assert_array_equal(plan.front, baseline[3])
 
-    def test_clockwise_cells_and_counterclockwise_input_normalize_to_same_growth(self):
+    def test_cell_winding_does_not_change_caller_directed_growth(self):
         source, loop, _ = next(self.fixtures())
         ccw = Mesh2D(source.nodes, source.elements)
         cw = Mesh2D(source.nodes, source.elements[:, ::-1])
         first = generate_layer_adaptive_mesh(ccw, loop, .5)
-        second = generate_layer_adaptive_mesh(cw, np.asarray(loop)[::-1], .5)
+        second = generate_layer_adaptive_mesh(cw, loop, .5)
         np.testing.assert_array_equal(ccw.nodes, cw.nodes)
         np.testing.assert_array_equal(ccw.elements[source.element_count:], cw.elements[source.element_count:])
         self.assertEqual(first.outline, second.outline)
 
-    def test_missing_intermediate_nodes_fail_atomically(self):
-        for api in (plan_quad_sections, generate_layer_adaptive_mesh):
-            source, loop, _ = next(self.fixtures())
-            mesh = Mesh2D(source.nodes, source.elements)
-            nodes, elements = mesh.nodes, mesh.elements
-            with self.subTest(api=api.__name__), self.assertRaises(QuadLayerError) as caught:
-                api(mesh, np.delete(loop, 1), .5)
-            self.assertEqual(caught.exception.code, "fixed_boundary_conflict")
-            self.assertEqual(caught.exception.context["parameter"], "outline_i")
-            self.assertIs(mesh.nodes, nodes)
-            self.assertIs(mesh.elements, elements)
-            np.testing.assert_array_equal(nodes, source.nodes)
-            np.testing.assert_array_equal(elements, source.elements)
+    def test_reversing_source_reverses_growth_side_without_normalization(self):
+        source, loop, _ = next(self.fixtures())
+        for reverse in (False, True):
+            supplied = np.asarray(loop)[::-1] if reverse else np.asarray(loop)
+            plan = plan_quad_sections(source, supplied, .5, repair_slots=False)
+            lower = source.nodes[loop, :2].min(axis=0)
+            upper = source.nodes[loop, :2].max(axis=0)
+            distance = -.5 if reverse else .5
+            np.testing.assert_allclose(plan.front.min(axis=0), lower - distance)
+            np.testing.assert_allclose(plan.front.max(axis=0), upper + distance)
+            self.assertEqual(np.sign(_area(plan.front)), np.sign(_area(source.nodes[supplied, :2])))
+
+    def test_source_ownership_is_a_caller_precondition_for_planning(self):
+        source, loop, _ = next(self.fixtures())
+        # A missing collinear node violates the caller contract, but does not
+        # prevent a geometric preview. No ownership lookup repairs this input.
+        supplied = np.delete(loop, 1)
+        plan = plan_quad_sections(source, supplied, .5, repair_slots=False)
+        self.assertEqual(len(plan.front), 4)
 
     def test_none_source_is_a_typed_input_failure(self):
         for api in (plan_quad_sections, generate_layer_adaptive_mesh):

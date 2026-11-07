@@ -1,0 +1,60 @@
+Traceback (most recent call last):
+  File "/Users/henry/Desktop/code/mesher/docs/tolerance-audit/case1/diagnose.py", line 68, in <module>
+    mesh=build_2d_mesh(plan)
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh25d/plan2d.py", line 199, in build_2d_mesh
+    mesh = build_region_adapter(plan.adaptive, progress=progress)
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh25d/region_adapter.py", line 370, in build_region_adapter
+    raise _annotate(error, [sources[index] for index in affected],
+                    region_layer_indices={sources[index]: len(plan.regions[index].transition_sizes) - 1
+                                          for index in affected})
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh25d/region_adapter.py", line 358, in build_region_adapter
+    result = generate_full_adaptive_mesh(
+        combined, [plan.element_size], outer_outline=plan.outer_outline,
+        pattern_lines=plan.pattern_lines, coordinate_tolerance=plan.coordinate_tolerance,
+    )
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh2d/adapter/_full.py", line 329, in generate_full_adaptive_mesh
+    result = _call(lambda: _generate_layer_adaptive_mesh(
+                        working, outline, final_size, expand_ratio=ratio,
+    ...<4 lines>...
+                   stage="final_layer_construction", layer_index=final_index,
+                   boundary_index=boundary_index)
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh2d/adapter/_full.py", line 46, in _call
+    return operation()
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh2d/adapter/_full.py", line 329, in <lambda>
+    result = _call(lambda: _generate_layer_adaptive_mesh(
+                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+                        working, outline, final_size, expand_ratio=ratio,
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+                        dense_mapping_angle=dense_mapping_angle,
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        _dense_seam_targets=dense_targets[boundary_index]),
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh2d/adapter/layer/_mesher.py", line 397, in _generate_layer_adaptive_mesh
+    data, plan = _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio,
+                 ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                              axis_tolerance, expand_size=expand_size, repair_slots=repair_slots,
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+                              dense_mapping_angle=dense_mapping_angle,
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                              _dense_seam_targets=_dense_seam_targets)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh2d/adapter/layer/_mesher.py", line 93, in _prepare_plan
+    target = None if outline_o is None else _normalize_outline_o(outline_o, data)
+                                            ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/henry/Desktop/code/mesher/docs/tolerance-audit/case1/diagnose.py", line 53, in normalize
+    try:return original(outline_o,data)
+               ~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh2d/adapter/layer/_planning/front.py", line 83, in _normalize_outline_o
+    directions = _outline_o_directions(points, tol)
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh2d/adapter/layer/_planning/front.py", line 104, in _outline_o_directions
+    _fail("outline_o edges must be nonzero horizontal or vertical segments",
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+          parameter="outline_o", stage="input_validation",
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+          edge_index=int(np.flatnonzero(invalid)[0]))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/henry/Desktop/code/mesher/src/mesher/mesh2d/adapter/layer/_planning/source.py", line 15, in _fail
+    raise QuadLayerError(message, code=code, **context)
+mesher.mesh2d.adapter.layer._types.QuadLayerError: 3D_REGION adapter (controls[7] ('Die top corners merged 3')): outline_o edges must be nonzero horizontal or vertical segments; code=invalid_input, context={'parameter': 'outline_o', 'stage': 'input_validation', 'edge_index': 9, 'layer_index': 0, 'boundary_index': 2, 'region_layer_indices': {"controls[7] ('Die top corners merged 3')": 3}, 'region_sources': ["controls[7] ('Die top corners merged 3')"]}

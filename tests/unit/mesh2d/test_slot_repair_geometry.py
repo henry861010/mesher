@@ -87,6 +87,22 @@ class SlotRepairGeometryTests(unittest.TestCase):
         np.testing.assert_array_equal(normalized.nodes, original_nodes)
         np.testing.assert_array_equal(normalized.elements, original_elements)
 
+    def test_regroup_checks_actual_cells_instead_of_trusting_advertised_mouth(self):
+        cells = {(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (2, 2)}
+        mesh, outline, _ = _polyomino(cells)
+        data = _prepare(mesh, outline, .5, (), 1., 1e-3)
+        _expansion_distances(data)
+        normalized = Mesh2D(np.column_stack((data["xy"], np.zeros(len(mesh.nodes)))), mesh.elements)
+        result = repair_slots(normalized, data)
+        slot = _find_slots(data)[0]
+        selected = _candidate(slot, slot.candidates[0], data)
+        mouth = np.asarray(result.diagnostics["slot_repairs"][0]["mouth_node_ids"])
+        quads = result.mesh.elements[len(mesh.elements):]
+        for corrupt in (quads[:-1], np.vstack((quads, quads[:1])), quads[:, ::-1]):
+            with self.subTest(cells=corrupt.tolist()), self.assertRaises(QuadLayerError) as caught:
+                _regroup(normalized, data, result.mesh.nodes, corrupt, [selected], [mouth])
+            self.assertEqual(caught.exception.context["reason"], "repair_topology")
+
 
 if __name__ == "__main__":
     unittest.main()

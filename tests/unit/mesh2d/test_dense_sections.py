@@ -122,7 +122,7 @@ class DenseSectionTests(unittest.TestCase):
             mesh, outline = rectangle(scale=scale, shear=1e-5)
             plan = plan_quad_sections(mesh, outline, 1000. * scale,
                                      small_element_size=10. * scale,
-                                     dense_region_tolerance=.001 * scale)
+                                     dense_mapping_angle=30.0)
             contacts = [plan.seams[r['seam_id']].points / scale
                         for r in plan.diagnostics['dense_seams']]
             if reference is None:
@@ -132,23 +132,22 @@ class DenseSectionTests(unittest.TestCase):
             for points in contacts:
                 self.assertAlmostEqual(points[0, 0], points[-1, 0])
 
-    def test_explicit_outer_anchor_merge_is_strict_and_does_not_move_inputs(self):
-        for distance, tolerance, reused in ((.0625, .125, True), (.125, .125, False),
-                                            (.25, .125, False), (0., 0., True)):
-            with self.subTest(distance=distance, tolerance=tolerance):
+    def test_explicit_outer_anchor_mapping_is_directional_and_does_not_move_inputs(self):
+        for distance, angle, reused in ((-.0625, 30., True), (.0625, 30., False),
+                                        (-30., 30., False), (0., 0., True)):
+            with self.subTest(distance=distance, angle=angle):
                 mesh, outline = rectangle([0, 100, 105, 110, 200], height=100.)
                 target = np.array([[-50., -50.], [-50., 150.], [100. + distance, 150.],
                                    [250., 150.], [250., -50.]])
                 saved = target.copy()
                 ids = _target_ids(mesh, target)
                 plan = plan_quad_sections(mesh, outline, 50., outline_o=ids,
-                                         small_element_size=10., dense_region_tolerance=tolerance)
+                                         small_element_size=10., dense_mapping_angle=angle)
                 record = next(r for r in plan.diagnostics['dense_seams']
                               if np.array_equal(mesh.nodes[r['source_node'], :2], [100., 100.]))
                 point = plan.seams[record['seam_id']].points[-1]
                 self.assertAlmostEqual(point[0], 100. + distance if reused else 100.)
                 np.testing.assert_array_equal(target, saved)
-                # Explicit anchors must remain in the plan even if not reused.
                 self.assertTrue(any(np.any(np.all(np.isclose(s.outer_boundary, target[2]), axis=1))
                                     for s in plan.sections))
 
@@ -158,7 +157,7 @@ class DenseSectionTests(unittest.TestCase):
                   [250., 150.], [250., -50.]]
         ids = _target_ids(mesh, target)
         plan = plan_quad_sections(mesh, outline, 50., outline_o=ids,
-                                 small_element_size=10., dense_region_tolerance=.5)
+                                 small_element_size=10., dense_mapping_angle=30.0)
         record = next(r for r in plan.diagnostics['dense_seams']
                       if np.array_equal(mesh.nodes[r['source_node'], :2], [100., 100.]))
         self.assertEqual(plan.seams[record['seam_id']].points[-1, 0], 99.75)
@@ -218,7 +217,7 @@ class DenseSectionTests(unittest.TestCase):
     def test_invalid_parameters_are_atomic_for_all_public_entrypoints(self):
         for parameter, values in (
             ('small_element_size', [0, -1, True, np.nan, np.inf, '10', [10], 10**1000]),
-            ('dense_region_tolerance', [-1, None, True, np.nan, np.inf, '.001', [.001]]),
+            ('dense_mapping_angle', [-1, 90, 100, None, True, np.nan, np.inf, '30', [30], 10**1000]),
         ):
             for value in values:
                 for operation in ('preview', 'single', 'full'):
@@ -237,15 +236,16 @@ class DenseSectionTests(unittest.TestCase):
                         self.assertIs(mesh.nodes, nodes)
                         self.assertIs(mesh.elements, cells)
 
-    def test_collapsed_projected_interval_is_a_typed_atomic_failure(self):
+    def test_close_dense_endpoints_keep_distinct_projections(self):
         mesh, outline = rectangle([0, 100, 100.0001, 200], height=100.)
-        nodes, cells = mesh.nodes, mesh.elements
-        with self.assertRaises(QuadLayerError) as caught:
-            generate_layer_adaptive_mesh(mesh, outline, 50., small_element_size=10.)
-        self.assertEqual(caught.exception.code, 'unmeshable_section_layout')
-        self.assertIn('source_nodes', caught.exception.context)
-        self.assertIs(mesh.nodes, nodes)
-        self.assertIs(mesh.elements, cells)
+        nodes, cells = mesh.nodes.copy(), mesh.elements.copy()
+        result = generate_layer_adaptive_mesh(mesh, outline, 50., small_element_size=10.)
+        self.assert_frozen(mesh, nodes, cells)
+        records = [r for r in result.diagnostics['dense_mappings']
+                   if mesh.nodes[r['source_node'], 1] == 100.]
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(r['status'] == 'mapped' for r in records))
+        self.assertGreater(records[1]['target'][0] - records[0]['target'][0], 0.)
 
     def test_full_mesh_routes_parameters_and_preserves_fixed_interface_for_one_or_two_layers(self):
         for sizes in ([1000.], [1000., 1000.]):
@@ -269,22 +269,22 @@ class DenseSectionTests(unittest.TestCase):
 
     def test_fixed_construction_reuses_saved_contact_instead_of_a_closer_new_anchor(self):
         mesh, outline = rectangle([0, 100, 105, 110, 200], height=100.)
-        target = np.array([[-50., -50.], [-50., 150.], [100.0625, 150.],
+        target = np.array([[-50., -50.], [-50., 150.], [99.9375, 150.],
                            [250., 150.], [250., -50.]])
         ids = _target_ids(mesh, target)
         plan = plan_quad_sections(mesh, outline, 50., outline_o=ids,
-                                 small_element_size=10., dense_region_tolerance=.125)
+                                 small_element_size=10., dense_mapping_angle=30.0)
         contacts = {(r['source_edge'], r['source_index']): plan.seams[r['seam_id']].points[-1]
                     for r in plan.diagnostics['dense_seams']}
         # Simulate the global mesher adding closer contacts after planning.
         dense_front = _full.section_outline_points(plan)
-        anchor = np.array([100.0625, 150.])
+        anchor = np.array([99.9375, 150.])
         pos = int(np.argmin(np.linalg.norm(dense_front - anchor, axis=1)))
-        fixed = np.insert(dense_front, pos, [[100., 150.]], axis=0)
+        fixed = np.insert(dense_front, pos + 1, [[100., 150.]], axis=0)
         fixed_ids = _target_ids(mesh, fixed)
         data, rebuilt = _mesher._prepare_plan(mesh, outline, 50., (), 1., 1e-3,
                                               outline_o=fixed_ids, small_element_size=10.,
-                                              dense_region_tolerance=.125,
+                                              dense_mapping_angle=30.0,
                                               _dense_seam_targets=contacts)
         record = next(r for r in rebuilt.diagnostics['dense_seams']
                       if np.array_equal(mesh.nodes[r['source_node'], :2], [100., 100.]))

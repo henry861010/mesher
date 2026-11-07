@@ -1,0 +1,9 @@
+{
+  "date": "2026-11-07",
+  "python": "3.13.5",
+  "numpy": "2.5.2",
+  "shapely": "2.1.2",
+  "baseline_command": "PYTHONPATH=src venv/bin/python -m unittest discover -s tests -t . -q",
+  "baseline_result": "Ran 1068 tests in 112.761s; OK",
+  "policy": "Absolute geometric distance tolerance = 0.001 model units (confirmed by user); case1 unitSystem=um"
+}

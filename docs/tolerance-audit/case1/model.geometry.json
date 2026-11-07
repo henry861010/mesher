@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "1.0.0",
+  "unitSystem": "um",
+  "root": {
+    "bodies": [
+      {
+        "geometry": {
+          "type": "BoxGeometry",
+          "bottom_left": [
+            -20000,
+            -20000,
+            -387.5
+          ],
+          "top_right": [
+            20000,
+            20000,
+            -387.5
+          ],
+          "thk": 775
+        },
+        "material": "Si",
+        "key": "carrier",
+        "id": "body:root-container-carrier-wafer-body-0:ff9452e8906f"
+      }
+    ],
+    "vias": [],
+    "circuits": [],
+    "bumps": [],
+    "children": [
+      {
+        "bodies": [
+          {
+            "geometry": {
+              "type": "BoxGeometry",
+              "bottom_left": [
+                -10000,
+                -10000,
+                387.5
+              ],
+              "top_right": [
+                0,
+                0,
+                387.5
+              ],
+              "thk": 200
+            },
+            "material": "si",
+            "key": "soc.si",
+            "id": "body:child-0-soc-container-soc-body-0:976606d9c859"
+          }
+        ],
+        "vias": [],
+        "circuits": [],
+        "bumps": [],
+        "children": [],
+        "key": "soc",
+        "id": "container:container-carrier-wafer-child-0-soc-container-soc:ac090eae4025"
+      },
+      {
+        "bodies": [
+          {
+            "geometry": {
+              "type": "BoxGeometry",
+              "bottom_left": [
+                -10000,
+                1000,
+                387.5
+              ],
+              "top_right": [
+                0,
+                11000,
+                387.5
+              ],
+              "thk": 200
+            },
+            "material": "si",
+            "key": "soc.si",
+            "id": "body:child-1-soc-container-soc-body-0:3da49b74a406"
+          }
+        ],
+        "vias": [],
+        "circuits": [],
+        "bumps": [],
+        "children": [],
+        "key": "soc",
+        "id": "container:container-carrier-wafer-child-1-soc-container-soc:4887ad688c1b"
+      },
+      {
+        "bodies": [
+          {
+            "geometry": {
+              "type": "BoxGeometry",
+              "bottom_left": [
+                1000,
+                -10000,
+                387.5
+              ],
+              "top_right": [
+                11000,
+                9500,
+                387.5
+              ],
+              "thk": 200
+            },
+            "material": "si",
+            "key": "soc.si",
+            "id": "body:child-2-soc-container-soc-body-0:8719a0e746fb"
+          }
+        ],
+        "vias": [],
+        "circuits": [],
+        "bumps": [],
+        "children": [],
+        "key": "soc",
+        "id": "container:container-carrier-wafer-child-2-soc-container-soc:d90b8e6d4ea3"
+      }
+    ],
+    "key": "carrier.wafer",
+    "id": "container:wafer-carrier-root"
+  }
+}

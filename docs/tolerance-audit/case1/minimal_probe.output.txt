@@ -1,0 +1,4 @@
+hole 0 minimum edge 4.440892098500626e-16
+QuadLayerError outline_o edges must be nonzero horizontal or vertical segments {'parameter': 'outline_o', 'stage': 'input_validation', 'edge_index': 2}
+hole 1 minimum edge 1.0
+accepted by layer target-direction predicate

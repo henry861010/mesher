@@ -1,12 +1,11 @@
 """Validate source mesh and patterns, then normalize their coordinate frame."""
 from __future__ import annotations
 
-from collections import defaultdict
-
 import numpy as np
 
 from ....model import Mesh2D, _validate_zero_z
 from .._geometry import BoxIndex, area, cross, intervals_cover, segment_contacts
+from .._old_mesh import old_edge_keys
 from .._patterns import (PATTERN_RANGE_LIMIT, AxisPattern, covered_intervals,
                          occupied_intervals, pattern_contacts)
 from .._types import QuadLayerError, UnmeshableDirectQuadLayout
@@ -25,14 +24,6 @@ def _input_scalar(value, parameter):
         raise QuadLayerError(f"{parameter} must be a finite scalar",
                              code="invalid_input", stage="input_validation",
                              parameter=parameter) from error
-
-
-def _edge_incidence(elements):
-    incidence = defaultdict(list)
-    for i, cell in enumerate(elements):
-        for a, b in zip(cell, np.roll(cell, -1)):
-            incidence[tuple(sorted((int(a), int(b))))].append((i, int(a), int(b)))
-    return incidence
 
 
 def _simple_loop(polygon, tol, name):
@@ -115,19 +106,9 @@ def _input_loop(outline, node_count, *, parameter="outline_i"):
     return np.roll(raw.astype(np.int64, copy=True), -int(np.argmin(raw)))
 
 
-def _source_chains(flat, xy, incidence, elements, tol):
-    """Orient a frozen boundary and group its cyclic signed cardinal runs."""
+def _source_chains(flat, xy, tol):
+    """Group a caller-oriented frozen boundary into cyclic cardinal runs."""
     context = dict(stage="input_validation", parameter="outline_i")
-    owners = []
-    for index, (a, b) in enumerate(zip(flat, np.roll(flat, -1))):
-        matches = incidence.get(tuple(sorted((int(a), int(b)))), ())
-        if len(matches) != 1:
-            _fail("each outline_i segment must be an existing boundary edge",
-                  "fixed_boundary_conflict", segment_index=index, **context)
-        owners.append(matches[0][0])
-    centroid = xy[elements[owners[0]]].mean(axis=0)
-    if cross(xy[flat[1]] - xy[flat[0]], centroid - xy[flat[0]]) > 0:
-        flat = flat[::-1]
     vectors = xy[np.roll(flat, -1)] - xy[flat]
     if np.any(np.linalg.norm(vectors, axis=1) <= tol):
         _fail("outline_i segments must have nonzero XY length", **context)
@@ -177,7 +158,6 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
         _fail("mesh contains out-of-range node IDs")
     if len(mesh.elements) and np.any(np.diff(np.sort(mesh.elements, axis=1), axis=1) == 0):
         _fail("input elements must be Quad4 with four distinct node IDs", "quad_only_input")
-    incidence = _edge_incidence(mesh.elements)
     if _semantic_directions is None:
         flat = _input_loop(outline_i, len(mesh.nodes))
         ids = None
@@ -220,7 +200,7 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
         raise UnmeshableDirectQuadLayout("expand_size is below geometric resolution",
                                         stage="input_validation", parameter="expand_size")
     if ids is None:
-        ids = _source_chains(flat, xy, incidence, mesh.elements, tol)
+        ids = _source_chains(flat, xy, tol)
         flat = np.concatenate([chain[:-1] for chain in ids])
     source = xy[flat]
     chains = [xy[chain].copy() for chain in ids]
@@ -264,22 +244,13 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
                                     np.linalg.norm(np.roll(edges, -1, axis=1), axis=2))
         if np.any(~(np.all(turns > threshold, axis=1) | np.all(turns < -threshold, axis=1))):
             _fail("existing Quad4 elements must be nondegenerate and strictly convex")
-        for a, b in frozen:
-            owners = incidence.get(tuple(sorted((int(a), int(b)))), ())
-            if len(owners) != 1:
-                _fail("each source segment must be an existing boundary edge", "fixed_boundary_conflict")
-            centroid = cells[owners[0][0]].mean(axis=0)
-            if cross(xy[b] - xy[a], centroid - xy[a]) >= -tol * np.linalg.norm(xy[b] - xy[a]):
-                _fail("outline_i direction must place existing mesh on its right", "outline_orientation",
-                      parameter="outline_i")
     patterns = _normalize_patterns(pattern_lines, origin, scale, tol, source)
     pattern_records = tuple(AxisPattern.from_points(points, (i,))
                             for i, points in enumerate(patterns))
     return dict(xy=xy, ids=ids, source=source, chains=chains, normals=normals,
                 directions=directions, frozen=frozen, patterns=patterns,
                 pattern_records=pattern_records,
-                h=h, expand_h=expand_h, ratio=ratio, tol=tol, origin=origin, scale=scale,
-                old_incidence=incidence)
+                h=h, expand_h=expand_h, ratio=ratio, tol=tol, origin=origin, scale=scale)
 
 
 def _validate_old_patterns(mesh, data):
@@ -300,7 +271,7 @@ def _validate_old_patterns(mesh, data):
         return
     cells = xy[mesh.elements]
     cell_index = BoxIndex(cells.min(axis=1), cells.max(axis=1), tol)
-    keys = np.asarray(list(data["old_incidence"]), dtype=int)
+    keys = old_edge_keys(mesh.elements, data)
     edge_points = xy[keys]
     edge_index = BoxIndex(edge_points.min(axis=1), edge_points.max(axis=1), tol)
     for i, pattern in enumerate(patterns):

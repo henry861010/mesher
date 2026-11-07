@@ -57,11 +57,17 @@ def _world_repair_diagnostics(value, data, key=None):
 
 def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_tolerance,
                   *, expand_size=None, repair_slots=True, max_added_elements=None,
-                  repair_max_element_size=None, outline_o=None,
-                  small_element_size=None, dense_region_tolerance=1e-3,
+                  repair_max_element_size=None, outline_o=None, fixed_outer_boundary=False,
+                  small_element_size=None, dense_mapping_angle=30.0,
                   _dense_seam_targets=None):
-    small_element_size, dense_region_tolerance = validate_dense_parameters(
-        small_element_size, dense_region_tolerance)
+    if not isinstance(fixed_outer_boundary, (bool, np.bool_)):
+        _fail("fixed_outer_boundary must be a boolean", stage="input_validation",
+              parameter="fixed_outer_boundary")
+    if fixed_outer_boundary and outline_o is None:
+        _fail("fixed_outer_boundary requires outline_o", stage="input_validation",
+              parameter="outline_o")
+    small_element_size, dense_mapping_angle = validate_dense_parameters(
+        small_element_size, dense_mapping_angle)
     if not isinstance(repair_slots, (bool, np.bool_)):
         _fail("repair_slots must be a boolean", stage="input_validation", parameter="repair_slots")
     if repair_max_element_size is not None:
@@ -132,8 +138,9 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, ax
                 len(mesh.nodes), len(mesh.elements))
     data["_source_mesh"] = working
     data["_repair_diagnostics"] = repair_diagnostics
-    data.update(small_element_size=small_element_size,
-                dense_region_tolerance=dense_region_tolerance)
+    data.update(fixed_outer_boundary=bool(fixed_outer_boundary),
+                small_element_size=small_element_size,
+                dense_mapping_angle=dense_mapping_angle)
     if _dense_seam_targets is not None:
         data["_dense_seam_targets"] = {
             key: (np.asarray(point) - data["origin"]) / data["scale"]
@@ -150,6 +157,8 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, ax
         except QuadLayerError as error:
             error.context.setdefault("stage", stage)
             raise
+    if fixed_outer_boundary:
+        prepare_fixed_boundary(result, data)
     result = replace(result, prepared_source=prepared_source,
                      diagnostics={**result.diagnostics, **repair_diagnostics})
     return data, result
@@ -157,20 +166,23 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, ax
 
 def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, *, pattern_lines=(),
                        outline_o: ArrayLike | None = None,
+                       fixed_outer_boundary: bool = False,
                        expand_size: float | None = None,
                        expand_ratio: float = 1.0,
                        axis_tolerance: float = 1e-3,
                        repair_slots: bool = True,
                        repair_max_element_size: float | None = None,
                        small_element_size: float | None = None,
-                       dense_region_tolerance: float = 1e-3) -> QuadSectionPlan:
+                       dense_mapping_angle: float = 30.0) -> QuadSectionPlan:
     """Inspect repaired source and section geometry without modifying input.
 
     All returned coordinates and expansion distances use the caller's frame.
     ``expand_size`` has the construction API's world-length semantics: None
     uses ``element_size`` as the expansion baseline, including pattern snapping.
     ``outline_i`` follows the construction API's flat node-ID loop contract,
-    including automatic orientation and logical-edge grouping.
+    including caller-supplied orientation and automatic logical-edge grouping.
+    Growth is to the left: exterior loops must be clockwise, holes counterclockwise.
+    The caller guarantees that every source segment is an existing boundary edge.
     Original IDs are retained. With repairs, section source chains index the
     read-only ``prepared_source`` snapshot, which includes staged fill cells.
     Outer-layer construction remains a geometric preview: the subsequent
@@ -185,15 +197,19 @@ def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, 
     L-infinity distances from the source bounding box cannot exceed one million
     times its largest XY span. This preview has no element budget and makes no
     guarantee that construction fits a later call's ``max_added_elements``.
-    ``small_element_size`` and ``dense_region_tolerance`` have the construction
-    API's world-length semantics. Dense seams are part of this same preview;
-    None leaves the original corner/pattern partition unchanged.
+    ``fixed_outer_boundary=True`` requires ``outline_o`` and previews the same
+    existing-node corner/dense mapping as construction, including fixed-boundary
+    parity and contact validation. It does not guarantee a feasible unit mesh.
+    ``small_element_size`` is a world length; None disables dense partitioning.
+    ``dense_mapping_angle`` is in degrees, default 30, and must be in [0, 90).
+    Each optional endpoint maps independently, as in the construction API.
     """
     data, plan = _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio,
                               axis_tolerance, expand_size=expand_size, repair_slots=repair_slots,
                               repair_max_element_size=repair_max_element_size,
-                              outline_o=outline_o, small_element_size=small_element_size,
-                              dense_region_tolerance=dense_region_tolerance)
+                              outline_o=outline_o, fixed_outer_boundary=fixed_outer_boundary,
+                              small_element_size=small_element_size,
+                              dense_mapping_angle=dense_mapping_angle)
 
     def world(points):
         result = points * data["scale"] + data["origin"]
@@ -210,6 +226,7 @@ def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, 
 
 def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, *, pattern_lines=(),
                       outline_o: ArrayLike | None = None,
+                      fixed_outer_boundary: bool = False,
                       expand_size: float | None = None,
                       expand_ratio: float = 1.0,
                       axis_tolerance: float = 1e-3,
@@ -219,14 +236,20 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
                       repair_slots: bool = True,
                       repair_max_element_size: float | None = None,
                       small_element_size: float | None = None,
-                      dense_region_tolerance: float = 1e-3) -> QuadLayerResult:
+                      dense_mapping_angle: float = 30.0) -> QuadLayerResult:
     """Append one conforming Quad4 layer, committing only after validation.
 
     ``outline_i`` is a one-dimensional integer node-ID loop containing every
-    source boundary node. Either winding and any starting point are accepted;
-    closure is implicit, with an optional repeated first ID at the end. The
-    API orients existing mesh to the right and groups consecutive segments by
-    their signed dominant X/Y direction into near-axis logical edges. It never
+    source boundary node. The caller must supply clockwise exterior loops and
+    counterclockwise hole loops, placing existing mesh to the right. The API
+    preserves that direction and always grows to the left; it does not infer
+    ownership or reverse the source. The caller guarantees that each consecutive
+    pair is an existing boundary edge available for attachment. These source
+    preconditions are not checked against element ownership; violations have no
+    guaranteed early rejection or dedicated error code.
+    Any starting point is accepted; closure is implicit, with an optional
+    repeated first ID at the end. The API groups consecutive segments by their
+    signed dominant X/Y direction into near-axis logical edges. It never
     moves source coordinates or omits intermediate nodes. ``result.outline``
     is a flat list of node IDs, reusable as the next call's ``outline_i``.
     ``pattern_lines`` contains finite XY segments of shape ``(n, 2, 2)``. Growth
@@ -249,6 +272,17 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     limits below as well as Quad4 parity. Patterns still
     constrain mesh edges but never move or snap an explicitly supplied target.
     Existing elements are never split; an incompatible shared edge fails validation.
+
+    ``fixed_outer_boundary=True`` requires ``outline_o`` and preserves its complete
+    node-ID cycle and edges without adding, dropping, or moving boundary nodes.
+    Interior nodes may still be created. LINE and corner outer resampling are
+    disabled, as are the ``max_transition_count`` and ``min_size_ratio`` policies;
+    both parameters are still validated. The element budget remains active.
+    Free OUTER corner contacts use the nearest usable nodes on the corresponding
+    target edges, excluding that corner itself. Conflicting corner assignments
+    try further candidates without an angle cap. Pattern contacts must already
+    exist in the supplied target. Fixed source/target boundary counts must have
+    matching parity, and unit feasibility is still checked before committing.
 
     Closing simple exterior slots and covered isolated stair corners are filled
     first, unless ``repair_slots=False``. A stair corner is covered when either
@@ -306,18 +340,24 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
 
     ``small_element_size=None`` disables dense-run partitioning. A finite positive
     value splits each LINE at the ends of maximal runs of source edges strictly
-    shorter than this length. These endpoints become shared seams to projected
-    outer anchors. Existing anchors closer than ``dense_region_tolerance``
-    (finite, non-negative, default 0.001) are reused. Both parameters use world
-    length units; this merge tolerance never replaces geometric validation.
+    shorter than this world length. ``dense_mapping_angle`` is finite and in
+    [0, 90) degrees, default 30. From the outward normal, each begin endpoint
+    searches toward the preceding source direction in [-angle, 0]; each end
+    searches forward in [0, angle]. Only the first geometrically usable outer
+    contact, ordered by increasing absolute angle, is selected. Contacts stay
+    inside their corner/pattern-delimited LINE. Each endpoint is independent:
+    if none exists, ordinary mode creates a normal projection when valid;
+    fixed mode skips only that optional cut. Mandatory seams remain unchanged.
+    The removed ``dense_region_tolerance`` keyword has no compatibility alias.
     """
     return _generate_layer_adaptive_mesh(
         mesh, outline_i, element_size, pattern_lines=pattern_lines, outline_o=outline_o,
+        fixed_outer_boundary=fixed_outer_boundary,
         expand_size=expand_size, expand_ratio=expand_ratio, axis_tolerance=axis_tolerance,
         max_added_elements=max_added_elements, repair_slots=repair_slots,
         repair_max_element_size=repair_max_element_size,
         max_transition_count=max_transition_count, min_size_ratio=min_size_ratio,
-        small_element_size=small_element_size, dense_region_tolerance=dense_region_tolerance)
+        small_element_size=small_element_size, dense_mapping_angle=dense_mapping_angle)
 
 
 def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, *,
@@ -332,9 +372,9 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                                  repair_max_element_size: float | None = None,
                                  fixed_outer_boundary: bool = False,
                                  small_element_size: float | None = None,
-                                 dense_region_tolerance: float = 1e-3,
+                                 dense_mapping_angle: float = 30.0,
                                  _dense_seam_targets=None) -> QuadLayerResult:
-    """Shared transaction; the private fixed mode consumes a complete interface.
+    """Shared transaction for public layers and full-mesh final interfaces.
 
     Fixed targets include every section's front contact and are never sampled
     again. Their exact world coordinates survive the normalized construction.
@@ -358,13 +398,12 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                               axis_tolerance, expand_size=expand_size, repair_slots=repair_slots,
                               max_added_elements=max_added_elements,
                               repair_max_element_size=repair_max_element_size,
-                              outline_o=outline_o, small_element_size=small_element_size,
-                              dense_region_tolerance=dense_region_tolerance,
+                              outline_o=outline_o, fixed_outer_boundary=fixed_outer_boundary,
+                              small_element_size=small_element_size,
+                              dense_mapping_angle=dense_mapping_angle,
                               _dense_seam_targets=_dense_seam_targets)
     data["max_transition_count"] = max_transition_count
     data["min_size_ratio"] = min_size_ratio
-    if fixed_outer_boundary:
-        prepare_fixed_boundary(plan, data)
     working = data["_source_mesh"]
     repair_count = len(working.elements) - len(mesh.elements)
     data["max_added_elements"] = max_added_elements - repair_count
@@ -423,6 +462,7 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                    "max_added_elements": max_added_elements,
                    "max_transition_count": max_transition_count,
                    "min_size_ratio": min_size_ratio,
+                   "fixed_outer_boundary": bool(fixed_outer_boundary),
                    "line_policy_active": not fixed_outer_boundary,
                    "edge_expansion": [d * data["scale"] for d in data["expansion"]],
                    "snapped_patterns": data["snapped"], "elapsed_seconds": perf_counter() - start}

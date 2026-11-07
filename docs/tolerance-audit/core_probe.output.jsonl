@@ -1,0 +1,7 @@
+{"probe": "rectangle selection", "offset": 0.0, "selected": [0]}
+{"probe": "rectangle selection", "offset": 1e-10, "selected": []}
+{"probe": "rectangle selection", "offset": 0.0005, "selected": []}
+{"probe": "transitive equivalence", "mapping": [0, 0, 0], "group_span": 0.0015}
+{"probe": "thin triangle after equivalence", "elements": 1, "area": 5e-05}
+{"probe": "intentional strict Mesh2D Z contract", "z": 1e-16, "error": "Mesh2D requires Z=0; node 0 has Z=1e-16"}
+{"probe": "intentional strict Mesh2D Z contract", "z": 0.0005, "error": "Mesh2D requires Z=0; node 0 has Z=0.0005"}

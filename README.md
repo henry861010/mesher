@@ -282,7 +282,7 @@ mesh = Mesh2D(
     [[0, 0], [4, 0], [4, 3], [0, 3]],
     np.array([[0, 1, 2, 3]], dtype=np.int32),
 )
-outline_i = [0, 3, 2, 1]  # Complete source loop; either winding is accepted.
+outline_i = [0, 3, 2, 1]  # Complete source loop: clockwise exterior, counterclockwise hole.
 patterns = [[[0, 3.4], [4, 3.4]]]             # finite parallel guide
 result = generate_layer_adaptive_mesh(
     mesh, outline_i, element_size=0.5, expand_size=1.0,
@@ -292,6 +292,8 @@ assert result.mesh is mesh
 # result.outline is a flat list[int], usable as the next call's outline_i.
 # Mesh target size is 0.5; unsnapped edges expand by 1.0.
 ```
+
+[繁體中文使用指南：參數規則、固定外框接合與密集段映射](docs/generate-layer-adaptive-mesh.md).
 
 The previous `outline` / `new_outline` keywords, grouped source-edge inputs,
 and `EditorMesh2D.outlines_by_edge` were removed; use the flat-loop interface above.
@@ -304,14 +306,18 @@ source segments stay unchanged. The complete layer is validated before an atomic
 leave the input mesh unchanged.
 
 `outline_i` is a one-dimensional integer node-ID loop containing every source
-boundary node. Its start may be on a corner or in the middle of an edge; either
-winding and an optional repeated closing ID are accepted. Consecutive IDs,
-including the closing pair, must be existing boundary segments: intermediate
-nodes cannot be omitted. The adapter orients existing mesh to the right and
-groups cyclic runs by their signed dominant X/Y direction. Adjacent logical
-edges must be perpendicular and each run must be near a global X or Y axis.
-Logical edges start at the lowest directed corner edge, so equivalent input
-starts and windings produce the same plan. Growth is to the left, with XY
+boundary node. Its start may be on a corner or in the middle of an edge; an
+optional repeated closing ID is accepted. The caller must supply clockwise
+exterior loops and counterclockwise hole loops, placing existing mesh to the
+right. Consecutive IDs, including the closing pair, must be existing boundary
+segments available for attachment: intermediate nodes cannot be omitted.
+These are caller preconditions; the adapter does not check source ownership or
+infer/reverse its direction. Violations have no guaranteed early rejection or
+dedicated error code. `EditorMesh2D.outlines(mesh)` supplies correctly oriented loops.
+The adapter groups cyclic runs by their signed dominant X/Y direction. Adjacent
+logical edges must be perpendicular and each run must be near a global X or Y
+axis. Logical edges start at the lowest directed corner edge, so equivalent
+input starts produce the same plan. Growth is always to the left, with XY
 normal `(-dy, dx)`.
 
 Both single-layer entry points accept keyword-only `expand_size: float | None = None`.
@@ -345,6 +351,17 @@ outline_o = np.arange(mesh.node_count, mesh.node_count + len(target), dtype=np.i
 mesh.nodes = np.vstack((mesh.nodes, np.column_stack((target, np.zeros(len(target))))))
 result = generate_layer_adaptive_mesh(mesh, outline_i, 0.5, outline_o=outline_o)
 ```
+
+Set `fixed_outer_boundary=True` to connect to an existing mesh interface. This
+requires `outline_o` and preserves its complete node-ID cycle, coordinates, and
+edges; only the interior may receive new nodes. The option is also available in
+`plan_quad_sections()`. Both LINE and corner outer resampling are disabled.
+`max_transition_count` and `min_size_ratio` are still validated but do not constrain
+the fixed interface; `max_added_elements` remains active. Free outer-corner
+contacts search existing nodes on the corresponding target edges, nearest first,
+without an angle cap. Conflicting assignments try further candidates. Required
+pattern contacts must already be target nodes, and source/target boundary counts
+must have matching parity. Preview validates geometry, not full Quad4 feasibility.
 
 Target nodes may already belong to existing elements; consecutive target IDs
 need not be existing edges. Existing elements are never split or modified, so
@@ -487,23 +504,26 @@ result = generate_layer_adaptive_mesh(
     mesh, outline_i, element_size=1000,
     max_transition_count=1000,     # Explicit override for this extreme density contrast.
     small_element_size=10,          # Opt in; default None preserves the partition.
-    dense_region_tolerance=0.001,   # Absolute world-coordinate anchor merge tolerance.
+    dense_mapping_angle=30.0,      # Degrees; outward-only dense endpoint mapping.
 )
 ```
 
 Consecutive source edges strictly shorter than `small_element_size` form a
 maximal dense run. Its endpoints become shared source-to-front seams, leaving
 ordinary LINE sections on either side. Corners and pattern seams remain fixed.
-Nearby mandatory outer anchors strictly within `dense_region_tolerance` are
-reused; otherwise the normal projection becomes a new anchor. This tolerance
-does not relax geometry checks or move existing nodes. A single short edge
-also qualifies; an entirely dense LINE needs no additional seams. Partition
-conflicts fail atomically rather than silently dropping a dense endpoint.
+`dense_mapping_angle` is finite and in `[0, 90)` degrees, default 30. From the
+outward normal (0°), begin endpoints search backward in `[-angle, 0]` and end
+endpoints search forward in `[0, angle]`. Each endpoint selects the first usable
+contact in increasing absolute-angle order, within its current LINE. Ordinary
+mode falls back to a normal projection when valid; fixed mode skips only the
+unmatched optional endpoint. One matched endpoint can still split the LINE.
+A single short edge qualifies; an entirely dense LINE needs no additional seams.
+The old `dense_region_tolerance` keyword has been removed without an alias.
 
 The full adapter sends these seam contacts to the global generator before the
 last layer, then reuses the saved canonical contacts in its fixed interface.
-Diagnostics expose `dense_sections` and `dense_seams`, including source IDs and
-shared seam IDs. Dense partitioning bounds the transition's location; it does
+Diagnostics expose `dense_sections`, `dense_seams`, and `dense_mappings`, including
+source/target IDs, shared seam IDs, mapping angles, and reasons for skipped cuts. Dense partitioning bounds the transition's location; it does
 not guarantee good internal cell quality under extreme coarsening.
 
 [Dense-section example](examples/dense_adaptive_sections.py) compares the old

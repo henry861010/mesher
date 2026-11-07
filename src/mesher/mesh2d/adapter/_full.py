@@ -207,7 +207,7 @@ def generate_full_adaptive_mesh(
     min_size_ratio: float = 0.5,
     coordinate_tolerance: float = 1e-3,
     small_element_size: float | None = None,
-    dense_region_tolerance: float = 1e-3,
+    dense_mapping_angle: float = 30.0,
 ) -> FullAdaptiveMeshResult:
     """Fill an orthogonal domain around existing focus meshes with Quad4s.
 
@@ -236,9 +236,11 @@ def generate_full_adaptive_mesh(
     generator's complete fixed interface, without imposing these constraints.
     Both arguments are validated even when there is only one, fixed layer.
 
-    ``small_element_size`` and ``dense_region_tolerance`` have the single-layer
-    semantics and defaults (None and 0.001), in world length units. Dense seams
-    are planned before global meshing and retained in the final fixed interface.
+    ``small_element_size`` and ``dense_mapping_angle`` have the single-layer
+    semantics and defaults (None and 30 degrees). The size threshold uses world
+    lengths; the angle is finite and in [0, 90). Dense seams are planned before
+    global meshing and retained in the final fixed interface, even if global
+    meshing adds a closer node. ``dense_region_tolerance`` has been removed.
 
     All work is staged privately. Success updates and returns the original mesh;
     any failure leaves both original arrays unchanged. QuadLayerError context
@@ -247,8 +249,8 @@ def generate_full_adaptive_mesh(
     started = perf_counter()
     max_transition_count, min_size_ratio = validate_line_parameters(
         max_transition_count, min_size_ratio)
-    small_element_size, dense_region_tolerance = validate_dense_parameters(
-        small_element_size, dense_region_tolerance)
+    small_element_size, dense_mapping_angle = validate_dense_parameters(
+        small_element_size, dense_mapping_angle)
     sizes, ratio, patterns = _call(lambda: _inputs(element_sizes, expand_ratio, pattern_lines),
                                     stage="input_validation")
     topology = _call(lambda: discover_boundaries(
@@ -266,7 +268,7 @@ def generate_full_adaptive_mesh(
                             expand_ratio=ratio, pattern_lines=patterns,
                             max_transition_count=max_transition_count,
                             min_size_ratio=min_size_ratio, small_element_size=small_element_size,
-                            dense_region_tolerance=dense_region_tolerance),
+                            dense_mapping_angle=dense_mapping_angle),
                 stage="layer_construction", layer_index=layer_index, boundary_index=boundary_index)
             current.append(result.outline)
             diagnostics.append(result.diagnostics)
@@ -282,7 +284,7 @@ def generate_full_adaptive_mesh(
         plan = _call(lambda: plan_quad_sections(working, outline, final_size,
                          expand_ratio=ratio, pattern_lines=patterns,
                          small_element_size=small_element_size,
-                         dense_region_tolerance=dense_region_tolerance),
+                         dense_mapping_angle=dense_mapping_angle),
                      stage="final_layer_planning", layer_index=final_index,
                      boundary_index=boundary_index)
         fronts.append(_call(lambda: section_outline_points(plan), stage="final_layer_planning",
@@ -328,7 +330,7 @@ def generate_full_adaptive_mesh(
                             working, outline, final_size, expand_ratio=ratio,
                             pattern_lines=patterns, outline_o=target_ids, fixed_outer_boundary=True,
                             small_element_size=small_element_size,
-                            dense_region_tolerance=dense_region_tolerance,
+                            dense_mapping_angle=dense_mapping_angle,
                             _dense_seam_targets=dense_targets[boundary_index]),
                        stage="final_layer_construction", layer_index=final_index,
                        boundary_index=boundary_index)
@@ -344,7 +346,7 @@ def generate_full_adaptive_mesh(
         "max_transition_count": max_transition_count,
         "min_size_ratio": min_size_ratio,
         "small_element_size": small_element_size,
-        "dense_region_tolerance": dense_region_tolerance,
+        "dense_mapping_angle": dense_mapping_angle,
         "line_policy_active": len(sizes) > 1,
         "boundaries": [{"boundary_index": index, "parent_index": parent,
                         "kind": "exterior" if sign < 0 else "hole"}

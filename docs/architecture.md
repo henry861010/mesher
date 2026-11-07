@@ -68,6 +68,7 @@ mesh2d/adapter/
     │   ├── patch.py     # Repair boundaries, patterns, and face filling
     │   └── adaptive.py  # Inward coarsening and core filling
     ├── _geometry.py     # Shared geometric predicates and spatial index
+    ├── _old_mesh.py     # Lazy old-edge inventory and targeted owner queries
     ├── _patterns.py     # Shared axis-pattern operations
     ├── _registry.py     # Node identity and point lookup
     ├── _limits.py       # Element budgets and count-only preflight
@@ -89,7 +90,7 @@ into an alternating exterior/hole containment tree. Every boundary receives the
 requested layers. The remaining domains are the global exterior and each hole
 core, excluding their immediate focus children. They are meshed independently.
 Global meshes determine final interface nodes before the last adaptive layers;
-a private fixed-boundary layer mode preserves that complete interface. Explicit
+the fixed-boundary layer mode preserves that complete interface. Explicit
 node mappings join those interfaces without renumbering source data, and final
 topology/geometry validation precedes one caller commit. Errors are atomic
 across the complete operation. This orchestration remains NumPy-only and does
@@ -117,11 +118,21 @@ Public layer inputs are flat integer node-ID loops: `outline_i` and an optional
 `outline_o` target referencing the same mesh. Target IDs and exact coordinates
 are retained, with additional front nodes allowed. Target nodes may already be
 used by existing elements; shared edges must remain conforming and manifold.
-Source normalization preserves every frozen node and
-segment, orients existing mesh to the right, and groups cyclic signed-cardinal
-runs into logical edges. Staged repairs keep their semantic chains internally;
+Source normalization preserves every frozen node, segment and input direction,
+and groups cyclic signed-cardinal runs into logical edges. Callers guarantee
+complete, attachable source boundary edges and existing mesh on the right:
+clockwise exteriors, counterclockwise holes. Growth is always to the left;
+source ownership is not checked and winding is not corrected.
+Staged repairs keep their semantic chains internally;
 complete public result and prepared-source outlines are flat loops. The editor's
 `outlines()` returns oriented loops without performing logical-edge grouping.
+
+Old-edge geometry uses a lazy, sorted unique NumPy edge-ID inventory per
+prepared mesh, without a global ownership table. Shared target edges count
+owners only in nearby old cells. New layer and repair cells retain local
+directed-incidence validation. Repair outlines combine surviving source edges
+with boundaries extracted from actual new repair cells; they do not re-extract
+the full mesh boundary. Original and repaired meshes have separate inventories.
 
 The public `generate_layer_adaptive_mesh()` entry point performs geometry planning and mesh construction
 in one call; callers do not coordinate those internal stages. The optional
@@ -132,16 +143,27 @@ remaining LINE ranges using complete finite pattern chords. Public `Section`,
 source node chains. Sections need not themselves be convex. Left/right refer
 to outline traversal, and seam points run from source to front.
 
-All three adapter entry points also accept `small_element_size=None` and
-`dense_region_tolerance=0.001`. These are absolute world lengths; the former
-must be positive when enabled and the latter non-negative. `_planning/dense.py`
-finds maximal consecutive source-edge runs strictly below the size threshold
-within each corner/pattern-delimited LINE. A run's internal endpoints create
-shared seams along the logical edge normal. Endpoint seams are reused, and an
-entirely dense LINE stays whole. Existing outer anchors strictly within the
-merge tolerance are reused with nearest-distance/outline-order tie breaking.
-This merge tolerance does not replace the numerical geometry tolerance.
-Zero-width, reversed, crossing, and out-of-front partitions fail atomically.
+Both single-layer APIs expose `fixed_outer_boundary=False`. The flag reaches
+planning before any sections are reserved. Fixed targets preserve the complete
+node-ID cycle and directed segments, disable LINE/corner outer sampling and LINE
+size/transition policies, and retain the existing transaction and budget checks.
+`_planning/fixed_corners.py` maps free OUTER contacts to existing target nodes
+without an angle cap. It excludes the outer corner itself and searches candidates
+nearest first, with canonical-order ties and iterative backtracking for crossing
+or overlapping assignments. INNER reservations and repaired shared seams stay
+fixed. Pattern contacts must already be supplied target nodes.
+
+All three adapter entry points accept `small_element_size=None` (positive world
+length when enabled) and `dense_mapping_angle=30.0` (finite degrees in `[0, 90)`).
+`_planning/dense.py` finds maximal consecutive source-edge runs strictly below
+the size threshold within each corner/pattern-delimited LINE. Relative to the
+outward normal, begin endpoints select the first usable contact in `[-angle, 0]`
+and end endpoints in `[0, angle]`, ordered from zero outward. Endpoints map
+independently. Ordinary mode falls back to a valid normal projection; fixed mode
+skips an unmatched optional cut. Mandatory seams remain fixed. Shared geometry
+checks in `_planning/mapping.py` reject crossing or out-of-band connectors.
+Numerical geometric tolerance is retained; `dense_region_tolerance` is removed.
+Diagnostics include mapped/skipped dense endpoints and chosen corner contacts.
 
 Dense runs remain ordinary LINE sections and use the existing sampling,
 seam-parity solver, unit builders, and element-budget preflight. Diagnostics

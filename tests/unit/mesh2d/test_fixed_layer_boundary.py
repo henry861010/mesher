@@ -220,14 +220,16 @@ class FixedLayerBoundaryTests(unittest.TestCase):
         self.assertEqual(error.context["stage"], "fixed_boundary_validation")
         self.assertIn("node ID", str(error))
 
-    def test_private_mode_requires_an_explicit_target(self):
+    def test_fixed_mode_requires_an_explicit_target(self):
         mesh = generate_rectilinear_mesh(1, [0, 4], [0, 4])
         outline = EditorMesh2D.outlines(mesh)[0]
         error = self.assert_atomic_failure(mesh, lambda: _mesher._generate_layer_adaptive_mesh(
             mesh, outline, 2, fixed_outer_boundary=True))
         self.assertEqual(error.context["parameter"], "outline_o")
-        with self.assertRaises(TypeError):
-            generate_layer_adaptive_mesh(mesh, outline, 2, fixed_outer_boundary=True)
+        for api in (generate_layer_adaptive_mesh, plan_quad_sections):
+            error = self.assert_atomic_failure(mesh, lambda: api(
+                mesh, outline, 2, fixed_outer_boundary=True))
+            self.assertEqual(error.context["parameter"], "outline_o")
 
 
 if __name__ == "__main__":

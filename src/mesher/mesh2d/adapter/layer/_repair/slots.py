@@ -16,6 +16,7 @@ import numpy as np
 from ....model import Mesh2D
 from .._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
 from .._limits import ElementLimitExceeded, check_element_limit
+from .._old_mesh import edge_membership, old_edge_keys
 from .._types import QuadLayerError
 
 
@@ -351,25 +352,26 @@ def _regroup(mesh, data, nodes, quads, selected, mouths):
             _fail("slot repairs repeat a planned boundary edge", reason="repair_topology")
         planned[a, b] = record
 
-    # Re-extract from actual element ownership.  Do not assume that the
-    # builder's advertised mouth equals the boundary it actually produced.
-    # Remote islands and holes remain in this inventory, but the selected
-    # loop is located by a surviving ORIGINAL segment, never by area/order.
-    elements = np.vstack((mesh.elements, quads))
-    incidence = _incidence(elements)
-    old_boundary = {key for key, owners in data["old_incidence"].items() if len(owners) == 1}
-    expected_boundary = old_boundary.difference(consumed)
-    expected_boundary.update(_key(a, b) for mouth in mouths for a, b in zip(mouth[:-1], mouth[1:]))
-    actual_boundary = {key for key, owners in incidence.items() if len(owners) == 1}
-    if actual_boundary != expected_boundary:
+    # Trust the caller's source, but derive repair mouths from actual new cells.
+    # Only new-cell ownership is needed: untouched islands/holes cannot change.
+    incidence = _incidence(quads)
+    source = {_key(a, b): (int(a), int(b)) for a, b in data["frozen"]}
+    patch_boundary = {key: owners[0][1:] for key, owners in incidence.items() if len(owners) == 1}
+    expected_patch = consumed | {_key(a, b) for mouth in mouths for a, b in zip(mouth[:-1], mouth[1:])}
+    if (set(patch_boundary) != expected_patch or not consumed.issubset(source)
+            or any(patch_boundary[key] != source[key] for key in consumed)):
+        _fail("the actual repaired mesh boundary differs from the planned slot mouths",
+              reason="repair_topology")
+    for key, owners in incidence.items():
+        if key not in patch_boundary and (len(owners) != 2 or owners[0][1:] != owners[1][1:][::-1]):
+            _fail("slot repair has inconsistent internal edge ownership", reason="repair_topology")
+    actual_boundary = [edge for key, edge in source.items() if key not in consumed]
+    actual_boundary.extend((b, a) for key, (a, b) in patch_boundary.items() if key not in consumed)
+    if len(actual_boundary) != len(planned) or set(actual_boundary) != set(planned):
         _fail("the actual repaired mesh boundary differs from the planned slot mouths",
               reason="repair_topology")
     outgoing = defaultdict(list)
-    for key in actual_boundary:
-        owner, a, b = incidence[key][0]
-        centroid = nodes[elements[owner], :2].mean(axis=0)
-        if cross(nodes[b, :2] - nodes[a, :2], centroid - nodes[a, :2]) > 0:
-            a, b = b, a
+    for a, b in actual_boundary:
         outgoing[a].append(b)
     surviving = next(((int(a), int(b)) for chain in data["ids"]
                       for a, b in zip(chain[:-1], chain[1:]) if _key(a, b) not in consumed), None)
@@ -447,8 +449,10 @@ def _validate_repair(mesh, nodes, quads, outline, data, selected, mouths, consum
             valid = len(owners) == 2 and owners[0][1:] == owners[1][1:][::-1]
         if not valid:
             _fail("slot repair has inconsistent edge ownership", code="unmeshable_slot_repair", edge=key)
-    old_incidence = data["old_incidence"]
-    if set(incidence).intersection(old_incidence).difference(consumed):
+    new_keys = np.asarray(sorted(incidence), dtype=np.int64).reshape(-1, 2)
+    old_keys = old_edge_keys(mesh.elements, data)
+    shared_keys = {tuple(map(int, key)) for key in new_keys[edge_membership(new_keys, old_keys)]}
+    if shared_keys.difference(consumed):
         _fail("slot repair meets old mesh away from its source walls", code="unmeshable_slot_repair")
     allowed_old = set(int(i) for candidate in selected for i in candidate.source_ids)
     if not set(quads[quads < len(mesh.nodes)].tolist()).issubset(allowed_old):
@@ -456,8 +460,6 @@ def _validate_repair(mesh, nodes, quads, outline, data, selected, mouths, consum
     used_new = np.unique(quads[quads >= len(mesh.nodes)])
     if not np.array_equal(used_new, np.arange(len(mesh.nodes), len(nodes))):
         _fail("slot repair contains unused new nodes", code="unmeshable_slot_repair")
-    new_keys = np.asarray(sorted(incidence), dtype=np.int64).reshape(-1, 2)
-    old_keys = np.asarray(sorted(old_incidence), dtype=np.int64).reshape(-1, 2)
     new_edges, old_edges = nodes[new_keys, :2], mesh.nodes[old_keys, :2]
     new_edge_index = BoxIndex(new_edges.min(axis=1), new_edges.max(axis=1), tol)
     old_edge_index = BoxIndex(old_edges.min(axis=1), old_edges.max(axis=1), tol)
@@ -492,7 +494,7 @@ def repair_slots(mesh, data, *, max_added_elements=None, repair_max_element_size
     from .patch import build_repair_patch
 
     tol = data["tol"]
-    edge_keys = np.asarray(sorted(data["old_incidence"]), dtype=np.int64).reshape(-1, 2)
+    edge_keys = old_edge_keys(mesh.elements, data)
     edge_points = mesh.nodes[edge_keys, :2]
     edge_index = BoxIndex(edge_points.min(axis=1), edge_points.max(axis=1), tol)
     old_cells = mesh.nodes[mesh.elements, :2]

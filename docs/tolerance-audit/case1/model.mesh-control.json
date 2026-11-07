@@ -1,0 +1,207 @@
+{
+  "schemaVersion": "1.0.0",
+  "unitSystem": "um",
+  "mesher": "process_flow_2_5d",
+  "globalElementSize": 1000,
+  "symmetry": "full",
+  "regionMeshing": "adapter",
+  "controls": [
+    {
+      "method": "Z_SECTION_AVG",
+      "label": "TD_UF, noHBM Zone1 bot",
+      "elementSize": 5,
+      "startZ": 537.5,
+      "endZ": 587.5,
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "Z_SECTION_AVG",
+      "label": "TD_UF, noHBM Zone2 bot",
+      "elementSize": 60,
+      "startZ": 477.5,
+      "endZ": 537.5,
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "Z_SECTION_AVG",
+      "label": "TD_UF, noHBM Zone2 top",
+      "elementSize": 60,
+      "startZ": 437.5,
+      "endZ": 497.5,
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "Z_SECTION_AVG",
+      "label": "TD_UF, noHBM Zone1 top",
+      "elementSize": 5,
+      "startZ": 387.5,
+      "endZ": 437.5,
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "Z_POINT",
+      "label": "Carrier bottom +10",
+      "z": {
+        "anchor": "z_min",
+        "offset": 10
+      },
+      "coordinateMode": "reference",
+      "reference": {
+        "kind": "body",
+        "id": "body:root-container-carrier-wafer-body-0:ff9452e8906f"
+      }
+    },
+    {
+      "method": "3D_REGION",
+      "label": "Die top corners merged 1",
+      "elementSize": 5,
+      "region": {
+        "type": "box",
+        "min": {
+          "x": -10025,
+          "y": -10025,
+          "z": 562.5
+        },
+        "max": {
+          "x": -9975,
+          "y": -9975,
+          "z": 612.5
+        }
+      },
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "3D_REGION",
+      "label": "Die top corners merged 2",
+      "elementSize": 5,
+      "region": {
+        "type": "box",
+        "min": {
+          "x": -10025,
+          "y": -25,
+          "z": 562.5
+        },
+        "max": {
+          "x": -9975,
+          "y": 1025,
+          "z": 612.5
+        }
+      },
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "3D_REGION",
+      "label": "Die top corners merged 3",
+      "elementSize": 5,
+      "region": {
+        "type": "box",
+        "min": {
+          "x": -25,
+          "y": -10025,
+          "z": 562.5
+        },
+        "max": {
+          "x": 1025,
+          "y": -9975,
+          "z": 612.5
+        }
+      },
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "3D_REGION",
+      "label": "Die top corners merged 4",
+      "elementSize": 5,
+      "region": {
+        "type": "box",
+        "min": {
+          "x": -25,
+          "y": -25,
+          "z": 562.5
+        },
+        "max": {
+          "x": 25,
+          "y": 1025,
+          "z": 612.5
+        }
+      },
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "3D_REGION",
+      "label": "Die top corners merged 5",
+      "elementSize": 5,
+      "region": {
+        "type": "box",
+        "min": {
+          "x": -10025,
+          "y": 10975,
+          "z": 562.5
+        },
+        "max": {
+          "x": -9975,
+          "y": 11025,
+          "z": 612.5
+        }
+      },
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "3D_REGION",
+      "label": "Die top corners merged 6",
+      "elementSize": 5,
+      "region": {
+        "type": "box",
+        "min": {
+          "x": -25,
+          "y": 9475,
+          "z": 562.5
+        },
+        "max": {
+          "x": 1025,
+          "y": 11025,
+          "z": 612.5
+        }
+      },
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "3D_REGION",
+      "label": "Die top corners merged 7",
+      "elementSize": 5,
+      "region": {
+        "type": "box",
+        "min": {
+          "x": 10975,
+          "y": -10025,
+          "z": 562.5
+        },
+        "max": {
+          "x": 11025,
+          "y": -9975,
+          "z": 612.5
+        }
+      },
+      "coordinateMode": "absolute"
+    },
+    {
+      "method": "3D_REGION",
+      "label": "Die top corners merged 8",
+      "elementSize": 5,
+      "region": {
+        "type": "box",
+        "min": {
+          "x": 10975,
+          "y": 9475,
+          "z": 562.5
+        },
+        "max": {
+          "x": 11025,
+          "y": 9525,
+          "z": 612.5
+        }
+      },
+      "coordinateMode": "absolute"
+    }
+  ]
+}

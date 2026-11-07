@@ -1,4 +1,4 @@
-"""Exact shared-boundary contracts for the full adaptive mesh orchestrator."""
+"""Exact shared-boundary contracts for public and full-mesh fixed interfaces."""
 
 from __future__ import annotations
 
@@ -39,9 +39,8 @@ def prepare_fixed_boundary(plan, data):
 
     world = data["_source_mesh"].nodes[data["outline_anchor_ids"], :2].copy()
 
-    # Corner reservations and pattern seams introduce structural contacts on
-    # the front. The global generator must have received these as anchors;
-    # accepting an unlisted contact here would create a hanging global edge.
+    # Corner/dense mapping must consume existing contacts, and patterns must
+    # already meet anchors. Any unlisted contact would split a frozen edge.
     points = np.concatenate([section.outer_boundary[:-1]
                              for section in plan.sections
                              if len(section.outer_boundary) > 1])
