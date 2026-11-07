@@ -8,7 +8,7 @@ from heapq import heappop, heappush
 import numpy as np
 
 from .._limits import ElementLimitExceeded, bounded_outer_counts, check_element_limit, outer_segment_counts
-from .._line_policy import validate_line_parameters
+from .._line_policy import DEFAULT_MAX_TRANSITION_COUNT, validate_line_parameters
 from .sampling import LineSampling
 from .units import SectionPatch, UnitPlan, assemble_section, build_unit_patch, xyz_chain
 
@@ -256,7 +256,7 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
               _diagnostics: dict | None = None,
               max_added_elements: int | None = None,
               fixed_outer_boundary: bool = False,
-              max_transition_count: int = 10,
+              max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
               min_size_ratio: float = 0.5,
               _sampling_cache: dict | None = None) -> list[SectionPatch]:
     """Return at most two bounded-density candidates for a LINE section.

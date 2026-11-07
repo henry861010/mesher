@@ -92,7 +92,7 @@ class LinePolicyInputTests(unittest.TestCase):
         np.testing.assert_array_equal(mesh.nodes, before_nodes)
         np.testing.assert_array_equal(mesh.elements, before_elements)
         result = generate_layer_adaptive_mesh(mesh, outline, 0.5)
-        self.assertEqual(result.diagnostics["max_transition_count"], 10)
+        self.assertEqual(result.diagnostics["max_transition_count"], 20)
         self.assertEqual(result.diagnostics["min_size_ratio"], 0.5)
 
     def test_full_forwards_only_to_intermediate_layers(self):

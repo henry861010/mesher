@@ -6,6 +6,8 @@ from math import ceil, floor
 
 import numpy as np
 
+from ._line_policy import DEFAULT_MAX_TRANSITION_COUNT
+
 from ._types import QuadLayerError
 
 
@@ -93,7 +95,7 @@ def preflight_element_limit(plan, data):
             try:
                 line_bounds = line_count_bounds(
                     lengths, source_segments, data["h"], data["tol"],
-                    data.get("max_transition_count", 10), data.get("min_size_ratio", .5))
+                    data.get("max_transition_count", DEFAULT_MAX_TRANSITION_COUNT), data.get("min_size_ratio", .5))
             except QuadLayerError as error:
                 error.context.setdefault("section_id", section.id)
                 raise

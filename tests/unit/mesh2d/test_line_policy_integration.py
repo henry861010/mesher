@@ -33,12 +33,12 @@ class LinePolicyIntegrationTests(unittest.TestCase):
                 source, _, outer, _ = np.asarray(units[index]["boundary_counts"]) - 1
                 self.assertTrue(source == 1 or (outer == 1 and source <= limit))
 
-    def test_default_dense_expansion_is_conforming_and_frozen_in_all_directions(self):
+    def test_ten_segment_cap_is_conforming_and_frozen_in_all_directions(self):
         for rotation in range(4):
             with self.subTest(rotation=rotation):
                 mesh, outline = section_existing.SectionIntegrationTests._nonuniform_rectangle(rotation)
                 nodes, elements = mesh.nodes.copy(), mesh.elements.copy()
-                result = generate_layer_adaptive_mesh(mesh, outline, 500.)
+                result = generate_layer_adaptive_mesh(mesh, outline, 500., max_transition_count=10)
                 self.assert_policy(mesh, result, 500.)
                 section_existing.SectionIntegrationTests.assert_built_partition(
                     self, mesh, nodes, elements, result)
@@ -49,7 +49,7 @@ class LinePolicyIntegrationTests(unittest.TestCase):
         target = np.array([[-500., -500.], [-500., 1500.], [1007.5, 1500.],
                            [2600., 1500.], [2600., -500.]])
         original = target.copy()
-        result = generate_layer_adaptive_mesh(mesh, outline, 500., new_outline=target)
+        result = generate_layer_adaptive_mesh(mesh, outline, 500., new_outline=target, max_transition_count=10)
         self.assert_policy(mesh, result, 500.)
         np.testing.assert_array_equal(target, original)
         front = mesh.nodes[np.unique(np.concatenate(result.outline)), :2]
@@ -66,7 +66,7 @@ class LinePolicyIntegrationTests(unittest.TestCase):
     def test_seam_candidates_share_one_density_profile_per_line(self):
         mesh, outline = section_existing.SectionIntegrationTests._nonuniform_rectangle()
         with patch.object(line, "LineSampling", wraps=line.LineSampling) as profiles:
-            result = generate_layer_adaptive_mesh(mesh, outline, 500.)
+            result = generate_layer_adaptive_mesh(mesh, outline, 500., max_transition_count=10)
         lines = [detail for detail in result.diagnostics["section_details"]
                  if detail["kind"] == "LINE"]
         self.assertEqual(profiles.call_count, len(lines))
@@ -78,7 +78,7 @@ class LinePolicyIntegrationTests(unittest.TestCase):
         target = np.array([[-500., -500.], [-500., 1500.], [1000., 1500.],
                            [1100., 1500.], [2600., 1500.], [2600., -500.]])
         original = target.copy()
-        result = generate_layer_adaptive_mesh(mesh, outline, 500., new_outline=target)
+        result = generate_layer_adaptive_mesh(mesh, outline, 500., new_outline=target, max_transition_count=10)
         details = [detail for detail in result.diagnostics["section_details"]
                    if detail.get("forced_short_intervals")]
         self.assertEqual(len(details), 1)
@@ -109,15 +109,15 @@ class LinePolicyIntegrationTests(unittest.TestCase):
 
     def test_budget_accounts_for_policy_output_and_failure_is_atomic(self):
         baseline, outline = section_existing.SectionIntegrationTests._nonuniform_rectangle()
-        count = generate_layer_adaptive_mesh(baseline, outline, 500.).diagnostics["added_elements"]
+        count = generate_layer_adaptive_mesh(baseline, outline, 500., max_transition_count=10).diagnostics["added_elements"]
         mesh, outline = section_existing.SectionIntegrationTests._nonuniform_rectangle()
-        result = generate_layer_adaptive_mesh(mesh, outline, 500., max_added_elements=count)
+        result = generate_layer_adaptive_mesh(mesh, outline, 500., max_added_elements=count, max_transition_count=10)
         self.assertEqual(result.diagnostics["added_elements"], count)
         self.assert_policy(mesh, result, 500.)
         mesh, outline = section_existing.SectionIntegrationTests._nonuniform_rectangle()
         snapshot = full_existing.FullAdaptiveMeshTests._snapshot(mesh)
         with self.assertRaises(QuadLayerError) as caught:
-            generate_layer_adaptive_mesh(mesh, outline, 500., max_added_elements=count - 1)
+            generate_layer_adaptive_mesh(mesh, outline, 500., max_added_elements=count - 1, max_transition_count=10)
         self.assertEqual(caught.exception.code, "element_limit_exceeded")
         self.assert_unchanged(mesh, snapshot)
 

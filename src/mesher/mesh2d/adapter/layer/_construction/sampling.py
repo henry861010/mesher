@@ -8,6 +8,7 @@ from math import ceil, floor
 import numpy as np
 
 from .._types import QuadLayerError
+from .._line_policy import DEFAULT_MAX_TRANSITION_COUNT
 
 
 def _infeasible(message: str, **context):
@@ -43,7 +44,7 @@ def _interval_bounds(lengths, h, tol, ratio):
 
 
 def line_count_bounds(lengths, source_segments, h, tol,
-                      max_transition_count=10, min_size_ratio=0.5):
+                      max_transition_count=DEFAULT_MAX_TRANSITION_COUNT, min_size_ratio=0.5):
     """Count-only feasibility, usable before allocating any sampled points."""
     minimum, maximum, _ = _interval_bounds(lengths, h, tol, min_size_ratio)
     lower = max(sum(minimum),
@@ -81,7 +82,7 @@ class LineSampling:
     before allocating a potentially much larger front.
     """
 
-    def __init__(self, source, anchors, h, tol, max_transition_count=10,
+    def __init__(self, source, anchors, h, tol, max_transition_count=DEFAULT_MAX_TRANSITION_COUNT,
                  min_size_ratio=0.5):
         self.source = np.asarray(source, dtype=float).copy()
         self.anchors = np.asarray(anchors, dtype=float).copy()

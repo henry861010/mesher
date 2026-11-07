@@ -1,7 +1,7 @@
 """Corner-first semantic sections for a single orthogonal expansion layer.
 
-This module creates geometry only. In particular, source node counts and target
-unit sizes never split a LINE section. Finite patterns are deliberately limited
+This module creates geometry only. Optional dense source runs and finite pattern
+chords split LINE sections before unit construction. Finite patterns are limited
 to boundary portions and complete source-to-front transverse interfaces.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ import numpy as np
 from .._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
 from .._patterns import AxisPattern, covered_intervals, pattern_contacts
 from .._types import QuadLayerError, QuadSectionPlan, Seam, Section
+from .dense import DenseLinePartition
 
 
 def _fail(message, *, patterns=False, **context):
@@ -390,6 +391,7 @@ def partition_sections(data) -> QuadSectionPlan:
     corners = _make_corners(data, chords, registry)
     _share_repaired_endpoint_seams(data, corners, registry)
     sections = []
+    dense = DenseLinePartition(data)
 
     def append(kind, source_chains, outer, left, right, *, source_edge=None, corner=None):
         outer = _with_anchors(outer, anchors, data["tol"])
@@ -423,7 +425,13 @@ def partition_sections(data) -> QuadSectionPlan:
             outer = (registry.items[left_seam].points[-1], registry.items[right_seam].points[-1])
             if float((outer[1] - outer[0]) @ data["directions"][edge]) < -data["tol"]:
                 _fail("a LINE section reverses its outer boundary", source_edge=edge)
-            append("LINE", (tuple(map(int, source[start:stop + 1])),), outer, left_seam, right_seam, source_edge=edge)
+            cuts, runs = dense.cuts(edge, start, stop, left_seam, right_seam, registry,
+                                     _with_anchors(outer, anchors, data["tol"]))
+            for (a, first), (b, second) in zip(cuts, cuts[1:]):
+                segment_outer = (registry.items[first].points[-1], registry.items[second].points[-1])
+                append("LINE", (tuple(map(int, source[a:b + 1])),), segment_outer,
+                       first, second, source_edge=edge)
+                dense.record(sections[-1], a, b, runs)
     owners = [[] for _ in registry.items]
     for section in sections:
         owners[section.left_seam].append(section.id)
@@ -436,9 +444,14 @@ def partition_sections(data) -> QuadSectionPlan:
                    and _same(chord.points[-1], seam.points[-1], data["tol"]) for seam in seams):
             _fail("a finite pattern crosses a reserved corner section", patterns=True,
                   pattern_ids=chord.pattern_ids, source_edge=chord.edge)
-    _validate_sections(sections, seams, data)
+    try:
+        _validate_sections(sections, seams, data)
+    except QuadLayerError as error:
+        if dense.seams:
+            error.context.setdefault("dense_seams", dense.seams)
+        raise
     return QuadSectionPlan(tuple(sections), seams, _readonly(data["front"]),
                            tuple(map(float, data["expansion"])),
                            {"path": "corner_first", "sections": dict(Counter(section.kind for section in sections)),
                             "section_count": len(sections), "seam_count": len(seams),
-                            "pattern_chord_count": len(chords)})
+                            "pattern_chord_count": len(chords), **dense.diagnostics()})

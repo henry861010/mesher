@@ -37,7 +37,7 @@ class LinePolicyTests(unittest.TestCase):
     def test_dense_run_uses_bounded_spacing_and_preserves_every_source_node(self):
         args = _dense_fixture()
         originals = [value.copy() for value in args]
-        candidates = line.plan_line(*args, 500., 1e-9)
+        candidates = line.plan_line(*args, 500., 1e-9, max_transition_count=10)
         self.assertTrue(candidates)
         self.assertLessEqual(len(candidates), 2)
         for candidate in candidates:
@@ -49,7 +49,7 @@ class LinePolicyTests(unittest.TestCase):
     def test_alignment_can_prefer_smaller_valid_elements_over_target_size(self):
         source, outer, left, right = existing._fixture(20, 20., 5.)
         source[:, 0] = np.r_[0., np.linspace(4., 6., 17), 10., 15., 20.]
-        candidates = line.plan_line(source, outer, left, right, 10., 1e-10)
+        candidates = line.plan_line(source, outer, left, right, 10., 1e-10, max_transition_count=10)
         self.assertEqual(len(candidates), 2)
         aligned, target_sized = candidates
         self.assertEqual(len(aligned.outer_ids) - 1, 4)
@@ -60,7 +60,7 @@ class LinePolicyTests(unittest.TestCase):
         for candidate in candidates:
             self.assert_policy(candidate, 10.)
         with patch.object(line, "_plan_count", wraps=line._plan_count) as builds:
-            chosen = line.plan_line(source, outer, left, right, 10., 1e-10, best_only=True)[0]
+            chosen = line.plan_line(source, outer, left, right, 10., 1e-10, best_only=True, max_transition_count=10)[0]
         self.assertEqual(builds.call_count, 1)
         np.testing.assert_array_equal(chosen.nodes[chosen.outer_ids], aligned.nodes[aligned.outer_ids])
 
@@ -88,7 +88,7 @@ class LinePolicyTests(unittest.TestCase):
                         if reverse:
                             args = [args[0][::-1], args[1][::-1], args[3], args[2]]
                         candidates = line.plan_line(*args, 500. * scale, 1e-9 * scale,
-                                                    best_only=True)
+                                                    best_only=True, max_transition_count=10)
                         self.assertTrue(candidates)
                         self.assert_policy(candidates[0], 500. * scale, tol=1e-7 * scale)
                         np.testing.assert_array_equal(candidates[0].nodes[candidates[0].source_ids],
@@ -200,7 +200,7 @@ class LinePolicyTests(unittest.TestCase):
     def test_forced_short_interval_is_preserved_once_and_reported(self):
         source, _, left, right = existing._fixture(8, 16., 4.)
         outer = np.array([[0., 4., 0.], [3., 4., 0.], [16., 4., 0.]])
-        candidate = line.plan_line(source, outer, left, right, 8., 1e-10, best_only=True)[0]
+        candidate = line.plan_line(source, outer, left, right, 8., 1e-10, best_only=True, max_transition_count=10)[0]
         values = candidate.nodes[candidate.outer_ids, 0]
         np.testing.assert_array_equal(values[:2], [0., 3.])
         self.assertTrue(np.all(np.diff(values[1:]) >= 4. - 1e-9))
@@ -214,29 +214,29 @@ class LinePolicyTests(unittest.TestCase):
         args = existing._fixture(12, 1., 4., right_nodes=3)
         originals = [value.copy() for value in args]
         with self.assertRaises(QuadLayerError) as caught:
-            line.plan_line(*args, 10., 1e-10)
+            line.plan_line(*args, 10., 1e-10, max_transition_count=10)
         self.assertEqual(caught.exception.code, "line_constraints_infeasible")
         for actual, original in zip(args, originals):
             np.testing.assert_array_equal(actual, original)
 
     def test_ratio_one_requires_exact_target_spacing(self):
         candidates = line.plan_line(*existing._fixture(8, 16., 4.), 4., 1e-10,
-                                    min_size_ratio=1.)
+                                    min_size_ratio=1., max_transition_count=10)
         self.assertTrue(candidates)
         for candidate in candidates:
             self.assert_policy(candidate, 4., ratio=1.)
         with self.assertRaises(QuadLayerError) as caught:
-            line.plan_line(*existing._fixture(8, 15., 4.), 4., 1e-10, min_size_ratio=1.)
+            line.plan_line(*existing._fixture(8, 15., 4.), 4., 1e-10, min_size_ratio=1., max_transition_count=10)
         self.assertEqual(caught.exception.code, "line_constraints_infeasible")
 
     def test_larger_minimum_ratio_can_make_transition_capacity_infeasible(self):
         args = existing._fixture(40, 100., 50.)
-        candidates = line.plan_line(*args, 50., 1e-10, min_size_ratio=.5)
+        candidates = line.plan_line(*args, 50., 1e-10, min_size_ratio=.5, max_transition_count=10)
         self.assertTrue(candidates)
         for candidate in candidates:
             self.assert_policy(candidate, 50.)
         with self.assertRaises(QuadLayerError) as caught:
-            line.plan_line(*args, 50., 1e-10, min_size_ratio=.75)
+            line.plan_line(*args, 50., 1e-10, min_size_ratio=.75, max_transition_count=10)
         self.assertEqual(caught.exception.code, "line_constraints_infeasible")
 
     def test_refinement_is_not_capped_by_max_transition_count(self):
@@ -261,7 +261,7 @@ class LinePolicyTests(unittest.TestCase):
             with self.subTest(source_segments=count):
                 with patch.object(line, "build_unit_patch", wraps=build_unit_patch) as builds:
                     candidate = line.plan_line(*existing._fixture(count, float(count), 10.),
-                                               10., 1e-10, best_only=True)[0]
+                                               10., 1e-10, best_only=True, max_transition_count=10)[0]
                 self.assert_policy(candidate, 10.)
                 self.assertEqual(len(candidate.units), count // 10)
                 self.assertEqual(builds.call_count, len(candidate.units))

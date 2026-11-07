@@ -225,7 +225,7 @@ result = generate_full_adaptive_mesh(
     outer_outline=[[-8, -8], [12, -8], [12, 12], [-8, 12]],
     expand_ratio=1.5,
     pattern_lines=[],
-    max_transition_count=10,
+    max_transition_count=20,
     min_size_ratio=0.5,
 )
 assert result.mesh is mesh
@@ -427,8 +427,8 @@ so extending a guide's remote tails does not reduce precision near the mesh.
 
 1. **Sections describe geometry.** Determine `OUTER`, `INNER`, `INNER_LEFT`,
    `INNER_RIGHT`, and `INNER_BOTH` corners first. Their reserved ranges and
-   complete pattern chords delimit the remaining `LINE` sections. A long LINE
-   stays intact; source-edge count and target size do not split it at this stage.
+   complete pattern chords delimit the remaining `LINE` sections. Optional
+   dense-run endpoints further split LINE sections into independent intervals.
 2. **Units build each section.** Coordinate left/right seam node counts around
    the entire loop, then subdivide each section into feasible `build_unit_*`
    calls. Ordinary seams use 2 or 3 nodes, meaning 1 or 2 segments. Mandatory
@@ -438,9 +438,9 @@ For a `LINE`, the outer edge is sampled **before pairing**: endpoints, supplied
 `new_outline` points, and finite pattern intersections stay fixed. Additional
 nodes use these keyword parameters:
 
-- `max_transition_count=10`: a positive Python or NumPy integer. Each outer
-  segment receives at most this many source **segments**, not nodes. A `12→1`
-  transition is rejected or split with the default; `1→N` refinement is unrestricted.
+- `max_transition_count=20`: a positive Python or NumPy integer. Each outer
+  segment receives at most this many source **segments**, not nodes. Set `10`
+  explicitly to retain the earlier cap; `1→N` refinement is unrestricted.
 - `min_size_ratio=0.5`: a finite real number in `(0, 1]`. Ordinary resampled
   outer spacing is between `min_size_ratio * element_size` and `element_size`,
   within geometric tolerance. When adjacent mandatory anchors are already
@@ -451,6 +451,45 @@ These constraints apply only to resampled LINE boundaries. They do not change
 source edges, layer expansion thickness, corner sections, repair interiors, or
 the full-mesh final fixed interface. Boolean values are rejected for both
 parameters. Conflicting constraints or infeasible parity fail atomically.
+
+All three adapter entry points (`plan_quad_sections`, `generate_layer_adaptive_mesh`,
+and `generate_full_adaptive_mesh`) accept optional dense-run partitioning:
+
+```python
+result = generate_layer_adaptive_mesh(
+    mesh, outline, element_size=1000,
+    max_transition_count=1000,     # Explicit override for this extreme density contrast.
+    small_element_size=10,          # Opt in; default None preserves the partition.
+    dense_region_tolerance=0.001,   # Absolute world-coordinate anchor merge tolerance.
+)
+```
+
+Consecutive source edges strictly shorter than `small_element_size` form a
+maximal dense run. Its endpoints become shared source-to-front seams, leaving
+ordinary LINE sections on either side. Corners and pattern seams remain fixed.
+Nearby mandatory outer anchors strictly within `dense_region_tolerance` are
+reused; otherwise the normal projection becomes a new anchor. This tolerance
+does not relax geometry checks or move existing nodes. A single short edge
+also qualifies; an entirely dense LINE needs no additional seams. Partition
+conflicts fail atomically rather than silently dropping a dense endpoint.
+
+The full adapter sends these seam contacts to the global generator before the
+last layer, then reuses the saved canonical contacts in its fixed interface.
+Diagnostics expose `dense_sections` and `dense_seams`, including source IDs and
+shared seam IDs. Dense partitioning bounds the transition's location; it does
+not guarantee good internal cell quality under extreme coarsening.
+
+[Dense-section example](examples/dense_adaptive_sections.py) compares the old
+cap, the relaxed cap, and explicit dense sections on the same 5-versus-1000
+fixture. The last two cases explicitly use a cap of 1000; the default is 20.
+For this fixture, combining dense splitting with cap 20 conflicts with the
+outer spacing constraint and raises `QuadLayerError`. Reproduce the comparison with:
+
+```sh
+PYTHONPATH=src python examples/dense_adaptive_sections.py --no-show --plot /tmp/dense-adaptive-sections.png
+```
+
+![Dense LINE partition comparison](docs/images/dense-adaptive-sections.png)
 
 For a source projection interval of length `d`, sampling demand per unit length
 is `max(1 / element_size, 1 / (max_transition_count * d))`. Outside the source

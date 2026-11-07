@@ -149,7 +149,7 @@ class SectionIntegrationTests(unittest.TestCase):
                 np.testing.assert_array_equal(mesh.nodes, before_nodes)
                 np.testing.assert_array_equal(mesh.elements, before_elements)
                 self.assertFalse(plan.front.flags.writeable)
-                result = generate_layer_adaptive_mesh(mesh, outline, 500.)
+                result = generate_layer_adaptive_mesh(mesh, outline, 500., max_transition_count=10)
                 self.assert_built_partition(mesh, before_nodes, before_elements, result)
                 lines = [detail for detail in result.diagnostics['section_details']
                          if detail['kind'] == 'LINE' and len(detail['source_chains'][0]) == 25]

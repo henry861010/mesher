@@ -94,7 +94,7 @@ node mappings join those interfaces without renumbering source data, and final
 topology/geometry validation precedes one caller commit. Errors are atomic
 across the complete operation. This orchestration remains NumPy-only and does
 not import Mesh25D or process-flow modules.
-Both adaptive APIs validate `max_transition_count=10` and `min_size_ratio=0.5`
+Both adaptive APIs validate `max_transition_count=20` and `min_size_ratio=0.5`
 through the shared `_line_policy` input contract before geometry preparation.
 The full API forwards them only to ordinary intermediate layers; the last
 fixed-interface layer remains exempt, including a one-layer full mesh. Result
@@ -122,6 +122,27 @@ remaining LINE ranges using complete finite pattern chords. Public `Section`,
 `Seam`, and `QuadSectionPlan` objects use world XY coordinates and preserve the
 source node chains. Sections need not themselves be convex. Left/right refer
 to outline traversal, and seam points run from source to front.
+
+All three adapter entry points also accept `small_element_size=None` and
+`dense_region_tolerance=0.001`. These are absolute world lengths; the former
+must be positive when enabled and the latter non-negative. `_planning/dense.py`
+finds maximal consecutive source-edge runs strictly below the size threshold
+within each corner/pattern-delimited LINE. A run's internal endpoints create
+shared seams along the logical edge normal. Endpoint seams are reused, and an
+entirely dense LINE stays whole. Existing outer anchors strictly within the
+merge tolerance are reused with nearest-distance/outline-order tie breaking.
+This merge tolerance does not replace the numerical geometry tolerance.
+Zero-width, reversed, crossing, and out-of-front partitions fail atomically.
+
+Dense runs remain ordinary LINE sections and use the existing sampling,
+seam-parity solver, unit builders, and element-budget preflight. Diagnostics
+record their section/source/seam IDs, without new section kinds or fake pattern
+IDs. The full orchestrator exports dense seam contacts as global front anchors
+and saves their canonical world coordinates, keyed by source edge and chain
+position. Final construction reuses those contacts even if global meshing added
+a closer point. Chain positions survive repair-node renumbering between boundary
+builds. Dense splitting is opt-in; the default transition cap is relaxed to 20
+independently. Internal thin-cell quality under large coarsening is unchanged.
 
 Both APIs enable slot repair by default. Original-input and pattern validation
 precede closure detection. Parallel-slot closure uses the gap between the actual

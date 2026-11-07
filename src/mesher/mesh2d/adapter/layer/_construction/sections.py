@@ -10,6 +10,7 @@ from .line import plan_line
 from .._limits import ElementLimitExceeded, check_element_limit, preflight_element_limit
 from .._registry import _NodePool, _PointIndex
 from .._types import QuadLayerError
+from .._line_policy import DEFAULT_MAX_TRANSITION_COUNT
 
 
 def _xyz(points):
@@ -109,7 +110,7 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                                             best_only=True, _diagnostics=attempt_stats,
                                             max_added_elements=limit,
                                             fixed_outer_boundary=fixed_outer_boundary,
-                                            max_transition_count=data.get("max_transition_count", 10),
+                                            max_transition_count=data.get("max_transition_count", DEFAULT_MAX_TRANSITION_COUNT),
                                             min_size_ratio=data.get("min_size_ratio", .5),
                                             _sampling_cache=sampling_cache)
                     else:

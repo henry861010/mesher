@@ -182,7 +182,7 @@ class SectionLineTests(unittest.TestCase):
             return None if len(attempts) == 1 else original(*values)
 
         with patch.object(line_module, "_plan_count", side_effect=fail_first):
-            chosen = plan_line(*args, 500, 1e-10, best_only=True)
+            chosen = plan_line(*args, 500, 1e-10, best_only=True, max_transition_count=10)
         self.assertEqual(len(attempts), 2)
         self.assertTrue(chosen)
 
@@ -351,7 +351,7 @@ class SectionLineTests(unittest.TestCase):
         originals = [array.copy() for array in args]
         stats = {}
         with patch.object(line_module, "build_unit_patch", side_effect=ValueError("invalid")) as calls:
-            chosen = plan_line(*args, 10, 1e-10, best_only=True, _diagnostics=stats)
+            chosen = plan_line(*args, 10, 1e-10, best_only=True, _diagnostics=stats, max_transition_count=10)
         self.assertFalse(chosen)
         # With exactly ten source segments per outer segment, neither neighbor
         # can be tried without violating current or remaining capacity.
