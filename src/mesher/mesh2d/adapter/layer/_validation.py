@@ -203,14 +203,11 @@ def validate_patch(mesh, nodes, quads, outline, data):
             if key in expected:
                 _failure("source and front boundary segments overlap")
             expected[key] = (int(b), int(a))
-    if "outline_anchors" in data:
-        front_points = nodes[np.unique(np.concatenate(outline)), :2]
-        anchor_index = BoxIndex(front_points, front_points, tol)
-        for i, point in enumerate(data["outline_anchors"]):
-            candidates = anchor_index.query(point - tol, point + tol)
-            if not np.any(np.linalg.norm(front_points[candidates] - point, axis=1) <= tol):
-                _failure("the new outline omitted a specified point",
-                         parameter="new_outline", point_index=i)
+    target_ids = set(map(int, data.get("outline_anchor_ids", ())))
+    front_ids = set(np.concatenate(outline).tolist())
+    if not target_ids.issubset(front_ids):
+        _failure("the new outline omitted a specified node ID",
+                 parameter="outline_o", node_id=min(target_ids - front_ids))
     for key, owners in incidence.items():
         if key in expected:
             if len(owners) != 1 or owners[0][1:] != expected[key]:
@@ -221,14 +218,22 @@ def validate_patch(mesh, nodes, quads, outline, data):
         _failure("the layer omitted a source or front boundary segment")
 
     source_keys = {tuple(sorted(map(int, edge))) for edge in data["frozen"]}
-    unexpected_old_edges = set(incidence).intersection(data["old_incidence"]).difference(source_keys)
+    front_keys = set(expected).difference(source_keys)
+    shared_front = front_keys.intersection(data["old_incidence"])
+    for key in shared_front:
+        old_owners = data["old_incidence"][key]
+        if not set(key).issubset(target_ids) or len(old_owners) != 1:
+            raise QuadLayerError("the target would create a nonconforming shared edge",
+                                 code="topology_change", parameter="outline_o", edge=key)
+    unexpected_old_edges = (set(incidence).intersection(data["old_incidence"])
+                            .difference(source_keys | shared_front))
     if unexpected_old_edges:
         raise QuadLayerError("the layer meets old mesh away from its source boundary",
                              code="topology_change", edge=min(unexpected_old_edges))
     source_ids = set(np.asarray(data["frozen"]).ravel().tolist())
     old_nodes_used = set(quads[quads < original_count].tolist())
-    if not old_nodes_used.issubset(source_ids):
-        _failure("new elements reference old nodes outside the source boundary")
+    if not old_nodes_used.issubset(source_ids | target_ids):
+        _failure("new elements reference old nodes outside the source and target boundaries")
 
     shifted = new_cells - new_cells[:, :1]
     actual_area = float(np.sum(cross(shifted, np.roll(shifted, -1, axis=1))) * .5)

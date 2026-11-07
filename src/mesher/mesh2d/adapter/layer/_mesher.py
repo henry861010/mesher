@@ -5,6 +5,7 @@ from dataclasses import replace
 from time import perf_counter
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from ...model import Mesh2D
 from ._fixed_boundary import (fixed_boundary_nodes, prepare_fixed_boundary,
@@ -13,7 +14,7 @@ from ._geometry import area, cross
 from ._limits import check_element_limit
 from ._line_policy import (DEFAULT_MAX_TRANSITION_COUNT, validate_dense_parameters,
                            validate_line_parameters)
-from ._planning.front import (_expansion_distances, _front, _normalize_new_outline,
+from ._planning.front import (_expansion_distances, _front, _normalize_outline_o,
                               _specified_front)
 from ._planning.source import _fail, _prepare, _validate_old_patterns
 from ._planning.sections import partition_sections
@@ -54,9 +55,9 @@ def _world_repair_diagnostics(value, data, key=None):
     return value
 
 
-def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance,
-                  *, repair_slots=True, max_added_elements=None,
-                  repair_max_element_size=None, new_outline=None,
+def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_tolerance,
+                  *, expand_size=None, repair_slots=True, max_added_elements=None,
+                  repair_max_element_size=None, outline_o=None,
                   small_element_size=None, dense_region_tolerance=1e-3,
                   _dense_seam_targets=None):
     small_element_size, dense_region_tolerance = validate_dense_parameters(
@@ -78,11 +79,12 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
             _fail("repair_max_element_size must be finite and positive",
                   stage="input_validation", parameter="repair_max_element_size")
     try:
-        data = _prepare(mesh, outline, element_size, pattern_lines, expand_ratio, axis_tolerance)
+        data = _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_tolerance,
+                        expand_size=expand_size)
     except QuadLayerError as error:
         error.context.setdefault("stage", "input_validation")
         raise
-    target = None if new_outline is None else _normalize_new_outline(new_outline, data)
+    target = None if outline_o is None else _normalize_outline_o(outline_o, data)
     try:
         _validate_old_patterns(mesh, data)
     except QuadLayerError as error:
@@ -96,8 +98,7 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
         from ._repair.slots import repair_slots as stage_repairs
         _expansion_distances(data)
         normalized = Mesh2D(np.column_stack((data["xy"], np.zeros(len(mesh.nodes)))), mesh.elements)
-        # Only the repair target uses this cap. The original h continues to
-        # determine slot/corner coverage, pattern snapping, and the front.
+        # Repair sampling uses element_size; coverage and the front use expand_h.
         repair_cap = (None if repair_max_element_size is None else
                       min(repair_max_element_size, float(element_size)) / data["scale"])
         try:
@@ -116,18 +117,18 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
             repair_diagnostics.update(
                 repair_added_nodes=len(working.nodes) - len(mesh.nodes),
                 repair_added_elements=len(working.elements) - len(mesh.elements),
-                prepared_outline=[list(map(int, chain)) for chain in repair.outline],
+                prepared_outline=[int(node) for chain in repair.outline for node in chain[:-1]],
                 edge_provenance=[list(map(int, edges)) for edges in repair.provenance])
             try:
                 data = _prepare(working, repair.outline, element_size, pattern_lines,
-                                expand_ratio, axis_tolerance,
+                                expand_ratio, axis_tolerance, expand_size=expand_size,
                                 _semantic_directions=repair.directions, _frame=original_data)
             except QuadLayerError as error:
                 error.context.setdefault("stage", "repair_outline")
                 raise
             data["_original_data"] = original_data
             prepared_source = PreparedLayerSource(
-                working.nodes, working.elements, tuple(map(tuple, repair.outline)),
+                working.nodes, working.elements, tuple(repair_diagnostics["prepared_outline"]),
                 len(mesh.nodes), len(mesh.elements))
     data["_source_mesh"] = working
     data["_repair_diagnostics"] = repair_diagnostics
@@ -154,8 +155,9 @@ def _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio, axis
     return data, result
 
 
-def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
-                       new_outline=None,
+def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, *, pattern_lines=(),
+                       outline_o: ArrayLike | None = None,
+                       expand_size: float | None = None,
                        expand_ratio: float = 1.0,
                        axis_tolerance: float = 1e-3,
                        repair_slots: bool = True,
@@ -165,6 +167,10 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
     """Inspect repaired source and section geometry without modifying input.
 
     All returned coordinates and expansion distances use the caller's frame.
+    ``expand_size`` has the construction API's world-length semantics: None
+    uses ``element_size`` as the expansion baseline, including pattern snapping.
+    ``outline_i`` follows the construction API's flat node-ID loop contract,
+    including automatic orientation and logical-edge grouping.
     Original IDs are retained. With repairs, section source chains index the
     read-only ``prepared_source`` snapshot, which includes staged fill cells.
     Outer-layer construction remains a geometric preview: the subsequent
@@ -172,7 +178,7 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
     the original strict single-layer behavior.
     ``repair_max_element_size`` has the same interior target-size semantics as
     :func:`generate_layer_adaptive_mesh`, including automatic sizing when it is None.
-    ``new_outline`` also follows that function's contract: an ordered XY target
+    ``outline_o`` also follows that function's contract: an integer node-ID target
     loop matching the repaired source. ``front`` contains its logical corners;
     section outer boundaries retain the supplied collinear points as anchors.
     At least one existing Quad4 is required. Pattern lengths and endpoint
@@ -183,10 +189,10 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
     API's world-length semantics. Dense seams are part of this same preview;
     None leaves the original corner/pattern partition unchanged.
     """
-    data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio,
-                              axis_tolerance, repair_slots=repair_slots,
+    data, plan = _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio,
+                              axis_tolerance, expand_size=expand_size, repair_slots=repair_slots,
                               repair_max_element_size=repair_max_element_size,
-                              new_outline=new_outline, small_element_size=small_element_size,
+                              outline_o=outline_o, small_element_size=small_element_size,
                               dense_region_tolerance=dense_region_tolerance)
 
     def world(points):
@@ -202,8 +208,9 @@ def plan_quad_sections(mesh: Mesh2D, outline, element_size: float, *, pattern_li
                    edge_expansion=tuple(d * data["scale"] for d in plan.edge_expansion))
 
 
-def generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *, pattern_lines=(),
-                      new_outline=None,
+def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, *, pattern_lines=(),
+                      outline_o: ArrayLike | None = None,
+                      expand_size: float | None = None,
                       expand_ratio: float = 1.0,
                       axis_tolerance: float = 1e-3,
                       max_added_elements: int = 1_000_000,
@@ -215,22 +222,33 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *, 
                       dense_region_tolerance: float = 1e-3) -> QuadLayerResult:
     """Append one conforming Quad4 layer, committing only after validation.
 
-    ``outline`` is a closed chain of near-axis logical edges, CW for an
-    exterior boundary and CCW for a hole. ``pattern_lines`` contains finite
-    XY segments of shape ``(n, 2, 2)``. Growth is to the left of each directed
-    edge. A parallel pattern within ``element_size * expand_ratio`` determines
-    that whole edge's expansion; otherwise the expansion is ``element_size``.
+    ``outline_i`` is a one-dimensional integer node-ID loop containing every
+    source boundary node. Either winding and any starting point are accepted;
+    closure is implicit, with an optional repeated first ID at the end. The
+    API orients existing mesh to the right and groups consecutive segments by
+    their signed dominant X/Y direction into near-axis logical edges. It never
+    moves source coordinates or omits intermediate nodes. ``result.outline``
+    is a flat list of node IDs, reusable as the next call's ``outline_i``.
+    ``pattern_lines`` contains finite XY segments of shape ``(n, 2, 2)``. Growth
+    is to the left of each directed edge. ``expand_size=None`` uses
+    ``element_size`` as the expansion baseline. A finite positive ``expand_size``
+    sets that baseline independently in world length units, while ``element_size``
+    continues to control mesh sizing. A parallel pattern within
+    ``baseline * expand_ratio`` determines that whole edge's expansion;
+    otherwise the expansion is the baseline.
 
-    ``new_outline=None`` keeps that automatic expansion. Otherwise, supply an
-    ordered finite XY array of shape ``(n, 2)`` describing the complete target
-    loop. The last point connects to the first; a repeated closing point is
-    optional. Either winding and any starting point are accepted. Target edges
+    ``outline_o=None`` keeps that automatic expansion. Otherwise, supply an
+    one-dimensional integer node-ID loop in ``mesh.nodes`` describing the complete
+    target. Nodes may already belong to existing elements; consecutive IDs need
+    not be existing edges. The last ID connects to the first; a repeated closing
+    ID is optional. Either winding and any starting point are accepted. Target edges
     must be horizontal or vertical, with the same cyclic turns as the prepared
     source after repairs, and strictly on each source edge's expansion side.
-    All supplied points, including collinear points, are mandatory within the
-    geometric tolerance. Additional LINE points obey the size and transition
+    All supplied nodes, including collinear nodes, retain their original IDs
+    and exact coordinates. Additional LINE points obey the size and transition
     limits below as well as Quad4 parity. Patterns still
     constrain mesh edges but never move or snap an explicitly supplied target.
+    Existing elements are never split; an incompatible shared edge fails validation.
 
     Closing simple exterior slots and covered isolated stair corners are filled
     first, unless ``repair_slots=False``. A stair corner is covered when either
@@ -240,9 +258,10 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *, 
     directions even when individual segments are oblique. Patterns are applied
     again to that prepared outline. Both stages share one output budget and
     one atomic commit; original node and element IDs remain unchanged.
-    With ``new_outline``, repair decisions still use the original size, ratio,
-    and patterns. Only the subsequent expansion uses the explicit target. An
-    incompatible target fails atomically; it does not trigger another repair.
+    Repair coverage uses the expansion baseline, ratio, and patterns, including
+    when ``outline_o`` is supplied. Only the subsequent expansion uses that
+    explicit target. An incompatible target fails atomically; it does not
+    trigger another repair.
 
     Repair mouth and chord sampling target the median frozen segment length,
     capped at ``element_size``. Interior targets double inward up to
@@ -293,16 +312,17 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *, 
     length units; this merge tolerance never replaces geometric validation.
     """
     return _generate_layer_adaptive_mesh(
-        mesh, outline, element_size, pattern_lines=pattern_lines, new_outline=new_outline,
-        expand_ratio=expand_ratio, axis_tolerance=axis_tolerance,
+        mesh, outline_i, element_size, pattern_lines=pattern_lines, outline_o=outline_o,
+        expand_size=expand_size, expand_ratio=expand_ratio, axis_tolerance=axis_tolerance,
         max_added_elements=max_added_elements, repair_slots=repair_slots,
         repair_max_element_size=repair_max_element_size,
         max_transition_count=max_transition_count, min_size_ratio=min_size_ratio,
         small_element_size=small_element_size, dense_region_tolerance=dense_region_tolerance)
 
 
-def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
-                                 pattern_lines=(), new_outline=None,
+def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, *,
+                                 pattern_lines=(), outline_o=None,
+                                 expand_size: float | None = None,
                                  expand_ratio: float = 1.0,
                                  axis_tolerance: float = 1e-3,
                                  max_added_elements: int = 1_000_000,
@@ -325,26 +345,26 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
     if not isinstance(fixed_outer_boundary, (bool, np.bool_)):
         _fail("fixed_outer_boundary must be a boolean", stage="input_validation",
               parameter="fixed_outer_boundary")
-    if fixed_outer_boundary and new_outline is None:
-        _fail("fixed_outer_boundary requires new_outline", stage="input_validation",
-              parameter="new_outline")
+    if fixed_outer_boundary and outline_o is None:
+        _fail("fixed_outer_boundary requires outline_o", stage="input_validation",
+              parameter="outline_o")
     if (isinstance(max_added_elements, (bool, np.bool_))
             or not isinstance(max_added_elements, (int, np.integer))
             or max_added_elements <= 0):
         _fail("max_added_elements must be a positive integer", "invalid_input",
               stage="input_validation", parameter="max_added_elements")
     max_added_elements = int(max_added_elements)
-    data, plan = _prepare_plan(mesh, outline, element_size, pattern_lines, expand_ratio,
-                              axis_tolerance, repair_slots=repair_slots,
+    data, plan = _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio,
+                              axis_tolerance, expand_size=expand_size, repair_slots=repair_slots,
                               max_added_elements=max_added_elements,
                               repair_max_element_size=repair_max_element_size,
-                              new_outline=new_outline, small_element_size=small_element_size,
+                              outline_o=outline_o, small_element_size=small_element_size,
                               dense_region_tolerance=dense_region_tolerance,
                               _dense_seam_targets=_dense_seam_targets)
     data["max_transition_count"] = max_transition_count
     data["min_size_ratio"] = min_size_ratio
     if fixed_outer_boundary:
-        prepare_fixed_boundary(plan, data, new_outline)
+        prepare_fixed_boundary(plan, data)
     working = data["_source_mesh"]
     repair_count = len(working.elements) - len(mesh.elements)
     data["max_added_elements"] = max_added_elements - repair_count
@@ -368,13 +388,15 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
             original_data = dict(data["_original_data"])
             original_data.update(front=data["front"], outer=data["front"],
                                  inner=original_data["source"], tol=data["tol"])
+            if "outline_anchor_ids" in data:
+                original_data.update(outline_anchor_ids=data["outline_anchor_ids"])
             _validate_patch(mesh, nodes, all_quads, result_outline, original_data)
     except QuadLayerError as error:
         error.context.setdefault("stage", "final_validation")
         raise
     world_nodes = _world_nodes(nodes, working, data)
     if fixed_outer_boundary:
-        restore_fixed_boundary(world_nodes, nodes, result_outline, data, len(working.nodes))
+        restore_fixed_boundary(world_nodes, nodes, result_outline, data)
         nodes = world_nodes.copy()
         nodes[:, :2] = (world_nodes[:, :2] - data["origin"]) / data["scale"]
         try:
@@ -406,4 +428,6 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline, element_size: float, *,
                    "snapped_patterns": data["snapped"], "elapsed_seconds": perf_counter() - start}
     # This is the only mutation of the caller's mesh.
     mesh.replace_data(nodes=world_nodes, elements=elements)
-    return QuadLayerResult(mesh=mesh, outline=result_outline, diagnostics=diagnostics)
+    return QuadLayerResult(
+        mesh=mesh, outline=[int(node) for chain in result_outline for node in chain[:-1]],
+        diagnostics=diagnostics)

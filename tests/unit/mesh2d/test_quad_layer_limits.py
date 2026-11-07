@@ -20,7 +20,7 @@ from mesher.mesh2d.adapter.layer._limits import (
 def _rectangle():
     mesh = Mesh2D([[0, 0], [4, 0], [4, 3], [0, 3]],
                   np.asarray([[0, 1, 2, 3]], dtype=np.int64))
-    return mesh, [[0, 3], [3, 2], [2, 1], [1, 0]]
+    return mesh, [0, 3, 2, 1]
 
 
 def _line_fixture():

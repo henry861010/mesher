@@ -18,7 +18,7 @@ def _cells(cells):
     elements = [[lookup[x, y], lookup[x + 1, y], lookup[x + 1, y + 1], lookup[x, y + 1]]
                 for x, y in sorted(cells)]
     mesh = Mesh2D(coordinates, np.asarray(elements, dtype=np.int32))
-    return mesh, EditorMesh2D().outlines_by_edge(mesh)[0]
+    return mesh, EditorMesh2D().outlines(mesh)[0]
 
 
 def _plan(mesh, outline, h, patterns=(), ratio=1.):
@@ -101,8 +101,8 @@ class QuadSectionsTests(unittest.TestCase):
     def test_coincident_complete_interfaces_allow_no_line_sections(self):
         mesh, _ = _cells({(x, y) for x in range(4) for y in range(4)
                           if x < 1 or x >= 3 or y < 1 or y >= 3})
-        outline = next(loop for loop in EditorMesh2D().outlines_by_edge(mesh)
-                       if area(np.vstack([mesh.nodes[edge[:-1], :2] for edge in loop])) > 0)
+        outline = next(loop for loop in EditorMesh2D().outlines(mesh)
+                       if area(mesh.nodes[loop, :2]) > 0)
         patterns = [[[2, 1], [2, 1.6]], [[3, 2], [2.4, 2]],
                     [[2, 3], [2, 2.4]], [[1, 2], [1.6, 2]]]
         plan, data = _plan(mesh, outline, .6, patterns)
@@ -113,8 +113,8 @@ class QuadSectionsTests(unittest.TestCase):
     def test_counterclockwise_hole_allows_concave_semantic_sections(self):
         mesh, _ = _cells({(x, y) for x in range(10) for y in range(10)
                           if x < 2 or x >= 8 or y < 2 or y >= 8})
-        outline = next(loop for loop in EditorMesh2D().outlines_by_edge(mesh)
-                       if area(np.vstack([mesh.nodes[edge[:-1], :2] for edge in loop])) > 0)
+        outline = next(loop for loop in EditorMesh2D().outlines(mesh)
+                       if area(mesh.nodes[loop, :2]) > 0)
         plan, data = _plan(mesh, outline, .2)
         self.assertEqual(plan.diagnostics['sections'], {'INNER': 4, 'LINE': 4})
         self.assert_partition(plan, data)
@@ -137,7 +137,7 @@ class QuadSectionsTests(unittest.TestCase):
     def test_rotated_start_and_near_axis_coordinates(self):
         mesh, outline = _cells({(x, y) for x in range(4) for y in range(3)})
         mesh.nodes[:, 0] += mesh.nodes[:, 1] * 1e-5
-        plan, data = _plan(mesh, outline[2:] + outline[:2], .5)
+        plan, data = _plan(mesh, np.roll(outline, -2), .5)
         self.assertEqual(plan.diagnostics['sections'], {'OUTER': 4, 'LINE': 4})
         self.assert_partition(plan, data)
 

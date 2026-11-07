@@ -7,7 +7,7 @@ from mesher import Mesh2D
 from mesher.mesh2d import EditorMesh2D
 from mesher.mesh2d.adapter import QuadLayerError, generate_full_adaptive_mesh, plan_quad_sections
 from mesher.mesh2d.adapter._full_geometry import (
-    _validate_mesh, complement_domains, discover_boundaries, flatten_outline,
+    _validate_mesh, complement_domains, discover_boundaries,
     section_outline_points, validate_fronts,
 )
 
@@ -28,7 +28,7 @@ def _outer():
 
 
 def _fronts(mesh, topology):
-    return [mesh.nodes[flatten_outline(outline), :2] for outline in topology.outlines]
+    return [mesh.nodes[outline, :2] for outline in topology.outlines]
 
 
 class FullGeometryTests(unittest.TestCase):
@@ -59,7 +59,7 @@ class FullGeometryTests(unittest.TestCase):
         nodes, elements, before_outer = mesh.nodes.copy(), mesh.elements.copy(), outer.copy()
         topology = discover_boundaries(mesh, outer)
         topology.outer_outline[:] = 0.
-        topology.outlines[0][0][0] = -1
+        topology.outlines[0][0] = -1
         np.testing.assert_array_equal(mesh.nodes, nodes)
         np.testing.assert_array_equal(mesh.elements, elements)
         np.testing.assert_array_equal(outer, before_outer)
@@ -122,7 +122,7 @@ class FullGeometryTests(unittest.TestCase):
 
     def test_section_front_retains_every_anchor_and_implicit_closure(self):
         mesh = _rectangle()
-        outline = EditorMesh2D.outlines_by_edge(mesh)[0]
+        outline = EditorMesh2D.outlines(mesh)[0]
         plan = plan_quad_sections(mesh, outline, .5)
         points = section_outline_points(plan)
         self.assertFalse(np.array_equal(points[0], points[-1]))

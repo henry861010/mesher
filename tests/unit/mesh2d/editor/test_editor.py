@@ -15,7 +15,7 @@ class EditorMesh2DTests(unittest.TestCase):
 
         self.assertIs(EditorFromPackage, EditorMesh2D)
         self.assertNotIn("EditorMesh2D", mesher.__all__)
-        for name in ("delete_element", "merge", "search_element", "equivalence", "outline", "outlines_by_edge"):
+        for name in ("delete_element", "merge", "search_element", "equivalence", "outline", "outlines"):
             self.assertIsInstance(EditorMesh2D.__dict__[name], staticmethod)
         with self.assertRaises(AttributeError):
             EditorMesh2D().mesh = two_quads()
@@ -213,7 +213,7 @@ class EditorMesh2DTests(unittest.TestCase):
             lambda: EditorMesh2D.search_element(None, 0, 0, 1, 1),
             lambda: EditorMesh2D.equivalence(None),
             lambda: EditorMesh2D.outline(None),
-            lambda: EditorMesh2D.outlines_by_edge(None),
+            lambda: EditorMesh2D.outlines(None),
         )
         for operation in operations:
             with self.assertRaises(TypeError):

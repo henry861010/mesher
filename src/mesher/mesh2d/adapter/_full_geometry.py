@@ -21,7 +21,7 @@ from .layer._types import QuadLayerError
 @dataclass(frozen=True)
 class BoundaryTopology:
     outer_outline: np.ndarray
-    outlines: list[list[list[int]]]
+    outlines: list[list[int]]
     parents: tuple[int | None, ...]
     signs: tuple[int, ...]
     coordinate_tolerance: float
@@ -33,11 +33,6 @@ class ComplementDomain:
     outer_outline: np.ndarray
     hole_boundary_indices: tuple[int, ...]
     holes: list[np.ndarray]
-
-
-def flatten_outline(outline) -> np.ndarray:
-    """Flatten directed logical edges, retaining each boundary node once."""
-    return np.concatenate([np.asarray(edge, dtype=np.int64)[:-1] for edge in outline])
 
 
 def section_outline_points(plan) -> np.ndarray:
@@ -218,15 +213,15 @@ def discover_boundaries(mesh, outer_outline, *, coordinate_tolerance=1e-3) -> Bo
         _validate_mesh(mesh)
         try:
             domain = OrthogonalDomain(outer_outline, coordinate_tolerance=coordinate_tolerance)
-            raw = EditorMesh2D.outlines_by_edge(mesh)
+            raw = EditorMesh2D.outlines(mesh)
         except (TypeError, ValueError, IndexError) as error:
             raise QuadLayerError(str(error), code="invalid_input") from error
         if not raw:
             _fail("source mesh has no exposed boundary", code="empty_mesh")
-        outlines = [[list(map(int, edge)) for edge in outline] for outline in raw]
+        outlines = [list(map(int, outline)) for outline in raw]
         loops = []
         for boundary_index, outline in enumerate(outlines):
-            ids = flatten_outline(outline)
+            ids = np.asarray(outline, dtype=np.int64)
             if len(ids) % 2:
                 _fail("a frozen odd boundary cannot enclose a complete Quad4 mesh",
                       code="unsupported_boundary_parity", boundary_index=boundary_index,

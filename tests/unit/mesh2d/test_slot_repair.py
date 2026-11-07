@@ -25,7 +25,7 @@ def _blocks(blocks):
                     cell.append(lookup[point])
                 elements.append(cell)
     mesh = Mesh2D(coordinates, np.asarray(elements, dtype=np.int32))
-    return mesh, EditorMesh2D.outlines_by_edge(mesh)[0]
+    return mesh, EditorMesh2D.outlines(mesh)[0]
 
 
 def _c_slot(bottom_end=3., *, bottom_breaks=None):
@@ -50,14 +50,14 @@ class SlotRepairTests(unittest.TestCase):
 
     def run_repair(self, mesh, outline, h=.5, **kwargs):
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
-        original_outline = [np.asarray(chain).copy() for chain in outline]
+        original_outline = np.asarray(outline).copy()
         result = generate_layer_adaptive_mesh(mesh, outline, h, **kwargs)
         self.assert_layer(mesh, original_outline, result, old_nodes, old_elements)
         for old, actual in zip(original_outline, outline):
             np.testing.assert_array_equal(actual, old)
-        for edge in result.outline:
-            points = mesh.nodes[edge, :2]
-            self.assertTrue(np.any(np.ptp(points, axis=0) < 1e-10))
+        points = mesh.nodes[result.outline, :2]
+        vectors = np.roll(points, -1, axis=0) - points
+        self.assertTrue(np.all(np.min(np.abs(vectors), axis=1) < 1e-10))
         diagnostics = result.diagnostics
         self.assertEqual(diagnostics['added_elements'],
                          diagnostics['repair_added_elements'] + diagnostics['expand_added_elements'])
@@ -94,7 +94,7 @@ class SlotRepairTests(unittest.TestCase):
                 mesh, outline = _c_slot()
                 result = self.run_repair(mesh, outline, size)
                 self.assertEqual(len(result.diagnostics['slot_repairs']), 1)
-                self.assertEqual(len(result.outline), 4)
+                self.assertEqual(len(layer_checks._corners(mesh, result.outline)), 4)
                 mouth = np.asarray(result.diagnostics['slot_repairs'][0]['mouth_points'])
                 np.testing.assert_allclose(mouth[:, 0], 3.)
                 self.assertAlmostEqual(mouth[:, 1].min(), 1.)
@@ -127,7 +127,7 @@ class SlotRepairTests(unittest.TestCase):
                         mesh.nodes[:, :2] = mesh.nodes[:, [1, 0]] * [-1, 1]
                     # Exercise a different logical-edge start on each rotation.
                     shift = rotation % len(outline)
-                    outline = outline[shift:] + outline[:shift]
+                    outline = np.roll(outline, -shift)
                     result = self.run_repair(mesh, outline)
                     repair = result.diagnostics['slot_repairs'][0]
                     mouth = np.asarray(repair['mouth_points'])[:, :2]
@@ -148,7 +148,8 @@ class SlotRepairTests(unittest.TestCase):
         self.assertFalse(source.nodes.flags.writeable)
         self.assertFalse(source.elements.flags.writeable)
         self.assertIsInstance(source.outline, tuple)
-        self.assertTrue(all(isinstance(chain, tuple) for chain in source.outline))
+        self.assertTrue(all(isinstance(node, int) for node in source.outline))
+        self.assertEqual(source.outline, tuple(plan.diagnostics["prepared_outline"]))
         for section in plan.sections:
             for chain in section.source_chains:
                 self.assertTrue(all(0 <= node < len(source.nodes) for node in chain))
@@ -270,7 +271,7 @@ class SlotRepairTests(unittest.TestCase):
         mesh.nodes[:, :2] *= .5
         result = self.run_repair(mesh, outline)
         self.assertEqual(len(result.diagnostics['slot_repairs']), 2)
-        self.assertEqual(len(result.outline), 4)
+        self.assertEqual(len(layer_checks._corners(mesh, result.outline)), 4)
         repair_total = result.diagnostics['repair_added_elements']
         mesh, outline, _ = layer_checks._polyomino({(x, y) for x in range(6) for y in range(10)
                                                    if x < 2 or y < 2 or 4 <= y < 6 or y >= 8})
@@ -308,7 +309,7 @@ class SlotRepairTests(unittest.TestCase):
                                                         [-9., -9., 0], [-10., -9., 0]])),
                           elements=np.vstack((mesh.elements, np.arange(offset, offset + 4))))
         result = self.run_repair(mesh, outline)
-        front = mesh.nodes[[node for chain in result.outline for node in chain], :2]
+        front = mesh.nodes[result.outline, :2]
         np.testing.assert_allclose(front.min(axis=0), [-.5, -.5])
         np.testing.assert_allclose(front.max(axis=0), [3.5, 3.5])
 

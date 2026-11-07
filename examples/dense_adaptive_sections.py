@@ -23,7 +23,7 @@ def build_fixture():
     nodes = np.array([[x, y] for y in (0., 2000.) for x in xs])
     elements = np.array([[i, i + 1, i + n + 1, i + n] for i in range(n - 1)])
     mesh = Mesh2D(nodes, elements)
-    return mesh, EditorMesh2D.outlines_by_edge(mesh)[0]
+    return mesh, EditorMesh2D.outlines(mesh)[0]
 
 
 def build_comparison():

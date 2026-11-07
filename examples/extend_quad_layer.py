@@ -34,10 +34,10 @@ from mesher.mesh2d.adapter.visualization import (
 class Example:
     name: str
     mesh: Mesh2D
-    outline: list[list[int]]
+    outline_i: list[int]
     patterns: np.ndarray
     note: str
-    new_outline: np.ndarray | None = None
+    outline_o: np.ndarray | None = None
 
 
 def _cell_mesh(cells: set[tuple[int, int]], spacing: float):
@@ -51,19 +51,7 @@ def _cell_mesh(cells: set[tuple[int, int]], spacing: float):
                   np.asarray(elements, dtype=np.int32)), ids
 
 
-def _logical_edges(mesh: Mesh2D, loop: list[int]) -> list[list[int]]:
-    """Group collinear boundary segments into logical outline edges."""
-    points = mesh.nodes[loop, :2]
-    vectors = np.roll(points, -1, axis=0) - points
-    previous = np.roll(vectors, 1, axis=0)
-    turns = previous[:, 0] * vectors[:, 1] - previous[:, 1] * vectors[:, 0]
-    corners = np.flatnonzero(turns != 0).tolist()
-    closed = loop + loop + [loop[0]]
-    return [closed[start:(end if end > start else end + len(loop)) + 1]
-            for start, end in zip(corners, corners[1:] + corners[:1])]
-
-
-def _exterior_outline(mesh: Mesh2D) -> list[list[int]]:
+def _exterior_outline(mesh: Mesh2D) -> list[int]:
     directed = {(int(a), int(b)) for cell in mesh.elements
                 for a, b in zip(cell, np.roll(cell, -1))}
     clockwise = {b: a for a, b in directed if (b, a) not in directed}
@@ -71,7 +59,7 @@ def _exterior_outline(mesh: Mesh2D) -> list[list[int]]:
     loop = [start]
     while clockwise[loop[-1]] != start:
         loop.append(clockwise[loop[-1]])
-    return _logical_edges(mesh, loop)
+    return loop
 
 
 def make_example(case: str) -> Example:
@@ -80,14 +68,16 @@ def make_example(case: str) -> Example:
         mesh, _ = _cell_mesh({(x, y) for x in range(8) for y in range(6)}, 0.5)
         # A complete target polygon with asymmetric offsets and uneven anchors.
         # Start halfway along its top edge; the final edge closes implicitly.
-        new_outline = np.asarray([
+        target = np.asarray([
             [1.35, 3.6], [4.8, 3.6], [4.8, 0.65], [4.8, -0.4],
             [2.15, -0.4], [-0.2, -0.4], [-0.2, 1.2], [-0.2, 3.6],
         ])
+        outline_o = np.arange(mesh.node_count, mesh.node_count + len(target), dtype=np.int64)
+        mesh.nodes = np.vstack((mesh.nodes, np.column_stack((target, np.zeros(len(target))))))
         return Example("Rectangle / custom outline", mesh, _exterior_outline(mesh),
                        np.empty((0, 2, 2)),
                        "Pink circles mark the supplied points; target-size sampling adds the rest.",
-                       new_outline=new_outline)
+                       outline_o=outline_o)
 
     if case == "hole":
         mesh, ids = _cell_mesh({(x, y) for x in range(12) for y in range(12)
@@ -98,7 +88,7 @@ def make_example(case: str) -> Example:
                   + [(x, 8) for x in range(8, 4, -1)]
                   + [(4, y) for y in range(8, 4, -1)])
         loop = [ids[p] for p in points]
-        return Example("Hole / counterclockwise source", mesh, _logical_edges(mesh, loop),
+        return Example("Hole / counterclockwise source", mesh, loop,
                        np.empty((0, 2, 2)),
                        "The same single-layer operation grows into the hole.")
 
@@ -146,14 +136,14 @@ def main():
     for row, case in zip(axes, cases):
         example = make_example(case)
         result = generate_layer_adaptive_mesh(
-            example.mesh, example.outline, args.element_size,
+            example.mesh, example.outline_i, args.element_size,
             pattern_lines=example.patterns, expand_ratio=args.expand_ratio,
-            new_outline=example.new_outline,
+            outline_o=example.outline_o,
         )
-        plot_quad_layer(result, example.outline, pattern_lines=example.patterns,
+        plot_quad_layer(result, example.outline_i, pattern_lines=example.patterns,
                         name=example.name, axes=row)
-        if example.new_outline is not None:
-            row[2].scatter(*example.new_outline.T, s=60, facecolors="none",
+        if example.outline_o is not None:
+            row[2].scatter(*example.mesh.nodes[example.outline_o, :2].T, s=60, facecolors="none",
                            edgecolors="#c3346b", linewidths=1.7, zorder=8,
                            label="Supplied outline points")
             row[2].legend(loc="center", fontsize=8, framealpha=0.9)

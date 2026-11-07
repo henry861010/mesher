@@ -20,7 +20,7 @@ def rectangle():
     return Mesh2D([[0, 0], [4, 0], [4, 3], [0, 3]], [[0, 1, 2, 3]])
 
 
-OUTLINE = [[0, 3], [3, 2], [2, 1], [1, 0]]
+OUTLINE = [0, 3, 2, 1]
 INVALID_Z = (1e-30, -1e-14, 17., 1e295, np.nan, np.inf, -np.inf)
 
 
@@ -92,7 +92,7 @@ class ZeroZOperationTests(unittest.TestCase):
             'search': lambda m: EditorMesh2D.search_element(m, 0, 0, 4, 3),
             'equivalence': lambda m: EditorMesh2D.equivalence(m),
             'outline': lambda m: EditorMesh2D.outline(m),
-            'outlines_by_edge': lambda m: EditorMesh2D.outlines_by_edge(m),
+            'outlines': lambda m: EditorMesh2D.outlines(m),
             'plan_layer': lambda m: plan_quad_sections(m, OUTLINE, .5),
             'extend_layer': lambda m: generate_layer_adaptive_mesh(m, OUTLINE, .5),
             'unit111x': lambda m: build_unit_1_1_1_x(m, *sides),

@@ -8,6 +8,7 @@ import numpy as np
 from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from mesher.mesh2d.adapter.layer import _mesher
 from tests.unit.mesh2d import test_extend_quad_layer as layer_checks
+from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
 from tests.unit.mesh2d.test_corner_repair import _step
 from tests.unit.mesh2d.test_slot_repair import _c_slot
 
@@ -16,7 +17,7 @@ def _target():
     return np.array([[-.7, -.4], [-.7, 3.8], [4.9, 3.8], [4.9, -.4]])
 
 
-class NewOutlineTests(unittest.TestCase):
+class OutlineTargetTests(unittest.TestCase):
     assert_layer = layer_checks.ExtendQuadLayerTests.assert_layer
     assert_pattern_covered = layer_checks.ExtendQuadLayerTests.assert_pattern_covered
     assert_unchanged = layer_checks.ExtendQuadLayerTests.assert_unchanged
@@ -24,7 +25,9 @@ class NewOutlineTests(unittest.TestCase):
     _snapshot = staticmethod(layer_checks.ExtendQuadLayerTests._snapshot)
 
     def assert_target(self, mesh, result, target):
-        target = np.asarray(target, dtype=float)
+        ids = np.asarray(target, dtype=np.int64)
+        self.assertTrue(set(ids).issubset(result.outline))
+        target = mesh.nodes[ids, :2]
         if np.array_equal(target[0], target[-1]):
             target = target[:-1]
         front = mesh.nodes[layer_checks._outline_nodes(result.outline), :2]
@@ -52,14 +55,14 @@ class NewOutlineTests(unittest.TestCase):
         automatic, outline = layer_checks._rectangle()
         explicit, _ = layer_checks._rectangle()
         first = generate_layer_adaptive_mesh(automatic, outline, .5)
-        second = generate_layer_adaptive_mesh(explicit, outline, .5, new_outline=None)
+        second = generate_layer_adaptive_mesh(explicit, outline, .5, outline_o=None)
         np.testing.assert_array_equal(automatic.nodes, explicit.nodes)
         np.testing.assert_array_equal(automatic.elements, explicit.elements)
         for before, after in zip(first.outline, second.outline):
             np.testing.assert_array_equal(before, after)
         mesh, outline = layer_checks._rectangle()
         np.testing.assert_array_equal(plan_quad_sections(mesh, outline, .5).front,
-                                      plan_quad_sections(mesh, outline, .5, new_outline=None).front)
+                                      plan_quad_sections(mesh, outline, .5, outline_o=None).front)
 
     def test_target_geometry_is_independent_of_element_size(self):
         counts = []
@@ -68,8 +71,9 @@ class NewOutlineTests(unittest.TestCase):
                 mesh, outline = layer_checks._rectangle()
                 target = _target()
                 original = target.copy()
-                result = self.run_layer(mesh, outline, h=size, new_outline=target)
-                self.assert_target(mesh, result, target)
+                ids = _target_ids(mesh, target)
+                result = self.run_layer(mesh, outline, h=size, outline_o=ids)
+                self.assert_target(mesh, result, ids)
                 np.testing.assert_array_equal(target, original)
                 counts.append(len(layer_checks._outline_nodes(result.outline)))
         self.assertGreater(counts[0], counts[1])
@@ -82,8 +86,9 @@ class NewOutlineTests(unittest.TestCase):
             [4.5, 0.], [4.5, -.5], [4., -.5], [2.3, -.5], [0., -.5],
         ])
         mesh, outline = layer_checks._rectangle()
-        result = self.run_layer(mesh, outline, new_outline=target)
-        self.assert_target(mesh, result, target)
+        ids = _target_ids(mesh, target)
+        result = self.run_layer(mesh, outline, outline_o=ids)
+        self.assert_target(mesh, result, ids)
         self.assertGreater(len(layer_checks._outline_nodes(result.outline)), len(target))
 
     def test_target_accepts_cyclic_starts_winding_and_explicit_closure(self):
@@ -92,12 +97,17 @@ class NewOutlineTests(unittest.TestCase):
         for reverse, start, closed in ((False, 0, False), (False, 1, True),
                                        (True, 2, False), (True, 4, True)):
             with self.subTest(reverse=reverse, start=start, closed=closed):
-                supplied = np.roll(target[::-1] if reverse else target, start, axis=0)
-                if closed:
-                    supplied = np.vstack((supplied, supplied[0]))
                 mesh, outline = layer_checks._rectangle()
-                result = self.run_layer(mesh, outline, new_outline=supplied.tolist())
-                self.assert_target(mesh, result, target)
+                ids = _target_ids(mesh, target)
+                supplied = np.roll(ids[::-1] if reverse else ids, start)
+                if closed:
+                    supplied = np.r_[supplied, supplied[0]]
+                supplied.setflags(write=False)
+                saved = supplied.copy()
+                result = self.run_layer(mesh, outline,
+                                        outline_o=supplied if reverse else supplied.tolist())
+                self.assert_target(mesh, result, ids)
+                np.testing.assert_array_equal(supplied, saved)
                 if baseline is None:
                     baseline = mesh.nodes.copy(), mesh.elements.copy()
                 else:
@@ -106,9 +116,10 @@ class NewOutlineTests(unittest.TestCase):
 
     def test_preview_contains_anchors_is_readonly_and_does_not_mutate(self):
         mesh, outline = layer_checks._rectangle()
-        snapshot = self._snapshot(mesh)
         target = np.insert(_target(), 2, [1.3, 3.8], axis=0)
-        plan = plan_quad_sections(mesh, outline, .5, new_outline=target)
+        ids = _target_ids(mesh, target)
+        snapshot = self._snapshot(mesh)
+        plan = plan_quad_sections(mesh, outline, .5, outline_o=ids)
         self.assert_unchanged(mesh, snapshot)
         np.testing.assert_allclose(plan.front, _target())
         np.testing.assert_allclose(plan.edge_expansion, [.7, .8, .9, .4])
@@ -118,44 +129,48 @@ class NewOutlineTests(unittest.TestCase):
         for points in (plan.front, *(section.outer_boundary for section in plan.sections),
                        *(seam.points for seam in plan.seams)):
             self.assertFalse(points.flags.writeable)
-        result = self.run_layer(mesh, outline, new_outline=target)
-        self.assert_target(mesh, result, target)
+        result = self.run_layer(mesh, outline, outline_o=ids)
+        self.assert_target(mesh, result, ids)
 
     def test_returned_outline_can_be_extended_again(self):
         mesh, outline = layer_checks._rectangle()
-        first = self.run_layer(mesh, outline, new_outline=_target())
+        first = self.run_layer(mesh, outline, outline_o=_target_ids(mesh, _target()))
         target = np.array([[-1., -.7], [-1., 4.1], [5.2, 4.1], [5.2, -.7]])
-        second = self.run_layer(mesh, first.outline, h=.3, new_outline=target)
-        self.assert_target(mesh, second, target)
+        ids = _target_ids(mesh, target)
+        second = self.run_layer(mesh, first.outline, h=.3, outline_o=ids)
+        self.assert_target(mesh, second, ids)
 
     def test_complete_pattern_chords_end_at_custom_front(self):
         mesh, outline, _ = layer_checks._polyomino({(x, y) for x in range(4) for y in range(3)})
         patterns = [[[1., 3.], [1., 3.8]], [[3., 3.], [3., 3.8]]]
-        result = self.run_layer(mesh, outline, h=.5, new_outline=_target(), pattern_lines=patterns)
-        self.assert_target(mesh, result, _target())
+        ids = _target_ids(mesh, _target())
+        result = self.run_layer(mesh, outline, h=.5, outline_o=ids, pattern_lines=patterns)
+        self.assert_target(mesh, result, ids)
         for pattern in patterns:
             self.assert_pattern_covered(mesh, pattern)
 
     def test_parallel_pattern_beyond_target_does_not_snap_custom_front(self):
         mesh, outline = layer_checks._rectangle()
         pattern = [[1., 4.], [2., 4.]]
-        result = self.run_layer(mesh, outline, h=.5, new_outline=_target(),
+        ids = _target_ids(mesh, _target())
+        result = self.run_layer(mesh, outline, h=.5, outline_o=ids,
                                 pattern_lines=[pattern], expand_ratio=2.)
-        self.assert_target(mesh, result, _target())
+        self.assert_target(mesh, result, ids)
 
     def test_hole_target_preserves_user_points(self):
         cells = {(x, y) for x in range(12) for y in range(12)
                  if x < 4 or x >= 8 or y < 4 or y >= 8}
         mesh, _, lookup = layer_checks._polyomino(cells)
         mesh.nodes[:, :2] /= 4
-        outline = [[lookup[x, 4] for x in range(4, 9)],
-                   [lookup[8, y] for y in range(4, 9)],
-                   [lookup[x, 8] for x in range(8, 3, -1)],
-                   [lookup[4, y] for y in range(8, 3, -1)]]
+        outline = ([lookup[x, 4] for x in range(4, 8)]
+                   + [lookup[8, y] for y in range(4, 8)]
+                   + [lookup[x, 8] for x in range(8, 4, -1)]
+                   + [lookup[4, y] for y in range(8, 4, -1)])
         target = np.array([[1.15, 1.2], [1.5, 1.2], [1.8, 1.2],
                            [1.8, 1.85], [1.15, 1.85]])
-        result = self.run_layer(mesh, outline, h=.2, new_outline=target)
-        self.assert_target(mesh, result, target)
+        ids = _target_ids(mesh, target)
+        result = self.run_layer(mesh, outline, h=.2, outline_o=ids)
+        self.assert_target(mesh, result, ids)
 
     def test_concave_target_matches_the_source_corner_sequence(self):
         coarse = {(0, 0), (1, 0), (0, 1)}
@@ -164,53 +179,57 @@ class NewOutlineTests(unittest.TestCase):
         mesh.nodes[:, :2] /= 3
         target = np.array([[-.2, -.2], [-.2, 2.2], [1.2, 2.2],
                            [1.2, 1.2], [2.2, 1.2], [2.2, -.2]])
-        result = self.run_layer(mesh, outline, h=.2, new_outline=target)
-        self.assert_target(mesh, result, target)
+        ids = _target_ids(mesh, target)
+        result = self.run_layer(mesh, outline, h=.2, outline_o=ids)
+        self.assert_target(mesh, result, ids)
 
     def test_target_applies_after_slot_and_corner_repair(self):
         for fixture, size, key in ((_c_slot, .5, 'slot_repairs'), (_step, 1., 'corner_repairs')):
             with self.subTest(repair=key):
                 mesh, outline = fixture()
+                target = np.array([[-.6, -.6], [-.6, 3.6], [3.6, 3.6], [3.6, -.6]])
+                ids = _target_ids(mesh, target)
                 baseline = plan_quad_sections(mesh, outline, size)
                 snapshot = self._snapshot(mesh)
-                target = np.array([[-.6, -.6], [-.6, 3.6], [3.6, 3.6], [3.6, -.6]])
-                preview = plan_quad_sections(mesh, outline, size, new_outline=target)
+                preview = plan_quad_sections(mesh, outline, size, outline_o=ids)
                 self.assert_unchanged(mesh, snapshot)
                 self.assertIsNotNone(preview.prepared_source)
                 np.testing.assert_array_equal(preview.prepared_source.nodes, baseline.prepared_source.nodes)
                 np.testing.assert_array_equal(preview.prepared_source.elements, baseline.prepared_source.elements)
-                result = self.run_layer(mesh, outline, h=size, new_outline=target)
+                result = self.run_layer(mesh, outline, h=size, outline_o=ids)
                 self.assertEqual(len(result.diagnostics[key]), 1)
-                self.assert_target(mesh, result, target)
+                self.assert_target(mesh, result, ids)
 
     def test_custom_target_does_not_enable_otherwise_untriggered_repair(self):
         mesh, outline = _step()
-        snapshot = self._snapshot(mesh)
         # At .75 the existing automatic expansion does not repair this step.
         # A rectangular target therefore has incompatible corner topology.
         target = np.array([[-1., -1.], [-1., 4.], [4., 4.], [4., -1.]])
+        ids = _target_ids(mesh, target)
+        snapshot = self._snapshot(mesh)
         for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 with self.assertRaises(QuadLayerError):
-                    operation(mesh, outline, .75, new_outline=target)
+                    operation(mesh, outline, .75, outline_o=ids)
                 self.assert_unchanged(mesh, snapshot)
 
     def test_misaligned_slot_target_matches_six_prepared_edges(self):
         mesh, outline = _c_slot(2.25)
-        baseline = plan_quad_sections(mesh, outline, .5)
-        self.assertEqual(len(baseline.prepared_source.outline), 6)
         target = np.array([[-.6, -.4], [-.6, 3.6], [1.3, 3.6], [3.6, 3.6],
                            [3.6, 1.6], [2.85, 1.6], [2.85, -.4]])
+        ids = _target_ids(mesh, target)
+        baseline = plan_quad_sections(mesh, outline, .5)
+        self.assertEqual(len(baseline.front), 6)
         snapshot = self._snapshot(mesh)
-        preview = plan_quad_sections(mesh, outline, .5, new_outline=target)
+        preview = plan_quad_sections(mesh, outline, .5, outline_o=ids)
         self.assert_unchanged(mesh, snapshot)
         self.assertEqual(len(preview.front), 6)
         np.testing.assert_array_equal(preview.prepared_source.nodes, baseline.prepared_source.nodes)
         np.testing.assert_array_equal(preview.prepared_source.elements, baseline.prepared_source.elements)
-        result = self.run_layer(mesh, outline, new_outline=target)
+        result = self.run_layer(mesh, outline, outline_o=ids)
         self.assertEqual(len(result.diagnostics['slot_repairs']), 1)
-        self.assertEqual(len(result.outline), 6)
-        self.assert_target(mesh, result, target)
+        self.assertEqual(len(layer_checks._corners(mesh, result.outline)), 6)
+        self.assert_target(mesh, result, ids)
 
     def test_target_is_scale_translation_and_rotation_invariant(self):
         for scale, shift, rotate in ((1e-7, np.array([0., 0.]), False),
@@ -222,12 +241,31 @@ class NewOutlineTests(unittest.TestCase):
                 rotation = np.array([[0., -1.], [1., 0.]]) if rotate else np.eye(2)
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] @ rotation.T * scale + shift
                 target = target @ rotation.T * scale + shift
-                result = self.run_layer(mesh, outline, h=.5*scale, new_outline=target)
-                self.assert_target(mesh, result, target)
+                ids = _target_ids(mesh, target)
+                result = self.run_layer(mesh, outline, h=.5*scale, outline_o=ids)
+                self.assert_target(mesh, result, ids)
 
-    def test_invalid_target_inputs_and_topology_are_atomic(self):
+    def test_invalid_target_id_inputs_are_typed_and_atomic(self):
+        for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
+            mesh, outline = layer_checks._rectangle()
+            ids = _target_ids(mesh, _target())
+            invalid = ([], 4, ids.astype(float), ids.astype(str), [True] * 4,
+                       ids[:, None], _target(), [[4, 5], [6]], ids[:3],
+                       [-1, *ids[1:]], [mesh.node_count, *ids[1:]],
+                       [10 ** 100, *ids[1:]], np.r_[ids, ids[1]],
+                       np.r_[ids, ids[0], ids[0]])
+            snapshot = self._snapshot(mesh)
+            for supplied in invalid:
+                with self.subTest(operation=operation.__name__, supplied=repr(supplied)):
+                    with self.assertRaises(QuadLayerError) as caught:
+                        operation(mesh, outline, .5, outline_o=supplied)
+                    self.assertEqual(caught.exception.code, "invalid_input")
+                    self.assertEqual(caught.exception.context["parameter"], "outline_o")
+                    self.assertEqual(caught.exception.context["stage"], "input_validation")
+                    self.assert_unchanged(mesh, snapshot)
+
+    def test_invalid_target_geometry_and_topology_are_atomic(self):
         invalid = (
-            [], [0., 1.], [[0., 1.], [2., 3.]], np.zeros((4, 3)),
             [[-.5, -.5], [-.5, np.nan], [4.5, 3.5], [4.5, -.5]],
             [[-.5, -.5], [-.5, 3.5], [np.inf, 3.5], [4.5, -.5]],
             [[-.5, -.5], [-.5, -.5], [-.5, 3.5], [4.5, 3.5], [4.5, -.5]],
@@ -244,38 +282,137 @@ class NewOutlineTests(unittest.TestCase):
             for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
                 with self.subTest(target=index, operation=operation.__name__):
                     mesh, outline = layer_checks._rectangle()
+                    ids = _target_ids(mesh, target)
                     snapshot = self._snapshot(mesh)
                     with self.assertRaises(QuadLayerError):
-                        operation(mesh, outline, .5, new_outline=target)
+                        operation(mesh, outline, .5, outline_o=ids)
                     self.assert_unchanged(mesh, snapshot)
 
     def test_incomplete_pattern_to_custom_target_is_atomic(self):
         mesh, outline, _ = layer_checks._polyomino({(x, y) for x in range(4) for y in range(3)})
+        ids = _target_ids(mesh, _target())
         snapshot = self._snapshot(mesh)
         for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 with self.assertRaises(QuadLayerError):
-                    operation(mesh, outline, .5, new_outline=_target(),
+                    operation(mesh, outline, .5, outline_o=ids,
                               pattern_lines=[[[1., 3.], [1., 3.5]]])
                 self.assert_unchanged(mesh, snapshot)
 
     def test_custom_target_honors_output_budget_atomically(self):
         baseline, outline = layer_checks._rectangle()
-        count = generate_layer_adaptive_mesh(baseline, outline, .5, new_outline=_target()).diagnostics['added_elements']
+        ids = _target_ids(baseline, _target())
+        count = generate_layer_adaptive_mesh(baseline, outline, .5, outline_o=ids).diagnostics['added_elements']
         mesh, outline = layer_checks._rectangle()
+        ids = _target_ids(mesh, _target())
         snapshot = self._snapshot(mesh)
         with self.assertRaises(QuadLayerError):
-            generate_layer_adaptive_mesh(mesh, outline, .5, new_outline=_target(), max_added_elements=count-1)
+            generate_layer_adaptive_mesh(mesh, outline, .5, outline_o=ids, max_added_elements=count-1)
         self.assert_unchanged(mesh, snapshot)
-        result = self.run_layer(mesh, outline, new_outline=_target(), max_added_elements=count)
+        result = self.run_layer(mesh, outline, outline_o=ids, max_added_elements=count)
         self.assertEqual(result.diagnostics['added_elements'], count)
 
     def test_late_custom_target_validation_failure_is_atomic(self):
         mesh, outline = layer_checks._rectangle()
+        ids = _target_ids(mesh, _target())
         snapshot = self._snapshot(mesh)
         with patch.object(_mesher, '_validate_patch', side_effect=QuadLayerError('injected failure')):
             with self.assertRaisesRegex(QuadLayerError, 'injected failure'):
-                generate_layer_adaptive_mesh(mesh, outline, .5, new_outline=_target())
+                generate_layer_adaptive_mesh(mesh, outline, .5, outline_o=ids)
+        self.assert_unchanged(mesh, snapshot)
+
+
+    @staticmethod
+    def _attached_target(reverse_cells=False):
+        mesh, outline = layer_checks._rectangle()
+        ids = _target_ids(mesh, [
+            [-.5, -.5], [-.5, 3.5], [0., 3.5], [.5, 3.5],
+            [1., 3.5], [4., 3.5], [4.5, 3.5], [4.5, -.5],
+        ])
+        first = mesh.node_count
+        mesh.nodes = np.vstack((mesh.nodes, [[1., 4., 0.], [.5, 4., 0.]]))
+        cell = [int(ids[3]), int(ids[4]), first, first + 1]
+        mesh.elements = np.vstack((mesh.elements, cell[::-1] if reverse_cells else cell))
+        return mesh, outline, ids
+
+    def test_target_nodes_already_used_by_elements_join_at_shared_edge(self):
+        for reverse in (False, True):
+            with self.subTest(reverse_cells=reverse):
+                mesh, outline, ids = self._attached_target(reverse)
+                snapshot = self._snapshot(mesh)
+                plan_quad_sections(mesh, outline, .5, outline_o=ids)
+                self.assert_unchanged(mesh, snapshot)
+                result = self.run_layer(mesh, outline, outline_o=ids)
+                self.assert_target(mesh, result, ids)
+                edge = set(map(int, ids[3:5]))
+                owners = [(int(a), int(b)) for quad in mesh.elements
+                          for a, b in zip(quad, np.roll(quad, -1)) if {a, b} == edge]
+                self.assertEqual(len(owners), 2)
+                if not reverse:
+                    self.assertEqual(owners[0], owners[1][::-1])
+
+    def test_subdivision_of_existing_target_edge_fails_atomically(self):
+        mesh, outline, ids = self._attached_target()
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(QuadLayerError) as caught:
+            generate_layer_adaptive_mesh(mesh, outline, .25, outline_o=ids)
+        self.assertEqual(caught.exception.code, "topology_change")
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_nonmanifold_target_edge_fails_atomically(self):
+        mesh, outline, ids = self._attached_target()
+        mesh.elements = np.vstack((mesh.elements, mesh.elements[-1]))
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(QuadLayerError) as caught:
+            generate_layer_adaptive_mesh(mesh, outline, .5, outline_o=ids)
+        self.assertEqual(caught.exception.code, "topology_change")
+        self.assertEqual(caught.exception.context["parameter"], "outline_o")
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_existing_element_on_the_layer_side_of_target_fails_atomically(self):
+        mesh, outline, ids = self._attached_target()
+        mesh.nodes[-2:, 1] = 3.25
+        snapshot = self._snapshot(mesh)
+        with self.assertRaises(QuadLayerError) as caught:
+            generate_layer_adaptive_mesh(mesh, outline, .5, outline_o=ids)
+        self.assertEqual(caught.exception.code, "topology_change")
+        self.assert_unchanged(mesh, snapshot)
+
+    def test_nonconsecutive_target_ids_ignore_unrelated_duplicate_coordinates(self):
+        mesh, outline = layer_checks._rectangle()
+        target = np.insert(_target(), 1, [-.7, 1.2], axis=0)
+        # Register a shuffled set interleaved with unrelated duplicate coordinates.
+        order = np.array([3, 1, 4, 0, 2])
+        first = mesh.node_count
+        pairs = np.repeat(target[order], 2, axis=0)
+        _target_ids(mesh, pairs)
+        ids = first + 2 * np.argsort(order) + 1
+        original = mesh.nodes.copy()
+        result = self.run_layer(mesh, outline, outline_o=ids)
+        self.assert_target(mesh, result, ids)
+        np.testing.assert_array_equal(mesh.nodes[:len(original)], original)
+        self.assertTrue(set(range(first, first + len(pairs), 2)).isdisjoint(result.outline))
+
+    def test_final_validation_rejects_coordinate_only_anchor_substitution(self):
+        mesh, outline = layer_checks._rectangle()
+        ids = _target_ids(mesh, _target())
+        duplicate = mesh.node_count
+        mesh.nodes = np.vstack((mesh.nodes, mesh.nodes[ids[0]]))
+        snapshot = self._snapshot(mesh)
+        original_fill = _mesher.fill_sections
+
+        def substituted(*args, **kwargs):
+            nodes, quads, boundary, diagnostics = original_fill(*args, **kwargs)
+            quads = quads.copy()
+            quads[quads == ids[0]] = duplicate
+            boundary = [[duplicate if node == ids[0] else node for node in chain]
+                        for chain in boundary]
+            return nodes, quads, boundary, diagnostics
+
+        with patch.object(_mesher, "fill_sections", side_effect=substituted):
+            with self.assertRaises(QuadLayerError) as caught:
+                generate_layer_adaptive_mesh(mesh, outline, .5, outline_o=ids)
+        self.assertEqual(caught.exception.context["parameter"], "outline_o")
         self.assert_unchanged(mesh, snapshot)
 
 

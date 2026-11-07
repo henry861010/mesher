@@ -260,24 +260,20 @@ def plan_region_adapter(
                        element_size, coordinate_tolerance)
 
 
-def _flat(outline) -> list[int]:
-    return [int(node) for edge in outline for node in edge[:-1]]
-
-
 def _edge_cycle(outline):
-    ids = _flat(outline)
+    ids = list(outline)
     return frozenset(tuple(sorted((a, b))) for a, b in zip(ids, [*ids[1:], ids[0]]))
 
 
 def _mesh_state(mesh, outlines, *, sources, tolerance, parents=None):
     from shapely.geometry import Polygon
 
-    actual = EditorMesh2D.outlines_by_edge(mesh)
+    actual = EditorMesh2D.outlines(mesh)
     if ({_edge_cycle(outline) for outline in actual}
             != {_edge_cycle(outline) for outline in outlines}):
         _fail("a transition joined, removed, or duplicated a boundary",
               sources=sources, stage="intermediate_validation")
-    polygons = [Polygon(mesh.nodes[_flat(outline), :2]) for outline in outlines]
+    polygons = [Polygon(mesh.nodes[outline, :2]) for outline in outlines]
     current_parents = _parents(polygons, tolerance, sources=sources,
                                stage="intermediate_validation")
     if parents is not None and parents != current_parents:
@@ -314,7 +310,7 @@ def build_region_adapter(plan: AdapterPlan, *, progress: ProgressCallback | None
             return _merge(parts)[0]
 
         mesh = _run(seed, sources=[region.source], stage="seed_meshing")
-        boundary = EditorMesh2D.outlines_by_edge(mesh)
+        boundary = EditorMesh2D.outlines(mesh)
         shape, parent = _mesh_state(mesh, boundary, sources=[region.source],
                                     tolerance=plan.coordinate_tolerance)
         meshes.append(mesh)
@@ -355,8 +351,8 @@ def build_region_adapter(plan: AdapterPlan, *, progress: ProgressCallback | None
             })
 
     combined, ends = _run(lambda: _merge(meshes), sources=sources, stage="seed_assembly")
-    combined_outlines = EditorMesh2D.outlines_by_edge(combined)
-    boundary_regions = [int(np.searchsorted(ends, _flat(outline)[0], side="right"))
+    combined_outlines = EditorMesh2D.outlines(combined)
+    boundary_regions = [int(np.searchsorted(ends, outline[0], side="right"))
                         for outline in combined_outlines]
     try:
         result = generate_full_adaptive_mesh(

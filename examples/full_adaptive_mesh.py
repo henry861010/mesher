@@ -69,7 +69,7 @@ def plot_result(source, outer, result, sizes):
     colors = plt.get_cmap("tab10")
     for index, layer in enumerate(result.layer_outlines):
         for boundary_index, outline in enumerate(layer):
-            nodes = np.concatenate([np.asarray(edge)[:-1] for edge in outline])
+            nodes = np.asarray(outline)
             closed = result.mesh.nodes[np.r_[nodes, nodes[0]], :2]
             axes[1].plot(*closed.T, color=colors(index % 10), linewidth=1.6,
                          label=f"Layer {index + 1}: size {sizes[index]:g}" if boundary_index == 0 else None)

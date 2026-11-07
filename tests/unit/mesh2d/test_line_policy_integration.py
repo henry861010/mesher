@@ -13,6 +13,7 @@ from mesher.mesh2d.adapter import (
 from tests.unit.mesh2d import test_full_adaptive_mesh as full_existing
 from tests.unit.mesh2d import test_section_integration as section_existing
 from mesher.mesh2d.adapter.layer._construction import line
+from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
 
 
 class LinePolicyIntegrationTests(unittest.TestCase):
@@ -49,10 +50,12 @@ class LinePolicyIntegrationTests(unittest.TestCase):
         target = np.array([[-500., -500.], [-500., 1500.], [1007.5, 1500.],
                            [2600., 1500.], [2600., -500.]])
         original = target.copy()
-        result = generate_layer_adaptive_mesh(mesh, outline, 500., new_outline=target, max_transition_count=10)
+        ids = _target_ids(mesh, target)
+        nodes = mesh.nodes.copy()
+        result = generate_layer_adaptive_mesh(mesh, outline, 500., outline_o=ids, max_transition_count=10)
         self.assert_policy(mesh, result, 500.)
         np.testing.assert_array_equal(target, original)
-        front = mesh.nodes[np.unique(np.concatenate(result.outline)), :2]
+        front = mesh.nodes[np.unique(result.outline), :2]
         for point in target:
             self.assertEqual(np.count_nonzero(np.linalg.norm(front - point, axis=1) < 1e-8), 1)
         section_existing.SectionIntegrationTests.assert_built_partition(
@@ -78,7 +81,9 @@ class LinePolicyIntegrationTests(unittest.TestCase):
         target = np.array([[-500., -500.], [-500., 1500.], [1000., 1500.],
                            [1100., 1500.], [2600., 1500.], [2600., -500.]])
         original = target.copy()
-        result = generate_layer_adaptive_mesh(mesh, outline, 500., new_outline=target, max_transition_count=10)
+        ids = _target_ids(mesh, target)
+        nodes = mesh.nodes.copy()
+        result = generate_layer_adaptive_mesh(mesh, outline, 500., outline_o=ids, max_transition_count=10)
         details = [detail for detail in result.diagnostics["section_details"]
                    if detail.get("forced_short_intervals")]
         self.assertEqual(len(details), 1)

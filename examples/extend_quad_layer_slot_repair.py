@@ -45,7 +45,7 @@ def make_example(case, element_size=.5):
                 cells.append(cell)
     mesh = Mesh2D(points, np.asarray(cells, dtype=np.int32))
     patterns = [[[1., 1.5], [3. + element_size, 1.5]]] if case == 'pattern' else ()
-    return mesh, EditorMesh2D.outlines_by_edge(mesh)[0], patterns
+    return mesh, EditorMesh2D.outlines(mesh)[0], patterns
 
 
 def main():

@@ -11,6 +11,7 @@ from mesher.mesh2d.adapter.layer._geometry import area, collinear_interval, inte
 from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.adapter.layer._construction import line as _line
 from tests.unit.mesh2d.test_quad_sections import _cells
+from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
 
 
 class SectionIntegrationTests(unittest.TestCase):
@@ -23,8 +24,8 @@ class SectionIntegrationTests(unittest.TestCase):
     def _small_hole():
         mesh, _ = _cells({(x, y) for x in range(4) for y in range(4)
                           if x < 1 or x >= 3 or y < 1 or y >= 3})
-        outline = next(loop for loop in EditorMesh2D().outlines_by_edge(mesh)
-                       if area(np.vstack([mesh.nodes[edge[:-1], :2] for edge in loop])) > 0.)
+        outline = next(loop for loop in EditorMesh2D().outlines(mesh)
+                       if area(mesh.nodes[loop, :2]) > 0.)
         return mesh, outline
 
     @staticmethod
@@ -171,10 +172,12 @@ class SectionIntegrationTests(unittest.TestCase):
         target = np.array([[-500., -500.], [-500., 1500.], [1007.5, 1500.],
                            [2600., 1500.], [2600., -500.]])
         original_target = target.copy()
-        result = generate_layer_adaptive_mesh(mesh, outline, 500., new_outline=target)
+        ids = _target_ids(mesh, target)
+        before_nodes = mesh.nodes.copy()
+        result = generate_layer_adaptive_mesh(mesh, outline, 500., outline_o=ids)
         self.assert_built_partition(mesh, before_nodes, before_elements, result)
         np.testing.assert_array_equal(target, original_target)
-        front = mesh.nodes[np.unique(np.concatenate(result.outline)), :2]
+        front = mesh.nodes[np.unique(result.outline), :2]
         for point in target:
             self.assertEqual(np.count_nonzero(np.linalg.norm(front - point, axis=1) < 1e-8), 1)
 
@@ -236,7 +239,7 @@ class SectionIntegrationTests(unittest.TestCase):
         self.assert_built_partition(mesh, before_nodes, before_elements, result)
         for pattern in patterns:
             self.assert_pattern_covered(mesh, pattern)
-        new_front = mesh.nodes[np.concatenate(result.outline), :2]
+        new_front = mesh.nodes[np.asarray(result.outline), :2]
         np.testing.assert_allclose(new_front.min(axis=0), [1.6, 1.6])
         np.testing.assert_allclose(new_front.max(axis=0), [2.4, 2.4])
 

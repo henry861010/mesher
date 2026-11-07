@@ -5,13 +5,13 @@ import numpy as np
 
 from .._geometry import BoxIndex, area, on_segment, point_location, segment_contacts
 from .._types import QuadLayerError, UnmeshableDirectQuadLayout
-from .source import _fail, _simple_loop
+from .source import _fail, _input_loop, _simple_loop
 
 
 def _expansion_distances(data):
     """Plan supports and pattern distances before any front can collapse."""
     chains, normals = data["chains"], data["normals"]
-    tol, h = data["tol"], data["h"]
+    tol, expand_h = data["tol"], data["expand_h"]
     supports, distances, snapped = [], [], []
     for chain, normal, tangent in zip(chains, normals, data["directions"]):
         support = float(np.max(chain @ normal))
@@ -27,7 +27,8 @@ def _expansion_distances(data):
             distance = float(pattern.support * normal[1 - pattern.axis]) - support
             if tol < distance < nearest:
                 nearest, pattern_id = distance, j
-        distance = nearest if np.isfinite(nearest) and nearest / h <= data["ratio"] + tol else h
+        distance = (nearest if np.isfinite(nearest)
+                    and nearest / expand_h <= data["ratio"] + tol else expand_h)
         supports.append(support + distance)
         distances.append(distance)
         snapped.append(pattern_id if distance == nearest else None)
@@ -69,64 +70,53 @@ def _validate_front(data, front):
     data.update(front=front, outer=outer, inner=inner)
 
 
-def _normalize_new_outline(new_outline, data):
-    """Read an ordered XY loop without moving any of its mandatory points."""
-    context = dict(parameter="new_outline", stage="input_validation")
-    try:
-        points = np.asarray(new_outline, dtype=float)
-    except (TypeError, ValueError, OverflowError) as error:
-        raise QuadLayerError("new_outline must be finite XY points with shape (n, 2)",
-                             code="invalid_input", **context) from error
-    if (points.ndim != 2 or points.shape[1] != 2 or len(points) < 4
-            or not np.all(np.isfinite(points))):
-        _fail("new_outline must be finite XY points with shape (n, 2), n >= 4", **context)
-    with np.errstate(over="ignore", invalid="ignore"):
-        points = (points - data["origin"]) / data["scale"]
+def _normalize_outline_o(outline_o, data):
+    """Resolve a target ID loop while retaining its exact node identities."""
+    context = dict(parameter="outline_o", stage="input_validation")
+    ids = _input_loop(outline_o, len(data["xy"]), parameter="outline_o")
+    points = data["xy"][ids].copy()
     if (not np.all(np.isfinite(points))
             or np.max(np.abs(points)) > np.sqrt(np.finfo(float).max) / 16):
-        _fail("new_outline exceeds the numeric coordinate range",
+        _fail("outline_o exceeds the numeric coordinate range",
               "numeric_range_exceeded", **context)
     tol = data["tol"]
-    if np.linalg.norm(points[-1] - points[0]) <= tol:
-        points = points[:-1]
-    if len(points) < 4:
-        _fail("new_outline needs at least four distinct corners", **context)
-    directions = _new_outline_directions(points, tol)
+    directions = _outline_o_directions(points, tol)
     turns = np.sum(directions * np.roll(directions, 1, axis=0), axis=1)
     if np.any(turns < 0):
-        _fail("new_outline cannot reverse along an adjacent edge", **context)
+        _fail("outline_o cannot reverse along an adjacent edge", **context)
     try:
-        _simple_loop(points, tol, "new_outline")
+        _simple_loop(points, tol, "outline_o")
     except QuadLayerError as error:
         error.context.update(context)
         raise
     if abs(area(points)) <= tol:
-        _fail("new_outline has zero area", **context)
-    return points
+        _fail("outline_o has zero area", **context)
+    return ids, points
 
 
-def _new_outline_directions(points, tol):
+def _outline_o_directions(points, tol):
     vectors = np.roll(points, -1, axis=0) - points
     axes = np.argmax(np.abs(vectors), axis=1)
     rows = np.arange(len(points))
     along = vectors[rows, axes]
     invalid = (np.abs(along) <= tol) | (np.abs(vectors[rows, 1 - axes]) > tol)
     if np.any(invalid):
-        _fail("new_outline edges must be nonzero horizontal or vertical segments",
-              parameter="new_outline", stage="input_validation",
+        _fail("outline_o edges must be nonzero horizontal or vertical segments",
+              parameter="outline_o", stage="input_validation",
               edge_index=int(np.flatnonzero(invalid)[0]))
     directions = np.zeros_like(vectors)
     directions[rows, axes] = np.sign(along)
     return directions
 
 
-def _specified_front(data, points):
+def _specified_front(data, target):
     """Match an explicit target to the final, possibly repaired source loop."""
+    ids, points = target
     tol = data["tol"]
-    context = dict(parameter="new_outline", stage="expansion")
+    context = dict(parameter="outline_o", stage="expansion")
     if np.sign(area(points)) != np.sign(area(data["source"])):
-        points = points[::-1]
-    directions = _new_outline_directions(points, tol)
+        ids, points = ids[::-1], points[::-1]
+    directions = _outline_o_directions(points, tol)
     corners = np.flatnonzero(np.any(directions != np.roll(directions, 1, axis=0), axis=1))
     front = points[corners]
     matches = []
@@ -135,7 +125,7 @@ def _specified_front(data, points):
                    if np.array_equal(np.roll(directions[corners], -i, axis=0),
                                      data["directions"])]
     if len(matches) != 1:
-        _fail("new_outline must have the same cyclic turns as the prepared source",
+        _fail("outline_o must have the same cyclic turns as the prepared source",
               "unsupported_new_outline", source_edge_count=len(data["chains"]),
               target_edge_count=len(corners), **context)
     shift = matches[0]
@@ -143,14 +133,15 @@ def _specified_front(data, points):
     for first, last in zip(corners, np.roll(corners, -1)):
         indices = np.arange(first, last if last > first else last + len(points)) % len(points)
         if any(not on_segment(points[i], points[first], points[last], tol) for i in indices):
-            _fail("new_outline points must follow their logical straight edge", **context)
+            _fail("outline_o points must follow their logical straight edge", **context)
     front = np.roll(front, -shift, axis=0).copy()
     anchors = np.roll(points, -int(corners[shift]), axis=0).copy()
+    anchor_ids = np.roll(ids, -int(corners[shift])).copy()
     supports = np.sum(front * data["normals"], axis=1)
     expansion = [float(support - np.max(chain @ normal))
                  for support, chain, normal in zip(supports, data["chains"], data["normals"])]
     if any(distance <= tol for distance in expansion):
-        _fail("new_outline edges must lie strictly on the expansion side of the prepared source",
+        _fail("outline_o edges must lie strictly on the expansion side of the prepared source",
               "topology_change", **context)
     try:
         _validate_front(data, front)
@@ -158,4 +149,5 @@ def _specified_front(data, points):
         error.context.update(context)
         raise
     data.update(supports=supports.tolist(), expansion=expansion,
-                snapped=[None] * len(front), outline_anchors=anchors)
+                snapped=[None] * len(front), outline_anchors=anchors,
+                outline_anchor_ids=anchor_ids)

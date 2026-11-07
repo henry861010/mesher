@@ -52,7 +52,7 @@ def _area(points):
 
 
 def _flat(outline):
-    return np.concatenate([np.asarray(edge, dtype=int)[:-1] for edge in outline])
+    return np.asarray(outline, dtype=np.int64)
 
 
 def _segments(loop):
@@ -142,7 +142,7 @@ class FullAdaptiveMeshTests(unittest.TestCase):
         self.assertEqual(len(boundary) % 2, 0)
         self.assertLess(_area(xy[boundary]), 0)
         self.assertEqual(_segments(boundary), {edge for edge, count in incidence.items() if count == 1})
-        self.assertEqual(len(EditorMesh2D.outlines_by_edge(mesh)), 1)
+        self.assertEqual(len(EditorMesh2D.outlines(mesh)), 1)
         for point in xy[boundary]:
             on_domain = False
             for a, b in zip(domain, np.roll(domain, -1, axis=0)):
@@ -156,9 +156,8 @@ class FullAdaptiveMeshTests(unittest.TestCase):
         for layer in result.layer_outlines:
             self.assertEqual(len(layer), len(original_outlines))
             for outline, original in zip(layer, original_outlines):
-                for edge, following_edge in zip(outline, [*outline[1:], outline[0]]):
-                    self.assertGreaterEqual(len(edge), 2)
-                    self.assertEqual(edge[-1], following_edge[0])
+                self.assertEqual(len(outline), len(set(outline)))
+                self.assertTrue(all(isinstance(node, int) for node in outline))
                 nodes = _flat(outline)
                 self.assertEqual(len(set(map(int, nodes))), len(nodes))
                 self.assertGreater(_area(xy[nodes]) * _area(xy[_flat(original)]), 0)
@@ -189,7 +188,7 @@ class FullAdaptiveMeshTests(unittest.TestCase):
 
     def run_full(self, mesh, sizes, outer, **kwargs):
         source = self._snapshot(mesh)
-        outlines = EditorMesh2D.outlines_by_edge(mesh)
+        outlines = EditorMesh2D.outlines(mesh)
         outer_before = np.asarray(outer).copy()
         result = generate_full_adaptive_mesh(mesh, sizes, outer_outline=outer, **kwargs)
         self.assert_complete(result, mesh, outer, sizes, source, outlines)

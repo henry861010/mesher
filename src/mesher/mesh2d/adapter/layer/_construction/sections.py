@@ -167,7 +167,10 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
     added_elements = sum(len(options[pair].quads) for options, pair in zip(candidates, selected))
     check_element_limit(added_elements, limit, stage="selected_layer")
     source_ids = np.unique(data["frozen"])
-    pool = _NodePool(nodes, source_ids, tol)
+    boundary_ids = source_ids
+    if "outline_anchor_ids" in data:
+        boundary_ids = np.union1d(source_ids, data["outline_anchor_ids"])
+    pool = _NodePool(nodes, boundary_ids, tol)
 
     def world(points):
         return (np.asarray(points)[:, :2] * data["scale"] + data["origin"]).tolist()

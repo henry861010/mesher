@@ -51,10 +51,10 @@ def main():
     if not args.no_show:
         from mesher.mesh2d.visualization import view_mesh
 
-        # layer_outlines 的索引順序：層 → 原始邊界 → 邏輯邊 → node IDs。
+        # layer_outlines 的索引順序：層 → 原始邊界 → node IDs。
         boundary_nodes = np.unique(np.concatenate([
-            np.asarray(edge[:-1], dtype=np.int64)
-            for layer in result.layer_outlines for outline in layer for edge in outline
+            np.asarray(outline, dtype=np.int64)
+            for layer in result.layer_outlines for outline in layer
         ]))
         view_mesh(result.mesh, node_indices=boundary_nodes, reference_lines=pattern_lines)
 

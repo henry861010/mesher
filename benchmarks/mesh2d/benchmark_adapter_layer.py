@@ -40,7 +40,7 @@ def main():
     right = generate_rectilinear_mesh(target_edge_size=5, x_coordinates=[100, 200],
                                       y_coordinates=[0, 200])
     source = editor.equivalence(editor.merge(left, right))
-    outline = editor.outlines_by_edge(source)[0]
+    outline = editor.outlines(source)[0]
     timings, trials, repairs = [], [], []
     for iteration in range(args.warmups + args.repeats):
         mesh = Mesh2D(source.nodes.copy(), source.elements.copy())

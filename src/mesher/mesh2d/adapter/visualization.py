@@ -29,7 +29,7 @@ _REPAIR_STYLES = {
 
 
 def _draw_outline(axis, nodes, outline, **style):
-    indices = [node for chain in outline for node in chain[:-1]]
+    indices = list(outline)
     axis.plot(*nodes[indices + indices[:1], :2].T, **style)
 
 
@@ -82,7 +82,7 @@ def plot_quad_layer(result: QuadLayerResult, source_outline, *, pattern_lines=()
                      for kind in _REPAIR_STYLES}
     repairs = [(kind, index, repair) for kind, items in repair_groups.items()
                for index, repair in enumerate(items)]
-    front_ids = [node for chain in result.outline for node in chain[:-1]]
+    front_ids = result.outline
     points = np.vstack((old_nodes[:, :2], mesh.nodes[front_ids, :2]))
     lower, upper = points.min(axis=0), points.max(axis=0)
     pad = 0.07 * max(upper - lower)

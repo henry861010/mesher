@@ -9,7 +9,7 @@ from ..utils.equivalence import _equivalent_node_mapping
 from ..utils.topology import _delete_element, _get_boundary, _select_boundary_elements
 from ..model import Mesh2D
 from ._cleanup import _repair_collapsed_elements
-from ._outline import _outlines_by_edge
+from ._outline import _outlines
 
 
 _BATCH_SIZE = 65_536
@@ -138,30 +138,20 @@ class EditorMesh2D:
         return _get_boundary(mesh)
 
     @staticmethod
-    def outlines_by_edge(
-        mesh: Mesh2D, *, angle_tolerance: float = 1e-8
-    ) -> list[list[NDArray[np.int64]]]:
-        """Return all boundary loops split into logical XY edges at corners.
+    def outlines(mesh: Mesh2D) -> list[NDArray[np.int64]]:
+        """Return complete node-ID loops with existing mesh on their right.
 
-        The result is indexed by loop, edge, then node. Each int64 edge chain
-        retains all intermediate nodes and includes both corner endpoints;
-        adjacent edges share an endpoint and the last closes onto the first.
-        Existing mesh lies on the right: exteriors are clockwise and holes
-        counterclockwise, regardless of input element winding. Loop order
-        follows ``outline``; each starts at its lowest directed corner edge.
+        Exteriors are clockwise and holes counterclockwise, regardless of
+        element winding. Loops have implicit closure, retain every boundary
+        node, and start at their lowest directed segment. Loop order follows
+        ``outline``. Returned int64 arrays own their data; the mesh is unchanged.
 
-        Consecutive segments within angle_tolerance radians are grouped
-        (default 1e-8; finite, in [0, pi/2)). Zero-length XY segments,
-        nonfinite boundary coordinates, and loops with fewer than three
-        logical edges raise ValueError, as does invalid topology. Each loop's
-        starting segment must belong to a cell with finite, nonzero XY area
-        to determine its winding. No mesh data is modified or shared with
-        returned arrays.
-
-        For near-axis Quad4 meshes, one result loop can be passed directly
-        to ``generate_layer_adaptive_mesh``; that function validates its own constraints.
+        Invalid topology, nonfinite coordinates, zero-length XY segments, or
+        boundary cells with zero or nonfinite XY area raise ValueError.
+        One loop can be passed directly as ``outline_i`` to
+        ``generate_layer_adaptive_mesh`` or ``plan_quad_sections``.
         """
-        return _outlines_by_edge(mesh, angle_tolerance)
+        return _outlines(mesh)
 
 
 __all__ = ["EditorMesh2D"]

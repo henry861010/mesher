@@ -28,10 +28,10 @@ class UnmeshableDirectQuadLayout(QuadLayerError):
 
 @dataclass(frozen=True)
 class QuadLayerResult:
-    """The committed mesh, its new logical outline, and construction diagnostics."""
+    """The committed mesh, its complete node-ID outline, and construction diagnostics."""
 
     mesh: Mesh2D
-    outline: list[list[int]]
+    outline: list[int]
     diagnostics: dict[str, Any]
 
 
@@ -49,8 +49,8 @@ class Seam:
 class Section:
     """A geometric section; unit subdivision is a separate planning step.
 
-    Source chains follow the input outline. The outer boundary follows the
-    same traversal, from the left interface to the right interface. A plain
+    Source chains follow the normalized logical-edge order. The outer boundary
+    follows the same traversal, from the left interface to the right interface. A plain
     INNER section can have a one-point outer boundary. An OUTER section has
     a one-node source chain. Neither representation is a degenerate element:
     sections are allowed to contain several eventual quadrilateral units.
@@ -73,13 +73,13 @@ class PreparedLayerSource:
 
     Original node and element IDs are preserved as array prefixes. Section
     source chains in the containing plan index these nodes, not the caller's
-    still-unmodified mesh. ``outline`` contains semantic axis-aligned chains;
-    their individual source segments may be oblique.
+    still-unmodified mesh. ``outline`` is a complete node-ID loop with implicit
+    closure; its individual source segments may be oblique.
     """
 
     nodes: np.ndarray
     elements: np.ndarray
-    outline: tuple[tuple[int, ...], ...]
+    outline: tuple[int, ...]
     original_node_count: int
     original_element_count: int
 
@@ -90,7 +90,7 @@ class PreparedLayerSource:
             # WRITEABLE back on through a view of the preview snapshot.
             values = np.frombuffer(source.tobytes(), dtype=source.dtype).reshape(source.shape)
             object.__setattr__(self, name, values)
-        object.__setattr__(self, "outline", tuple(tuple(map(int, chain)) for chain in self.outline))
+        object.__setattr__(self, "outline", tuple(map(int, self.outline)))
 
 
 @dataclass(frozen=True)

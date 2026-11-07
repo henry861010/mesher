@@ -46,7 +46,7 @@ mesh = editor.equivalence(editor.merge(mesh, mesh3))
 mesh = editor.equivalence(editor.merge(mesh, mesh4))
 
 # layer one 30
-outline = editor.outlines_by_edge(mesh)[0]
+outline = editor.outlines(mesh)[0]
 result = generate_layer_adaptive_mesh(
     mesh, outline, element_size=30, expand_ratio=1.5, pattern_lines=pattern_lines,
     repair_max_element_size=20,
@@ -54,14 +54,14 @@ result = generate_layer_adaptive_mesh(
 mesh = result.mesh
 
 # layer two 100
-outline = editor.outlines_by_edge(mesh)[0]
+outline = editor.outlines(mesh)[0]
 result = generate_layer_adaptive_mesh(
     mesh, outline, element_size=100, expand_ratio=1.5, pattern_lines=pattern_lines,
 )
 mesh = result.mesh
 
 # layer two 200
-outline = editor.outlines_by_edge(mesh)[0]
+outline = editor.outlines(mesh)[0]
 result = generate_layer_adaptive_mesh(
     mesh, outline, element_size=200, expand_ratio=1.5, pattern_lines=pattern_lines,
 )

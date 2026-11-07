@@ -21,7 +21,7 @@ class RepairedEndpointSectionsTests(unittest.TestCase):
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] @ np.linalg.matrix_power(rotation, turns).T
                 generate_layer_adaptive_mesh(mesh, outline, 30., expand_ratio=1.5,
                                   repair_max_element_size=20.)
-                outline = EditorMesh2D.outlines_by_edge(mesh)[0]
+                outline = EditorMesh2D.outlines(mesh)[0]
                 nodes, elements = mesh.nodes.copy(), mesh.elements.copy()
                 data, plan = _mesher._prepare_plan(mesh, outline, 100., (), 1.5, 1e-3)
                 np.testing.assert_array_equal(mesh.nodes, nodes)

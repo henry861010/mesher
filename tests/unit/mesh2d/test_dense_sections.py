@@ -15,6 +15,7 @@ from mesher.mesh2d.editor import EditorMesh2D
 from tests.unit.mesh2d.test_quad_sections import _cells
 from tests.unit.mesh2d import test_section_integration as section_checks
 from tests.unit.mesh2d.test_slot_repair import _c_slot
+from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
 
 
 def rectangle(xs=None, height=2000., rotation=0, scale=1., shear=0.):
@@ -28,7 +29,7 @@ def rectangle(xs=None, height=2000., rotation=0, scale=1., shear=0.):
         nodes = nodes[:, [1, 0]] * [-1, 1]
     mesh = Mesh2D(nodes * scale, np.array([[i, i + 1, i + n + 1, i + n]
                                           for i in range(n - 1)]))
-    return mesh, EditorMesh2D.outlines_by_edge(mesh)[0]
+    return mesh, EditorMesh2D.outlines(mesh)[0]
 
 
 class DenseSectionTests(unittest.TestCase):
@@ -40,9 +41,8 @@ class DenseSectionTests(unittest.TestCase):
 
     def assert_plan(self, mesh, outline, plan):
         prepared = plan.prepared_source
-        chains = prepared.outline if prepared is not None else outline
-        expected = Counter((int(a), int(b)) for chain in chains
-                           for a, b in zip(chain[:-1], chain[1:]))
+        loop = prepared.outline if prepared is not None else outline
+        expected = Counter((int(a), int(b)) for a, b in zip(loop, np.roll(loop, -1)))
         actual = Counter((int(a), int(b)) for section in plan.sections
                          for chain in section.source_chains for a, b in zip(chain[:-1], chain[1:]))
         self.assertEqual(actual, expected)
@@ -140,7 +140,8 @@ class DenseSectionTests(unittest.TestCase):
                 target = np.array([[-50., -50.], [-50., 150.], [100. + distance, 150.],
                                    [250., 150.], [250., -50.]])
                 saved = target.copy()
-                plan = plan_quad_sections(mesh, outline, 50., new_outline=target,
+                ids = _target_ids(mesh, target)
+                plan = plan_quad_sections(mesh, outline, 50., outline_o=ids,
                                          small_element_size=10., dense_region_tolerance=tolerance)
                 record = next(r for r in plan.diagnostics['dense_seams']
                               if np.array_equal(mesh.nodes[r['source_node'], :2], [100., 100.]))
@@ -155,7 +156,8 @@ class DenseSectionTests(unittest.TestCase):
         mesh, outline = rectangle([0, 100, 105, 110, 200], height=100.)
         target = [[-50., -50.], [-50., 150.], [99.75, 150.], [100.25, 150.],
                   [250., 150.], [250., -50.]]
-        plan = plan_quad_sections(mesh, outline, 50., new_outline=target,
+        ids = _target_ids(mesh, target)
+        plan = plan_quad_sections(mesh, outline, 50., outline_o=ids,
                                  small_element_size=10., dense_region_tolerance=.5)
         record = next(r for r in plan.diagnostics['dense_seams']
                       if np.array_equal(mesh.nodes[r['source_node'], :2], [100., 100.]))
@@ -192,8 +194,8 @@ class DenseSectionTests(unittest.TestCase):
         xs = np.array([0, 10, 20, 21, 22, 30, 40, 50, 60.])
         mesh.nodes[:, 0] = xs[mesh.nodes[:, 0].astype(int)]
         mesh.nodes[:, 1] *= 10.
-        outlines = EditorMesh2D.outlines_by_edge(mesh)
-        outline = min(outlines, key=lambda o: np.ptp(mesh.nodes[np.concatenate(o), 0]))
+        outlines = EditorMesh2D.outlines(mesh)
+        outline = min(outlines, key=lambda o: np.ptp(mesh.nodes[o, 0]))
         nodes, cells = mesh.nodes.copy(), mesh.elements.copy()
         plan = plan_quad_sections(mesh, outline, 2., small_element_size=2.)
         self.assertEqual(len(plan.diagnostics['dense_sections']), 2)
@@ -210,9 +212,8 @@ class DenseSectionTests(unittest.TestCase):
                             for a, b in zip(q, np.roll(q, -1)))
         self.assertEqual(len(full.layer_outlines[-1]), 2)
         for boundary in full.layer_outlines[-1]:
-            for chain in boundary:
-                for a, b in zip(chain[:-1], chain[1:]):
-                    self.assertEqual(incidence[tuple(sorted((a, b)))], 2)
+            for a, b in zip(boundary, np.roll(boundary, -1)):
+                self.assertEqual(incidence[tuple(sorted((a, b)))], 2)
 
     def test_invalid_parameters_are_atomic_for_all_public_entrypoints(self):
         for parameter, values in (
@@ -263,15 +264,15 @@ class DenseSectionTests(unittest.TestCase):
                 incidence = Counter(tuple(sorted((int(a), int(b)))) for q in mesh.elements
                                     for a, b in zip(q, np.roll(q, -1)))
                 final = result.layer_outlines[-1][0]
-                for chain in final:
-                    for a, b in zip(chain[:-1], chain[1:]):
-                        self.assertEqual(incidence[tuple(sorted((a, b)))], 2)
+                for a, b in zip(final, np.roll(final, -1)):
+                    self.assertEqual(incidence[tuple(sorted((a, b)))], 2)
 
     def test_fixed_construction_reuses_saved_contact_instead_of_a_closer_new_anchor(self):
         mesh, outline = rectangle([0, 100, 105, 110, 200], height=100.)
         target = np.array([[-50., -50.], [-50., 150.], [100.0625, 150.],
                            [250., 150.], [250., -50.]])
-        plan = plan_quad_sections(mesh, outline, 50., new_outline=target,
+        ids = _target_ids(mesh, target)
+        plan = plan_quad_sections(mesh, outline, 50., outline_o=ids,
                                  small_element_size=10., dense_region_tolerance=.125)
         contacts = {(r['source_edge'], r['source_index']): plan.seams[r['seam_id']].points[-1]
                     for r in plan.diagnostics['dense_seams']}
@@ -280,8 +281,9 @@ class DenseSectionTests(unittest.TestCase):
         anchor = np.array([100.0625, 150.])
         pos = int(np.argmin(np.linalg.norm(dense_front - anchor, axis=1)))
         fixed = np.insert(dense_front, pos, [[100., 150.]], axis=0)
+        fixed_ids = _target_ids(mesh, fixed)
         data, rebuilt = _mesher._prepare_plan(mesh, outline, 50., (), 1., 1e-3,
-                                              new_outline=fixed, small_element_size=10.,
+                                              outline_o=fixed_ids, small_element_size=10.,
                                               dense_region_tolerance=.125,
                                               _dense_seam_targets=contacts)
         record = next(r for r in rebuilt.diagnostics['dense_seams']

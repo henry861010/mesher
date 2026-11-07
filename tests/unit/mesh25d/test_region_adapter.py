@@ -203,9 +203,9 @@ class RegionAdapterTests(unittest.TestCase):
         def reject_final(mesh, *args, **kwargs):
             # The ring contributes two boundaries, so control position cannot
             # be used directly as the adapter boundary index.
-            outlines = EditorMesh2D.outlines_by_edge(mesh)
+            outlines = EditorMesh2D.outlines(mesh)
             for index, outline in enumerate(outlines):
-                node = outline[0][0]
+                node = outline[0]
                 if mesh.nodes[node, 0] > 0:
                     failure.context["boundary_index"] = index
                     break

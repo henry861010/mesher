@@ -98,14 +98,15 @@ class SlotSupportClosureTests(unittest.TestCase):
     def test_custom_target_keeps_the_original_automatic_repair_decision(self):
         target = [[-.6, -.4], [-.6, 3.8], [3.6, 3.8], [3.6, -.4]]
         mesh, outline = _sheared_slot()
-        self.assert_repaired(mesh, outline, .4999, new_outline=target)
+        self.assert_repaired(mesh, outline, .4999, outline_o=layer_checks._target_ids(mesh, target))
         # A rectangular target does not itself trigger repair of an open slot.
         for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
             with self.subTest(operation=operation.__name__):
                 mesh, outline = _sheared_slot()
+                ids = layer_checks._target_ids(mesh, target)
                 before = self._snapshot(mesh)
                 with self.assertRaises(QuadLayerError) as caught:
-                    operation(mesh, outline, .4, new_outline=target)
+                    operation(mesh, outline, .4, outline_o=ids)
                 self.assertEqual(caught.exception.code, 'unsupported_new_outline')
                 self.assert_unchanged(mesh, before)
 

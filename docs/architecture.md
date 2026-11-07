@@ -113,8 +113,17 @@ This follows Python's [package/subpackage model](https://docs.python.org/3/tutor
 and the [PyPA src-layout separation](https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/);
 the responsibility groups above are specific to this project.
 
-The public
-`generate_layer_adaptive_mesh()` entry point performs geometry planning and mesh construction
+Public layer inputs are flat integer node-ID loops: `outline_i` and an optional
+`outline_o` target referencing the same mesh. Target IDs and exact coordinates
+are retained, with additional front nodes allowed. Target nodes may already be
+used by existing elements; shared edges must remain conforming and manifold.
+Source normalization preserves every frozen node and
+segment, orients existing mesh to the right, and groups cyclic signed-cardinal
+runs into logical edges. Staged repairs keep their semantic chains internally;
+complete public result and prepared-source outlines are flat loops. The editor's
+`outlines()` returns oriented loops without performing logical-edge grouping.
+
+The public `generate_layer_adaptive_mesh()` entry point performs geometry planning and mesh construction
 in one call; callers do not coordinate those internal stages. The optional
 `plan_quad_sections()` API provides a read-only geometry preview: it calculates
 edge expansion and the new front, reserves corner sections, then allocates the

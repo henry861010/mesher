@@ -82,8 +82,8 @@ EditorMesh2D.delete_element(mesh, indices)  # In place; keeps all node IDs.
 
 combined = EditorMesh2D.merge(mesh, other_mesh)  # New mesh; sources unchanged.
 EditorMesh2D.equivalence(combined, tol=0.001)  # Weld explicitly, in place.
-outlines = EditorMesh2D.outline(combined)  # Ordered int64 node-ID arrays.
-outlines_by_edge = EditorMesh2D.outlines_by_edge(combined)  # Loops -> edges -> node IDs.
+raw_outlines = EditorMesh2D.outline(combined)  # Preserve element winding.
+outlines = EditorMesh2D.outlines(combined)  # Loops -> node IDs; existing mesh on the right.
 ```
 
 Deletion and equivalence return the input mesh. Merge preserves source order,
@@ -101,13 +101,14 @@ closure (the first node is not repeated). Winding is preserved; loops start at
 their lowest directed edge and are sorted deterministically. Invalid topology,
 non-manifold edges, or inconsistent shared-edge winding raise `ValueError`.
 
-`outlines_by_edge(mesh, angle_tolerance=1e-8)` groups consecutive collinear XY
-segments into logical edges, retaining every intermediate node and including
-both endpoints on each edge. The tolerance is an angle in radians. It orients
-exteriors clockwise and holes counterclockwise so existing mesh stays on the
-right, including for clockwise input elements. Each loop starts at its lowest
-directed corner edge. For near-axis Quad4 meshes, pass one loop directly to
-`generate_layer_adaptive_mesh(mesh, outlines_by_edge[0], element_size)`.
+`outlines(mesh)` returns complete one-dimensional int64 node-ID loops,
+retaining every intermediate boundary node. It orients exteriors clockwise
+and holes counterclockwise so existing mesh stays on the right, including for
+clockwise input elements. Each loop starts at its lowest directed segment;
+loop order follows `outline(mesh)`. Returned arrays own their data. For near-axis
+Quad4 meshes, pass one loop directly as `outline_i` to
+`generate_layer_adaptive_mesh(mesh, outlines[0], element_size)`. Logical edge
+grouping is handled by the adapter; the editor has no angle tolerance.
 
 Operations use batched masks, spatial-cell grouping, and index lookups without a
 global node-pair distance matrix or cross-call caches. Run the 25k/50k/100k
@@ -230,7 +231,7 @@ result = generate_full_adaptive_mesh(
 )
 assert result.mesh is mesh
 final_outer_node_ids = result.outer_outline  # Clockwise, implicit closure.
-first_boundary_last_layer = result.layer_outlines[-1][0]  # Logical edge chains.
+first_boundary_last_layer = result.layer_outlines[-1][0]  # Complete node-ID loop.
 ```
 
 Sizes must be a nonempty sequence of finite positive numbers; repeated and
@@ -261,8 +262,8 @@ features require finer geometric resolution; this tolerance validates boundary
 separation and global completion without snapping source coordinates.
 
 `FullAdaptiveMeshResult.layer_outlines` is indexed by layer, original boundary,
-logical edge, then node ID. Boundary order follows the initial
-`EditorMesh2D.outlines_by_edge()` result. `diagnostics["boundaries"]` records
+then node ID. Each boundary is a complete flat loop with implicit closure. Boundary order follows the initial
+`EditorMesh2D.outlines()` result. `diagnostics["boundaries"]` records
 the exterior/hole kind and parent index; `diagnostics["layers"]` and
 `diagnostics["global_regions"]` retain construction diagnostics. Error and
 diagnostic indices are zero based.
@@ -281,15 +282,19 @@ mesh = Mesh2D(
     [[0, 0], [4, 0], [4, 3], [0, 3]],
     np.array([[0, 1, 2, 3]], dtype=np.int32),
 )
-outline = [[0, 3], [3, 2], [2, 1], [1, 0]]  # clockwise exterior
+outline_i = [0, 3, 2, 1]  # Complete source loop; either winding is accepted.
 patterns = [[[0, 3.4], [4, 3.4]]]             # finite parallel guide
 result = generate_layer_adaptive_mesh(
-    mesh, outline, element_size=0.8,
+    mesh, outline_i, element_size=0.5, expand_size=1.0,
     pattern_lines=patterns, expand_ratio=1.0,
 )
 assert result.mesh is mesh
-# result.outline can be passed into a later, separate single-layer call.
+# result.outline is a flat list[int], usable as the next call's outline_i.
+# Mesh target size is 0.5; unsnapped edges expand by 1.0.
 ```
+
+The previous `outline` / `new_outline` keywords, grouped source-edge inputs,
+and `EditorMesh2D.outlines_by_edge` were removed; use the flat-loop interface above.
 
 The adapter requires at least one existing planar Quad4 and adds strictly convex,
 CCW Quad4 cells. Both `generate_layer_adaptive_mesh()` and `plan_quad_sections()` reject an
@@ -298,32 +303,53 @@ a layer from boundary nodes alone. Existing coordinates, node IDs, elements, and
 source segments stay unchanged. The complete layer is validated before an atomic commit; errors
 leave the input mesh unchanged.
 
-Each logical outline edge is an ordered node chain near global X or Y;
-consecutive edges are perpendicular. Exterior loops are clockwise and holes
-counterclockwise. Growth is to the left, with XY normal `(-dy, dx)`. A finite
-parallel pattern with overlapping edge projection and nearest positive distance
-`d` sets the whole edge's expansion when `d <= element_size * expand_ratio`;
-otherwise the expansion is `element_size`. Coincident guides do not stop growth.
+`outline_i` is a one-dimensional integer node-ID loop containing every source
+boundary node. Its start may be on a corner or in the middle of an edge; either
+winding and an optional repeated closing ID are accepted. Consecutive IDs,
+including the closing pair, must be existing boundary segments: intermediate
+nodes cannot be omitted. The adapter orients existing mesh to the right and
+groups cyclic runs by their signed dominant X/Y direction. Adjacent logical
+edges must be perpendicular and each run must be near a global X or Y axis.
+Logical edges start at the lowest directed corner edge, so equivalent input
+starts and windings produce the same plan. Growth is to the left, with XY
+normal `(-dy, dx)`.
+
+Both single-layer entry points accept keyword-only `expand_size: float | None = None`.
+The effective expansion size is `element_size` when `expand_size` is omitted or
+`None`, and `expand_size` otherwise. A finite parallel pattern with overlapping
+edge projection and nearest positive distance `d` sets the whole edge's expansion
+when `d <= effective_expansion_size * expand_ratio`; otherwise the expansion is
+`effective_expansion_size`. Coincident guides do not stop growth. `element_size`
+continues to control mesh target sizes independently of layer thickness.
+An explicit `expand_size` must be finite, positive, and meet the same geometric
+resolution requirements as `element_size`.
 `axis_tolerance` (default `1e-3`) limits transverse deviation relative to each
 logical edge's length. The new front is axis aligned; old coordinates never move.
 
-Both entry points accept `new_outline=None`. Supply an ordered `(n, 2)` array
-of finite XY coordinates to set the complete target boundary, including any
-points that must become boundary nodes. The loop closes implicitly; repeating
-the first point at the end is also accepted. Its start point and winding can
-differ from the source, and it may start in the middle of a straight edge.
+Both entry points accept `outline_o=None`. Supply a one-dimensional integer
+node-ID loop referencing `mesh.nodes` to set the complete target boundary.
+Every supplied node retains its original ID and exact coordinates. The loop
+closes implicitly; repeating the first ID at the end is also accepted. Its start
+point and winding can differ from the source, and it may start in the middle of a straight edge.
 For example, this target uses different offsets on all four sides and unevenly
 spaced mandatory points:
 
 ```python
 mesh = Mesh2D([[0, 0], [4, 0], [4, 3], [0, 3]], [[0, 1, 2, 3]])
-outline = [[0, 3], [3, 2], [2, 1], [1, 0]]
-new_outline = np.array([
+outline_i = [0, 3, 2, 1]
+target = np.array([
     [1.35, 3.6], [4.8, 3.6], [4.8, 0.65], [4.8, -0.4],
     [2.15, -0.4], [-0.2, -0.4], [-0.2, 1.2], [-0.2, 3.6],
 ])
-result = generate_layer_adaptive_mesh(mesh, outline, 0.5, new_outline=new_outline)
+outline_o = np.arange(mesh.node_count, mesh.node_count + len(target), dtype=np.int64)
+mesh.nodes = np.vstack((mesh.nodes, np.column_stack((target, np.zeros(len(target))))))
+result = generate_layer_adaptive_mesh(mesh, outline_i, 0.5, outline_o=outline_o)
 ```
+
+Target nodes may already belong to existing elements; consecutive target IDs
+need not be existing edges. Existing elements are never split or modified, so
+incompatible shared edges, hanging nodes, overlaps, and nonmanifold joins fail
+validation. XY arrays are no longer accepted as `outline_o`.
 
 The target must be a simple axis-aligned loop. After ignoring intermediate
 collinear points for corner matching, its directed edges must correspond to
@@ -337,17 +363,17 @@ for corners and interior edges, rather than a maximum on every element edge.
 Unsupported geometry or an infeasible Quad4 layout fails
 without modifying the mesh.
 
-With `new_outline`, slot and corner repair still run first using the existing
-`element_size`, `pattern_lines`, and `expand_ratio` rules. The supplied target
+With `outline_o`, slot and corner repair still run first using the effective
+expansion size, `pattern_lines`, and `expand_ratio` rules above. The supplied target
 replaces only the subsequent outer expansion. Patterns remain boundary/chord
 constraints but do not snap or move that target. No second repair pass is
-triggered by the custom target. Omit `new_outline`, or pass `None`, to retain
+triggered by the custom target. Omit `outline_o`, or pass `None`, to retain
 automatic front generation.
 
 Both entry points default to `repair_slots=True`. This switch enables both
 C/U-shaped slot repair and isolated concave-corner repair. Before expanding,
-the adapter uses this call's automatically planned expansion distances, including pattern
-snapping, to detect either of these cases:
+the adapter uses this call's automatically planned expansion distances, based on
+the effective expansion size and pattern snapping, to detect either of these cases:
 
 - Opposing walls of a parallel C/U-shaped slot close. The adapter fills the
   slot up to its original mouth.
@@ -378,8 +404,9 @@ accept `repair_max_element_size=None`; its default interior target cap is
 `min(element_size, 4 * h_b)`. An explicit cap must be finite, positive, and at
 least `h_b` for every repaired slot or corner; its effective value is still
 capped at `element_size`. This controls target sizes, not the maximum length of
-every diagonal or transition edge. The outer expansion retains the original
-`element_size` and pattern-snapping behavior.
+every diagonal or transition edge. Repair sampling remains based on `element_size`;
+the outer expansion uses the same effective expansion size and pattern-snapping
+rules as the initial plan.
 
 Inward rings stop while there is still room for a core fill. Their proposed
 depth must be no more than half the first boundary-collapse distance; all
@@ -399,8 +426,8 @@ A slightly slanted mouth can be combined with neighboring, same-direction
 segments into a monotone logical X/Y chain. The original input still passes the
 usual XY check; only these internally prepared chains use the relaxed geometry
 check. Their new front uses the furthest source support in the expansion
-direction and stays axis aligned. Consequently, local layer thickness can exceed `element_size`
-by the transverse mouth misalignment. Patterns are applied again to the rebuilt
+direction and stays axis aligned. Consequently, transverse mouth misalignment
+can add to the planned local layer thickness. Patterns are applied again to the rebuilt
 logical outline, so a merged edge can have a different snapped expansion.
 
 This repair supports independent parallel slots, including unequal wall lengths
@@ -435,7 +462,7 @@ so extending a guide's remote tails does not reduce precision near the mesh.
    seam points are preserved, and neighboring sections share the same node IDs.
 
 For a `LINE`, the outer edge is sampled **before pairing**: endpoints, supplied
-`new_outline` points, and finite pattern intersections stay fixed. Additional
+`outline_o` points, and finite pattern intersections stay fixed. Additional
 nodes use these keyword parameters:
 
 - `max_transition_count=20`: a positive Python or NumPy integer. Each outer
@@ -457,7 +484,7 @@ and `generate_full_adaptive_mesh`) accept optional dense-run partitioning:
 
 ```python
 result = generate_layer_adaptive_mesh(
-    mesh, outline, element_size=1000,
+    mesh, outline_i, element_size=1000,
     max_transition_count=1000,     # Explicit override for this extreme density contrast.
     small_element_size=10,          # Opt in; default None preserves the partition.
     dense_region_tolerance=0.001,   # Absolute world-coordinate anchor merge tolerance.
@@ -518,7 +545,8 @@ The final closing unit and any local repair also obey the transition cap.
 
 `plan_quad_sections()` is an optional read-only preview of the section level,
 importable from `mesher.mesh2d.adapter`. It is not a required step before
-`generate_layer_adaptive_mesh()`. It accepts the same `new_outline` geometry argument.
+`generate_layer_adaptive_mesh()`. It accepts the same `expand_size` and `outline_o`
+arguments, so preview uses the same expansion and repair rules as generation.
 Its `QuadSectionPlan` contains `sections`, `seams`, `front`, and `edge_expansion`.
 For a supplied target, `front` contains its logical corners and section outer
 boundaries retain its intermediate points. `edge_expansion` reports the actual
@@ -528,8 +556,9 @@ Sections retain their source node chains, outer boundary, and left/right seam
 IDs; seam coordinates run from source to front. When repair is needed, preview
 also constructs the temporary slot and corner fills. Its optional
 `prepared_source`
-contains read-only world-XYZ `nodes`, `elements`, an immutable logical `outline`,
-and `original_node_count` / `original_element_count`. Section source IDs then
+contains read-only world-XYZ `nodes`, `elements`, an immutable flat node-ID `outline` tuple,
+and `original_node_count` / `original_element_count`. Its diagnostics' `prepared_outline`
+is the same flat loop as a list. Section source IDs then
 refer to that snapshot, rather than only the caller's input arrays. Without
 repair, `prepared_source` is `None` and the original ID semantics are unchanged.
 This preview verifies geometric

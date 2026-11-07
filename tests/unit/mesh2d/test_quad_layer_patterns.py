@@ -11,15 +11,14 @@ from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, 
 
 def _rectangle():
     return (Mesh2D([[0., 0.], [4., 0.], [4., 3.], [0., 3.]], [[0, 1, 2, 3]]),
-            [[0, 3], [3, 2], [2, 1], [1, 0]])
+            [0, 3, 2, 1])
 
 
 def _grid():
     nodes = [[x, y] for y in range(4) for x in range(5)]
     cells = [[5*y+x, 5*y+x+1, 5*(y+1)+x+1, 5*(y+1)+x]
              for y in range(3) for x in range(4)]
-    outline = [[0, 5, 10, 15], [15, 16, 17, 18, 19],
-               [19, 14, 9, 4], [4, 3, 2, 1, 0]]
+    outline = [0, 5, 10, 15, 16, 17, 18, 19, 14, 9, 4, 3, 2, 1]
     return Mesh2D(nodes, cells), outline
 
 
@@ -93,7 +92,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 np.testing.assert_allclose(plan.edge_expansion, [.5, .4, .5, .5])
                 result = generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
                 self.assert_frozen_prefix(mesh, snapshot)
-                front = mesh.nodes[np.concatenate(result.outline), :2]
+                front = mesh.nodes[np.asarray(result.outline), :2]
                 np.testing.assert_allclose(front.min(axis=0), [-.5, -.5])
                 np.testing.assert_allclose(front.max(axis=0), [4.5, 3.4])
                 self.assert_axis_covered(mesh, [-.5, 3.4], [4.5, 3.4])
@@ -168,7 +167,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
         np.testing.assert_array_equal(patterns, original)
         self.assertEqual({index for section in result.diagnostics["section_details"]
                           for index in section["pattern_ids"]}, {0, 1, 2})
-        front = mesh.nodes[np.unique(np.concatenate(result.outline)), :2]
+        front = mesh.nodes[np.unique(result.outline), :2]
         self.assertEqual(np.count_nonzero(np.all(np.isclose(front, [2., 3.4],
                                                            rtol=0, atol=1e-12), axis=1)), 1)
         self.assert_axis_covered(mesh, [-.5, 3.4], [4.5, 3.4])
@@ -255,7 +254,7 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
             mesh, outline = _rectangle()
             mesh.elements = np.empty((0, 4), dtype=int)
             if not clockwise:
-                outline = [chain[::-1] for chain in outline[::-1]]
+                outline = outline[::-1]
             with self.subTest(clockwise=clockwise):
                 self.assert_atomic_error(mesh, outline, [], code="empty_mesh")
 

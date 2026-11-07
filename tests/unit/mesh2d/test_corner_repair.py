@@ -38,7 +38,7 @@ class CornerRepairTests(unittest.TestCase):
 
     def run_corner(self, mesh, outline, size=1., **kwargs):
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
-        original_outline = [np.asarray(chain).copy() for chain in outline]
+        original_outline = np.asarray(outline).copy()
         result = generate_layer_adaptive_mesh(mesh, outline, size, **kwargs)
         self.assert_layer(mesh, original_outline, result, old_nodes, old_elements)
         for before, after in zip(original_outline, outline):
@@ -52,8 +52,11 @@ class CornerRepairTests(unittest.TestCase):
         self.assertEqual(len(repairs), 1)
         repair = repairs[0]
         self.assertEqual(len(repair['source_edges']), 2)
-        for edge, chain in zip(repair['source_edges'], repair['source_chains']):
-            np.testing.assert_array_equal(chain, original_outline[edge])
+        self.assertEqual(len(repair['source_edges']), len(set(repair['source_edges'])))
+        for chain in repair['source_chains']:
+            self.assertTrue(set(chain).issubset(original_outline))
+            segments = {frozenset((a, b)) for a, b in zip(chain[:-1], chain[1:])}
+            self.assertTrue(segments <= layer_checks._segments(original_outline))
         self.assertGreater(repair['element_end'], repair['element_start'])
         self.assertGreaterEqual(repair['element_start'], len(old_elements))
         self.assertLessEqual(repair['element_end'],
@@ -79,7 +82,7 @@ class CornerRepairTests(unittest.TestCase):
                 mesh, outline = _step()
                 result = self.run_corner(mesh, outline, size)
                 self.assertEqual(result.diagnostics['slot_repairs'], [])
-                self.assertEqual(len(result.outline), 4)
+                self.assertEqual(len(layer_checks._corners(mesh, result.outline)), 4)
                 repair = result.diagnostics['corner_repairs'][0]
                 cells = mesh.nodes[mesh.elements[repair['element_start']:repair['element_end']], :2]
                 self.assertAlmostEqual(sum(layer_checks._area(cell) for cell in cells), 2.)
@@ -119,9 +122,9 @@ class CornerRepairTests(unittest.TestCase):
                     mesh, outline = _step(nonuniform=True)
                     for _ in range(rotation):
                         mesh.nodes[:, :2] = mesh.nodes[:, [1, 0]] * [-1, 1]
-                    outline = outline[shift:] + outline[:shift]
+                    outline = np.roll(outline, -shift)
                     result = self.run_corner(mesh, outline)
-                    self.assertEqual(len(result.outline), 4)
+                    self.assertEqual(len(layer_checks._corners(mesh, result.outline)), 4)
                     self.assertTrue(result.diagnostics['edge_provenance'])
 
     def test_near_axis_source_uses_semantic_cap_without_moving_old_nodes(self):
@@ -300,7 +303,7 @@ class CornerRepairTests(unittest.TestCase):
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
         result = generate_layer_adaptive_mesh(mesh, outline, 1.)
         self.assert_layer(mesh, outline, result, old_nodes, old_elements)
-        self.assertEqual(len(result.outline), 4)
+        self.assertEqual(len(layer_checks._corners(mesh, result.outline)), 4)
         self.assertEqual(result.diagnostics['slot_repairs'], [])
         repairs = result.diagnostics['corner_repairs']
         self.assertEqual(len(repairs), 4)
@@ -317,7 +320,7 @@ class CornerRepairTests(unittest.TestCase):
         first = generate_layer_adaptive_mesh(mesh, outline, 30., expand_ratio=1.5,
                                   repair_max_element_size=20.)
         self.assertEqual(first.diagnostics['corner_repairs'], [])
-        outline = EditorMesh2D.outlines_by_edge(mesh)[0]
+        outline = EditorMesh2D.outlines(mesh)[0]
         before = self._snapshot(mesh)
         preview = plan_quad_sections(mesh, outline, 100., expand_ratio=1.5)
         self.assert_unchanged(mesh, before)

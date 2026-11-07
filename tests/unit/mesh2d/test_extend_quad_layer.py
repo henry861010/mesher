@@ -15,7 +15,18 @@ def _rectangle():
         [[0, 0], [4, 0], [4, 3], [0, 3]],
         np.array([[0, 1, 2, 3]], dtype=np.int32),
     )
-    return mesh, [[0, 3], [3, 2], [2, 1], [1, 0]]
+    return mesh, [0, 3, 2, 1]
+
+
+def _target_ids(mesh, points):
+    """Register target coordinates before taking transactional snapshots."""
+    points = np.asarray(points, dtype=float)
+    closed = len(points) > 1 and np.array_equal(points[0], points[-1])
+    if closed:
+        points = points[:-1]
+    ids = np.arange(mesh.node_count, mesh.node_count + len(points), dtype=np.int64)
+    mesh.nodes = np.vstack((mesh.nodes, np.column_stack((points, np.zeros(len(points))))))
+    return np.r_[ids, ids[0]] if closed else ids
 
 
 def _polyomino(cells):
@@ -34,24 +45,7 @@ def _polyomino(cells):
     loop = [start]
     while clockwise[loop[-1]] != start:
         loop.append(clockwise[loop[-1]])
-    # Rotate to a turn so the first and last chains are separate logical edges.
-    xy = mesh.nodes[loop, :2]
-    vectors = np.roll(xy, -1, axis=0) - xy
-    turn = next(i for i in range(len(loop))
-                if not np.array_equal(vectors[i - 1], vectors[i]))
-    loop = loop[turn:] + loop[:turn]
-    outline = []
-    current = [loop[0]]
-    for i, node in enumerate(loop):
-        following = loop[(i + 1) % len(loop)]
-        current.append(following)
-        vector = mesh.nodes[following, :2] - mesh.nodes[node, :2]
-        after = loop[(i + 2) % len(loop)]
-        next_vector = mesh.nodes[after, :2] - mesh.nodes[following, :2]
-        if not np.array_equal(vector, next_vector):
-            outline.append(current)
-            current = [following]
-    return mesh, outline, lookup
+    return mesh, loop, lookup
 
 
 def _cross(first, second):
@@ -65,12 +59,24 @@ def _area(points):
 
 
 def _outline_nodes(outline):
-    return np.concatenate([np.asarray(edge, dtype=int)[:-1] for edge in outline])
+    return np.asarray(outline, dtype=np.int64)
 
 
 def _segments(outline):
-    return {frozenset((int(a), int(b))) for edge in outline
-            for a, b in zip(edge[:-1], edge[1:])}
+    return {frozenset((int(a), int(b)))
+            for a, b in zip(outline, np.roll(outline, -1))}
+
+
+def _corners(mesh, outline):
+    """Count geometric turns independently of the adapter's cardinal grouping."""
+    points = mesh.nodes[np.asarray(outline, dtype=int), :2]
+    vectors = np.roll(points, -1, axis=0) - points
+    lengths = np.hypot(vectors[:, 0], vectors[:, 1])
+    directions = vectors / lengths[:, None]
+    previous = np.roll(directions, 1, axis=0)
+    turns = np.abs(directions[:, 0] * previous[:, 1]
+                   - directions[:, 1] * previous[:, 0])
+    return np.flatnonzero((turns > .01) | (np.sum(directions * previous, axis=1) <= 0))
 
 
 def _overlap_area(first, second):
@@ -105,11 +111,10 @@ class ExtendQuadLayerTests(unittest.TestCase):
 
         front = result.outline
         self.assertGreaterEqual(len(front), 4)
-        for edge, following in zip(front, [*front[1:], front[0]]):
-            self.assertGreaterEqual(len(edge), 2)
-            self.assertEqual(edge[-1], following[0])
-            self.assertTrue(np.all(np.asarray(edge) >= 0))
-            self.assertTrue(np.all(np.asarray(edge) < mesh.node_count))
+        self.assertEqual(len(front), len(set(front)))
+        self.assertTrue(np.issubdtype(np.asarray(front).dtype, np.integer))
+        self.assertTrue(np.all(np.asarray(front) >= 0))
+        self.assertTrue(np.all(np.asarray(front) < mesh.node_count))
 
         quads = mesh.elements[len(old_elements):]
         self.assertGreater(len(quads), 0)
@@ -189,11 +194,10 @@ class ExtendQuadLayerTests(unittest.TestCase):
 
     def run_layer(self, mesh, outline, h=0.5, **kwargs):
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
-        source = [np.asarray(edge).copy() for edge in outline]
+        source = np.asarray(outline).copy()
         result = generate_layer_adaptive_mesh(mesh, outline, h, **kwargs)
         self.assert_layer(mesh, source, result, old_nodes, old_elements)
-        for before, after in zip(source, outline):
-            np.testing.assert_array_equal(before, after)
+        np.testing.assert_array_equal(source, outline)
         return result
 
     def test_rectangle_is_quad_only_and_returns_reusable_outline(self):
@@ -248,10 +252,10 @@ class ExtendQuadLayerTests(unittest.TestCase):
                  if x < 4 or x >= 8 or y < 4 or y >= 8}
         mesh, _, lookup = _polyomino(cells)
         mesh.nodes[:, :2] /= 4
-        outline = [[lookup[x, 4] for x in range(4, 9)],
-                   [lookup[8, y] for y in range(4, 9)],
-                   [lookup[x, 8] for x in range(8, 3, -1)],
-                   [lookup[4, y] for y in range(8, 3, -1)]]
+        outline = ([lookup[x, 4] for x in range(4, 8)]
+                   + [lookup[8, y] for y in range(4, 8)]
+                   + [lookup[x, 8] for x in range(8, 4, -1)]
+                   + [lookup[4, y] for y in range(8, 4, -1)])
         result = self.run_layer(mesh, outline, h=0.2)
         xy = mesh.nodes[_outline_nodes(result.outline), :2]
         np.testing.assert_allclose(xy.min(axis=0), [1.2, 1.2])
@@ -264,8 +268,11 @@ class ExtendQuadLayerTests(unittest.TestCase):
                 mesh, outline = _rectangle()
                 pattern = [[1, 3 + distance], [2, 3 + distance]]
                 result = self.run_layer(mesh, outline, pattern_lines=[pattern], expand_ratio=ratio)
-                top = mesh.nodes[np.asarray(result.outline[1]), :2]
-                np.testing.assert_allclose(top[:, 1], expected)
+                front = mesh.nodes[result.outline, :2]
+                self.assertAlmostEqual(front[:, 1].max(), expected)
+                top = front[np.isclose(front[:, 1], expected)]
+                np.testing.assert_allclose(top[:, 0].min(), -.5)
+                np.testing.assert_allclose(top[:, 0].max(), 4.5)
                 if distance <= 0.5 * ratio:
                     self.assert_pattern_covered(mesh, pattern)
 
@@ -307,9 +314,9 @@ class ExtendQuadLayerTests(unittest.TestCase):
         mesh, outline = _rectangle()
         mesh.nodes[2:, 0] += 1e-4
         result = self.run_layer(mesh, outline)
-        for edge in result.outline:
-            xy = mesh.nodes[np.asarray(edge), :2]
-            self.assertLess(min(np.ptp(xy, axis=0)), 1e-12)
+        xy = mesh.nodes[result.outline, :2]
+        vectors = np.roll(xy, -1, axis=0) - xy
+        self.assertTrue(np.all(np.min(np.abs(vectors), axis=1) < 1e-12))
 
     def test_source_spacing_can_coarsen_on_the_new_front(self):
         mesh, outline, _ = _polyomino({(x, y) for x in range(12) for y in range(8)})
@@ -325,7 +332,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
         elements = np.array([[i, count+i, count+(i+1)%count, (i+1)%count]
                              for i in range(count)], dtype=np.int32)
         mesh = Mesh2D(np.vstack((inner, outer)), elements)
-        outline = [[0, 1, 2, 3, 4], [4, 5, 6, 7], [7, 8, 9, 10], [10, 11, 12, 0]]
+        outline = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         result = self.run_layer(mesh, outline, h=0.25)
         self.assertEqual(len(_outline_nodes(outline)), 13)
         self.assertEqual(len(_outline_nodes(result.outline)) % 2, 1)
@@ -351,7 +358,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
                 mesh, outline = _rectangle()
                 rotation = np.array([[0, -1], [1, 0]]) if turns else np.eye(2)
                 mesh.nodes[:, :2] = (mesh.nodes[:, :2] @ rotation.T) * scale + shift
-                outline = outline[start:] + outline[:start]
+                outline = np.roll(outline, -start)
                 self.run_layer(mesh, outline, h=0.5 * scale)
 
     def test_invalid_scalars_and_patterns_are_atomic(self):
@@ -373,13 +380,13 @@ class ExtendQuadLayerTests(unittest.TestCase):
 
     def test_invalid_outline_and_nonquad_input_are_atomic(self):
         bad_outlines = (
-            [[0, 3], [3, 2], [2, 1]],
-            [[0, 3], [2, 3], [2, 1], [1, 0]],
-            [[0, 0, 3], [3, 2], [2, 1], [1, 0]],
-            [[0, 99], [99, 2], [2, 1], [1, 0]],
-            [[0, -1], [-1, 2], [2, 1], [1, 0]],
-            [[0, 2], [2, 3], [3, 1], [1, 0]],
-            [[0, 1], [1, 2], [2, 3], [3, 0]],
+            [0, 3, 2],
+            [0, 3, 2, 3, 1],
+            [0, 3, 2, 99],
+            [0, 3, 2, -1],
+            [0, 2, 3, 1],
+            [0, 3, 2, 1, 0, 0],
+            [[0, 3], [3, 2], [2, 1], [1, 0]],
         )
         for outline in bad_outlines:
             with self.subTest(outline=outline):
@@ -427,7 +434,7 @@ class ExtendQuadLayerTests(unittest.TestCase):
         mesh, outline, _ = _polyomino(cells)
         result = self.run_layer(mesh, outline, h=0.5)
         self.assertEqual(len(result.diagnostics['slot_repairs']), 1)
-        self.assertEqual(len(result.outline), 4)
+        self.assertEqual(len(_corners(mesh, result.outline)), 4)
 
     def test_collision_with_other_mesh_is_atomic(self):
         mesh, outline = _rectangle()

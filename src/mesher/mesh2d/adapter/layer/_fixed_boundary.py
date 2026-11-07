@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._geometry import area
 from ._types import UnmeshableDirectQuadLayout
 
 
 def _failure(message, stage, **context):
     raise UnmeshableDirectQuadLayout(message, stage=stage,
-                                    parameter="new_outline", **context)
+                                    parameter="outline_o", **context)
 
 
 def _cyclic_order(points, target, tol, *, stage):
@@ -29,7 +28,7 @@ def _cyclic_order(points, target, tol, *, stage):
     return order
 
 
-def prepare_fixed_boundary(plan, data, new_outline):
+def prepare_fixed_boundary(plan, data):
     """Freeze the supplied world coordinates after checking section endpoints."""
     anchors, tol = data["outline_anchors"], data["tol"]
     source_count = len(data["frozen"])
@@ -38,17 +37,7 @@ def prepare_fixed_boundary(plan, data, new_outline):
                  "fixed_boundary_plan", source_nodes=source_count,
                  target_nodes=len(anchors))
 
-    # The public target normalizer has already checked shape, geometry, and
-    # optional repeated closure. Retain the caller's exact float64 coordinates
-    # instead of reconstructing them through the normalized frame.
-    world = np.array(new_outline, dtype=float, copy=True)
-    if len(world) == len(anchors) + 1:
-        world = world[:-1]
-    normalized = (world - data["origin"]) / data["scale"]
-    if np.sign(area(normalized)) != np.sign(area(anchors)):
-        world, normalized = world[::-1], normalized[::-1]
-    order = _cyclic_order(anchors, normalized, tol, stage="fixed_boundary_plan")
-    world = world[order].copy()
+    world = data["_source_mesh"].nodes[data["outline_anchor_ids"], :2].copy()
 
     # Corner reservations and pattern seams introduce structural contacts on
     # the front. The global generator must have received these as anchors;
@@ -67,13 +56,13 @@ def fixed_boundary_nodes(nodes, outline, data, *, stage="fixed_boundary_validati
         _failure("the fixed boundary repeats a node", stage)
     order = _cyclic_order(nodes[ids, :2], data["outline_anchors"], data["tol"],
                           stage=stage)
+    if not np.array_equal(ids, data["outline_anchor_ids"][order]):
+        _failure("the fixed boundary changed a specified node ID", stage)
     return ids, order
 
 
-def restore_fixed_boundary(world_nodes, normalized_nodes, outline, data, source_count):
+def restore_fixed_boundary(world_nodes, normalized_nodes, outline, data):
     """Restore exact global interface coordinates without changing source IDs."""
     ids, order = fixed_boundary_nodes(normalized_nodes, outline, data)
-    if np.any(ids < source_count):
-        _failure("the fixed target cannot reuse a source node", "fixed_boundary_validation")
     world_nodes[ids, :2] = data["fixed_outline_world"][order]
     world_nodes[ids, 2] = 0.0

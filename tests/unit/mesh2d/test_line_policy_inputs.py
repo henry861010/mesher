@@ -18,7 +18,7 @@ class LinePolicyInputTests(unittest.TestCase):
     @staticmethod
     def fixture():
         mesh = generate_rectilinear_mesh(0.5, [0, 2], [0, 2])
-        return mesh, EditorMesh2D.outlines_by_edge(mesh)[0]
+        return mesh, EditorMesh2D.outlines(mesh)[0]
 
     def assert_invalid_atomic(self, parameter, value, *, full):
         mesh, outline = self.fixture()

@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from ..generators import generate_rectilinear_mesh_optimal
 from ..generators._holed_geometry import normalize_patterns
 from ..model import Mesh2D
-from ._full_geometry import (complement_domains, discover_boundaries, flatten_outline,
+from ._full_geometry import (complement_domains, discover_boundaries,
                              section_outline_points, validate_fronts)
 from .layer import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from .layer._geometry import BoxIndex, area, cross
@@ -28,15 +28,15 @@ class FullAdaptiveMeshResult:
     """The committed mesh and its boundaries, indexed using final mesh node IDs.
 
     ``outer_outline`` is a clockwise loop with implicit closure.
-    ``layer_outlines[layer][boundary][edge]`` is an ordered node-ID chain;
-    boundary order follows the original ``EditorMesh2D.outlines_by_edge``.
+    ``layer_outlines[layer][boundary]`` is an ordered node-ID chain;
+    boundary order follows the original ``EditorMesh2D.outlines``.
     Diagnostics record that order's containment tree and each construction call.
     Layer and boundary indices are zero based.
     """
 
     mesh: Mesh2D
     outer_outline: NDArray[np.int64]
-    layer_outlines: list[list[list[list[int]]]]
+    layer_outlines: list[list[list[int]]]
     diagnostics: dict[str, Any]
 
 
@@ -100,7 +100,7 @@ def _edges(loop):
 
 def _interface_ids(mesh, outline, global_mesh, global_ids):
     """Map only an explicitly paired interface, with exact canonical XY values."""
-    local_ids = flatten_outline(outline)
+    local_ids = np.asarray(outline, dtype=np.int64)
     if len(local_ids) != len(global_ids):
         raise ValueError("adaptive and global interfaces have different node counts")
     lookup = {tuple(mesh.nodes[node, :2]): int(node) for node in local_ids}
@@ -270,7 +270,7 @@ def generate_full_adaptive_mesh(
                 stage="layer_construction", layer_index=layer_index, boundary_index=boundary_index)
             current.append(result.outline)
             diagnostics.append(result.diagnostics)
-        validate_fronts(topology, [working.nodes[flatten_outline(o), :2] for o in current],
+        validate_fronts(topology, [working.nodes[o, :2] for o in current],
                         layer_index=layer_index)
         outlines = current
         layer_outlines.append(current)
@@ -320,9 +320,13 @@ def generate_full_adaptive_mesh(
         if target is None:
             raise QuadLayerError("a boundary has no global interface", stage="final_layer_construction",
                                  boundary_index=boundary_index, layer_index=final_index)
+        # Stage interface nodes on the private copy; the caller is committed only
+        # after both adaptive and global elements have passed final validation.
+        target_ids = np.arange(working.node_count, working.node_count + len(target), dtype=np.int64)
+        working.nodes = np.vstack((working.nodes, np.column_stack((target, np.zeros(len(target))))))
         result = _call(lambda: _generate_layer_adaptive_mesh(
                             working, outline, final_size, expand_ratio=ratio,
-                            pattern_lines=patterns, new_outline=target, fixed_outer_boundary=True,
+                            pattern_lines=patterns, outline_o=target_ids, fixed_outer_boundary=True,
                             small_element_size=small_element_size,
                             dense_region_tolerance=dense_region_tolerance,
                             _dense_seam_targets=dense_targets[boundary_index]),
