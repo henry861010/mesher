@@ -6,11 +6,11 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from .koz import inset_face, koz_tolerance, koz_value
-from .primitives import _geometry_to_face, _required_field, _finite_number, _positive_number
+from ...tolerance import GeometryTolerance, resolve_tolerance
+from .koz import inset_face, koz_value
+from .primitives import _geometry_to_face, _required_field, _finite_number
 
 JsonObject = dict[str, Any]
-DEFAULT_TOLERANCE = 1e-6
 CONTAINER_ITEM_FIELDS = ("bodies", "vias", "circuits", "bumps")
 
 
@@ -20,19 +20,21 @@ class Pattern2D:
     faces: list[JsonObject]
     circle_sources: dict[tuple[float, float, float], list[str]]
     koz_circle_sources: dict[tuple[float, float, float], list[str]]
-    coordinate_tolerance: float
-    clearance_tolerance: float
+    tolerance: GeometryTolerance
+
+    def __post_init__(self):
+        object.__setattr__(self, "tolerance", resolve_tolerance(self.tolerance))
 
     @property
     def all_faces(self) -> list[JsonObject]:
         return ([] if self.base_face is None else [self.base_face]) + self.faces
 
 
-def extract_pattern(container, tolerance=DEFAULT_TOLERANCE) -> Pattern2D:
+def extract_pattern(container, tolerance=None) -> Pattern2D:
     """Extract original/KOZ footprints without consulting mesh controls."""
-    normalized_tolerance = _normalize_tolerance(tolerance)
+    policy = resolve_tolerance(tolerance)
+    normalized_tolerance = policy.absolute
     all_faces = _collect_faces(container)
-    normalized_tolerance = koz_tolerance(container, normalized_tolerance)
     unique_faces = _dedupe_faces(all_faces, normalized_tolerance)
     # KOZ faces are constraints inside physical footprints, never the
     # model's base. Polygon source winding need not match buffer winding.
@@ -45,7 +47,7 @@ def extract_pattern(container, tolerance=DEFAULT_TOLERANCE) -> Pattern2D:
     return Pattern2D(
         base_face, faces, _circle_sources(container),
         _circle_sources(container, koz_only=True),
-        koz_tolerance(container, 1e-3), koz_tolerance(container, 1e-6),
+        policy,
     )
 
 
@@ -421,24 +423,13 @@ def _signed_polygon_area(points):
     Returns:
         float: The signed polygon area.
     """
+    if not points:
+        return 0.0
+    origin_x, origin_y = points[0]
+    points = [(x - origin_x, y - origin_y) for x, y in points]
     area_value = 0.0
     for index in range(len(points)):
         next_index = (index + 1) % len(points)
         area_value += points[index][0] * points[next_index][1]
         area_value -= points[next_index][0] * points[index][1]
     return area_value / 2.0
-
-
-def _normalize_tolerance(tolerance):
-    """Converts and validates the face deduplication tolerance.
-
-    Args:
-        tolerance (object): The candidate tolerance value.
-
-    Returns:
-        float: The validated positive tolerance.
-
-    Raises:
-        ValueError: If tolerance is not a positive finite number.
-    """
-    return _positive_number(tolerance, "tolerance")

@@ -28,7 +28,7 @@ def _expansion_distances(data):
             if tol < distance < nearest:
                 nearest, pattern_id = distance, j
         distance = (nearest if np.isfinite(nearest)
-                    and nearest / expand_h <= data["ratio"] + tol else expand_h)
+                    and nearest <= expand_h * data["ratio"] + tol else expand_h)
         supports.append(support + distance)
         distances.append(distance)
         snapped.append(pattern_id if distance == nearest else None)
@@ -56,7 +56,7 @@ def _validate_front(data, front):
         _fail("expansion closes a slot, edge, or hole", "topology_change")
     _simple_loop(front, tol, "front")
     source = data["source"]
-    if area(source) * area(front) <= 0 or area(source) - area(front) <= tol:
+    if area(source) * area(front) <= 0 or area(source) - area(front) <= data["numeric_tol"]:
         _fail("expansion collapses or reverses the boundary", "topology_change")
     a, b = source, np.roll(source, -1, axis=0)
     index = BoxIndex(np.minimum(a, b), np.maximum(a, b), tol)
@@ -89,7 +89,7 @@ def _normalize_outline_o(outline_o, data):
     except QuadLayerError as error:
         error.context.update(context)
         raise
-    if abs(area(points)) <= tol:
+    if abs(area(points)) <= data["numeric_tol"]:
         _fail("outline_o has zero area", **context)
     return ids, points
 

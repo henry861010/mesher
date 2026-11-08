@@ -27,8 +27,8 @@ from mesher.mesh2d.circular.imprint_v2.utils import (
     _to_circle, _remove_redundant_element, _imprint_circle,
 )
 
-ARGUMENTS = dict(center=[158., 158.], radius=60., projection_tolerance=.2,
-                 guide_tolerance=1., merge_tolerance=.002, minimum_area=.0004)
+ARGUMENTS = dict(center=[158., 158.], radius=60., projection_distance=.2,
+                  tolerance=.001, minimum_area=0.)
 
 
 def grid(size):
@@ -41,9 +41,9 @@ def legacy(mesh, stats):
     started = time.perf_counter()
     working = Mesh2D(mesh.nodes, mesh.elements)
     for name, function, arguments in (
-        ('projection_seconds', _to_circle, ([158., 158.], 60., .2, 1., None)),
-        ('cleanup_seconds', _remove_redundant_element, (.002, .0004)),
-        ('split_seconds', _imprint_circle, ([158., 158.], 60., .002)),
+        ('projection_seconds', _to_circle, ([158., 158.], 60., .2, .001, None)),
+        ('cleanup_seconds', _remove_redundant_element, (.001, 0.)),
+        ('split_seconds', _imprint_circle, ([158., 158.], 60., .001)),
     ):
         phase_started = time.perf_counter()
         function(working, *arguments)

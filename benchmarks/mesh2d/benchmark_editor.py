@@ -24,7 +24,7 @@ from time import perf_counter
 
 import numpy as np
 
-from mesher import Mesh2D
+from mesher import GeometryToleranceError, Mesh2D
 from mesher.mesh2d import EditorMesh2D
 
 
@@ -81,6 +81,13 @@ def _fixture(case, count):
         operation = lambda: EditorMesh2D.merge(mesh, mesh)
     elif case == "search":
         operation = lambda: EditorMesh2D.search_element(mesh, 0, 0, 125, count // 250)
+    elif case == "equivalence_chain":
+        def operation():
+            try:
+                EditorMesh2D.equivalence(mesh)
+            except GeometryToleranceError as error:
+                return error
+            raise AssertionError("an unbounded proximity chain must fail")
     elif case.startswith("equivalence"):
         operation = lambda: EditorMesh2D.equivalence(mesh)
     else:
@@ -101,11 +108,14 @@ def _validate(case, mesh, result, node_count, element_count):
     elif case == "search":
         assert len(result) == element_count // 2
         assert np.all(np.diff(result) > 0)
+    elif case == "equivalence_chain":
+        assert result.code == "ambiguous_geometry"
+        assert mesh.node_count == node_count and mesh.element_count == element_count
     elif case.startswith("equivalence"):
         assert result is mesh and mesh.element_count == element_count
         if case == "equivalence_seam":
             assert mesh.node_count == node_count // 2
-        elif case in ("equivalence_dense", "equivalence_chain"):
+        elif case == "equivalence_dense":
             assert mesh.node_count == 3
         else:
             assert mesh.node_count == node_count

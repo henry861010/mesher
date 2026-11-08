@@ -107,8 +107,7 @@ class ZeroZOperationTests(unittest.TestCase):
                 m, element_size=.1, center_x=0, center_y=0, inner_radius=1, outer_radius=2),
             'imprint': lambda m: imprint_circle(m, center=[100, 100], radius=1, band_width=.1),
             'imprint_v2_noop': lambda m: imprint_v2(
-                m, center=[100, 100], radius=1, projection_tolerance=0,
-                guide_tolerance=0, merge_tolerance=0, minimum_area=0),
+                m, center=[100, 100], radius=1, projection_distance=0, minimum_area=0),
         }
         for name, operation in operations.items():
             for z in (1e-30, np.nan, np.inf):

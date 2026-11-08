@@ -1,25 +1,14 @@
 import numpy as np
 from numpy.typing import ArrayLike
+from mesher.tolerance import (GeometryTolerance, GeometryToleranceError,
+                             canonicalize_values, resolve_tolerance, subdivision_count)
 
 from ..model import Mesh2D
 
 
-def _sort(float_list, tolerance=1e-3):
-    # Convert to a numpy array and sort it
-    arr = np.sort(np.asarray(float_list, dtype=np.float64))
-
-    if arr.size == 0:
-        return arr
-
-    # Calculate the difference between consecutive elements
-    # np.diff(arr) returns an array of size N-1
-    diffs = np.diff(arr)
-
-    # Create a boolean mask. We ALWAYS keep the first element (True),
-    # Keep later elements only when the gap exceeds tolerance.
-    mask = np.append([True], diffs > tolerance)
-
-    return arr[mask]
+def _sort(float_list, tolerance=None):
+    return np.unique(canonicalize_values(float_list, tolerance, stage="grid_coordinates",
+                                        source="rectilinear_coordinates"))
 
 
 def _densify(target_edge_size, coordinates):
@@ -31,8 +20,14 @@ def _densify(target_edge_size, coordinates):
             if not out:
                 out.append(a)
             continue
-        nseg = max(1, int(np.ceil(length / target_edge_size)))
+        nseg = subdivision_count(length, target_edge_size)
         seg = np.linspace(a, b, nseg + 1, endpoint=True, dtype=np.float64)
+        if np.any(np.diff(seg) <= 0):
+            raise GeometryToleranceError(
+                "target size cannot be represented at these coordinates",
+                code="numeric_resolution_exceeded", stage="grid_sampling",
+                source="generated_edges", target_size=target_edge_size,
+                measured_distance=float(np.diff(seg).min()))
         if out:
             seg = seg[1:]  # avoid boundary duplicate
         out.extend(seg.tolist())
@@ -44,13 +39,15 @@ def generate_rectilinear_mesh(
     x_coordinates: ArrayLike,
     y_coordinates: ArrayLike,
     *,
-    coordinate_tolerance: float = 1e-3,
+    tolerance: GeometryTolerance | float | None = None,
 ) -> Mesh2D:
     """Generate a planar rectilinear Quad4 mesh.
 
     The supplied coordinates define mandatory grid lines. Intervals are
     subdivided as needed so no generated edge exceeds ``target_edge_size``.
-    ``coordinate_tolerance`` controls merging of nearly coincident input lines.
+    ``tolerance`` is a policy or positive absolute distance, defaulting to
+    1e-3. It controls bounded merging of nearly coincident input lines;
+    ambiguous chains fail. Subdivision counts use numerical roundoff only.
     """
     try:
         target_edge_size = float(target_edge_size)
@@ -59,21 +56,29 @@ def generate_rectilinear_mesh(
     if not np.isfinite(target_edge_size) or target_edge_size <= 0.0:
         raise ValueError("target_edge_size must be positive")
 
-    try:
-        coordinate_tolerance = float(coordinate_tolerance)
-    except (TypeError, ValueError, OverflowError) as error:
-        raise ValueError("coordinate_tolerance must be finite and non-negative") from error
-    if not np.isfinite(coordinate_tolerance) or coordinate_tolerance < 0:
-        raise ValueError("coordinate_tolerance must be finite and non-negative")
+    tolerance = resolve_tolerance(tolerance)
+    if target_edge_size <= tolerance.absolute:
+        raise GeometryToleranceError("target size must exceed the geometric tolerance",
+                                     code="feature_below_resolution", stage="grid_sampling",
+                                     source="target_edge_size", measured_distance=target_edge_size,
+                                     target_size=target_edge_size, tolerance=tolerance.absolute)
+    tolerance.check_resolution(np.r_[x_coordinates, y_coordinates], stage="grid_coordinates",
+                               source="rectilinear_coordinates")
 
-    x_coordinates = _sort(x_coordinates, coordinate_tolerance)
-    y_coordinates = _sort(y_coordinates, coordinate_tolerance)
+    x_coordinates = _sort(x_coordinates, tolerance)
+    y_coordinates = _sort(y_coordinates, tolerance)
 
     x = _densify(target_edge_size, x_coordinates)
     y = _densify(target_edge_size, y_coordinates)
 
     if x.size < 2 or y.size < 2:
         raise ValueError("After _densify, need at least 2 x-lines and 2 y-lines.")
+    minimum = float(min(np.diff(x).min(), np.diff(y).min()))
+    if minimum <= tolerance.absolute:
+        raise GeometryToleranceError("subdivision creates edges below geometric resolution",
+                                     code="feature_below_resolution", stage="grid_sampling",
+                                     source="generated_edges", measured_distance=minimum,
+                                     tolerance=tolerance.absolute)
 
     Nx, Ny = int(x.size), int(y.size)
 

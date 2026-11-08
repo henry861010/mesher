@@ -113,7 +113,7 @@ class CandidateEdgePairTests(unittest.TestCase):
             geometry._iter_candidate_edge_pairs(
                 xy,
                 edge_items,
-                tolerance=0.0,
+                tolerance=1e-12,
             )
         )
 

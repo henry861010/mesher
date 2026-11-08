@@ -291,9 +291,9 @@ def reference_control(control, reference):
 
 
 class ZSectionControlTests(unittest.TestCase):
-    def intervals(self, cls, start=0, end=35, size=10, min_dis=0.01):
+    def intervals(self, cls, start=0, end=35, size=10, tolerance=None):
         obj = cls(section_control(cls.METHOD, start, end, size))
-        controls = obj.get_25D_z_controls(min_dis)
+        controls = obj.get_25D_z_controls(tolerance)
         self.assertEqual(controls[0]["start"], start)
         self.assertEqual(controls[-1]["end"], end)
         for index, control in enumerate(controls):
@@ -327,20 +327,20 @@ class ZSectionControlTests(unittest.TestCase):
         for cls in SECTION_CLASSES:
             for length in (5, 10, 20, 30):
                 with self.subTest(cls=cls, length=length):
-                    self.assertEqual(self.intervals(cls, end=length, min_dis=0), [(0, length)])
+                    self.assertEqual(self.intervals(cls, end=length, tolerance=None), [(0, length)])
 
     def test_floating_division_boundaries_do_not_create_sliver_sections(self):
         for cls in SECTION_CLASSES:
             for length in (0.3, 0.3 - 1e-14, 0.3 + 1e-14):
                 with self.subTest(cls=cls, length=length):
-                    self.assertEqual(self.intervals(cls, end=length, size=0.1, min_dis=0), [(0, length)])
+                    self.assertEqual(self.intervals(cls, end=length, size=0.1, tolerance=None), [(0, length)])
 
     def test_tolerance_suppresses_only_small_remainder(self):
         for cls in SECTION_CLASSES[1:]:
             with self.subTest(cls=cls):
-                self.assertEqual(self.intervals(cls, end=30.005), [(0, 30.005)])
-                self.assertGreater(len(self.intervals(cls, end=30.005, min_dis=0.001)), 1)
-                self.assertGreater(len(self.intervals(cls, end=35, min_dis=5)), 1)
+                self.assertEqual(self.intervals(cls, end=30.0005), [(0, 30.0005)])
+                self.assertGreater(len(self.intervals(cls, end=30.005, tolerance=0.001)), 1)
+                self.assertEqual(self.intervals(cls, end=35, tolerance=5), [(0, 35)])
 
     def test_reference_coordinates_and_input_immutability(self):
         geometry = box((0, 0, 10), (2, 3, 10), 40)
@@ -364,11 +364,11 @@ class ZSectionControlTests(unittest.TestCase):
                 with self.subTest(cls=cls, start=start, end=end), self.assertRaises(ValueError):
                     cls(section_control(cls.METHOD, start, end))
 
-    def test_rejects_invalid_min_distance(self):
+    def test_rejects_invalid_tolerancetance(self):
         for cls in SECTION_CLASSES:
             obj = cls(section_control(cls.METHOD))
-            for value in (-1, float("nan"), float("inf"), True, None):
-                with self.subTest(cls=cls, value=value), self.assertRaisesRegex(ValueError, "min_dis"):
+            for value in (-1, float("nan"), float("inf"), True, 0):
+                with self.subTest(cls=cls, value=value), self.assertRaisesRegex(ValueError, "tolerance"):
                     obj.get_25D_z_controls(value)
 
     def test_rejects_collapsed_or_overflowing_reference_interval(self):
@@ -461,7 +461,7 @@ class MeshControlInterfaceTests(unittest.TestCase):
             "element_size": 5,
         }])
         for bad in (-1, float("inf")):
-            with self.assertRaisesRegex(ValueError, "min_dis"):
+            with self.assertRaisesRegex(ValueError, "tolerance"):
                 obj.get_25D_z_controls(bad)
         entry["region"]["min"]["x"] = float("nan")
         with self.assertRaisesRegex(ValueError, "region.min.x"):

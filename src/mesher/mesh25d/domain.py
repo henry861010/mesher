@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from .geometry.primitives import _geometry_to_face
+from ..tolerance import resolve_tolerance
 
 JsonObject = dict[str, Any]
 
@@ -65,13 +66,13 @@ def model_domain(symmetry: SymmetryMode, faces: list[JsonObject]) -> ModelDomain
     )
 
 
-def filter_container_to_domain(container: JsonObject, domain: ModelDomain) -> None:
+def filter_container_to_domain(container: JsonObject, domain: ModelDomain, *, tolerance=None) -> None:
     """Filter geometry in place and prune empty child subtrees, keeping the root."""
-    _filter_container_subtree_to_domain(container, domain)
+    _filter_container_subtree_to_domain(container, domain, tolerance=resolve_tolerance(tolerance))
 
 
 def _filter_container_subtree_to_domain(
-    container: JsonObject, domain: ModelDomain
+    container: JsonObject, domain: ModelDomain, *, tolerance=None
 ) -> bool:
     """Return whether the filtered subtree still contains any geometry."""
     has_geometry = False
@@ -90,7 +91,7 @@ def _filter_container_subtree_to_domain(
                 raise ValueError(
                     f"container.{field}[{index}].geometry must be an object"
                 )
-            if face_intersects_domain(_geometry_to_face(geometry), domain):
+            if face_intersects_domain(_geometry_to_face(geometry), domain, tolerance=tolerance):
                 retained.append(item)
         container[field] = retained
         has_geometry = has_geometry or bool(retained)
@@ -104,7 +105,7 @@ def _filter_container_subtree_to_domain(
     for index, child in enumerate(children):
         if not isinstance(child, dict):
             raise ValueError(f"container.children[{index}] must be an object")
-        if _filter_container_subtree_to_domain(child, domain):
+        if _filter_container_subtree_to_domain(child, domain, tolerance=tolerance):
             retained_children.append(child)
     container["children"] = retained_children
     return has_geometry or bool(retained_children)
@@ -142,15 +143,16 @@ def face_bounds(face: JsonObject) -> tuple[float, float, float, float]:
     raise ValueError(f"Face type {face_type} is not supported by CDB export.")
 
 
-def face_intersects_domain(face: JsonObject, domain: ModelDomain) -> bool:
+def face_intersects_domain(face: JsonObject, domain: ModelDomain, *, tolerance=None) -> bool:
+    distance = resolve_tolerance(tolerance).absolute
     if domain.symmetry is SymmetryMode.FULL:
         return True
     face_type = face.get("type")
     if face_type == "BOX":
         x_min, y_min, x_max, y_max = face_bounds(face)
-        if domain.restrict_x and x_max <= domain_center_x(domain):
+        if domain.restrict_x and x_max - domain_center_x(domain) <= distance:
             return False
-        if domain.restrict_y and y_max <= domain_center_y(domain):
+        if domain.restrict_y and y_max - domain_center_y(domain) <= distance:
             return False
         return x_max > x_min and y_max > y_min
     if face_type == "CIRCLE":
@@ -168,8 +170,13 @@ def face_intersects_domain(face: JsonObject, domain: ModelDomain) -> bool:
             if domain.restrict_y
             else 0.0
         )
-        return math.hypot(dx, dy) < radius
+        return radius - math.hypot(dx, dy) > distance
     if face_type == "POLYGON":
+        x_min, y_min, x_max, y_max = face_bounds(face)
+        if domain.restrict_x and x_max - domain_center_x(domain) <= distance:
+            return False
+        if domain.restrict_y and y_max - domain_center_y(domain) <= distance:
+            return False
         return polygon_intersection_area(face, domain) > polygon_area_tolerance(face)
     raise ValueError(f"Face type {face_type} is not supported by CDB export.")
 
@@ -274,6 +281,8 @@ def _point_in_polygon(
 def _polygon_area(polygon: list[tuple[float, float]]) -> float:
     if len(polygon) < 3:
         return 0.0
+    origin = polygon[0]
+    polygon = [(x - origin[0], y - origin[1]) for x, y in polygon]
     return 0.5 * abs(
         sum(
             start[0] * end[1] - start[1] * end[0]
@@ -284,10 +293,8 @@ def _polygon_area(polygon: list[tuple[float, float]]) -> float:
 
 def polygon_area_tolerance(face: JsonObject) -> float:
     loops = polygon_loops(face)
-    coordinate_scale = max(
-        1.0,
-        *(abs(value) for loop in loops for point in loop for value in point),
-    )
+    points = np.asarray([point for loop in loops for point in loop], dtype=float)
+    coordinate_scale = float(np.max(np.ptp(points, axis=0)))
     return 64.0 * np.finfo(np.float64).eps * coordinate_scale**2
 
 

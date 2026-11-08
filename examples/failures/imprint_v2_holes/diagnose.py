@@ -41,7 +41,7 @@ def build_mesh(parameters):
         parameters["target_edge_size"],
         parameters["grid_x_list"],
         parameters["y_list"],
-        coordinate_tolerance=parameters["coordinate_tolerance"],
+        tolerance=parameters["tolerance"],
     )
 
 
@@ -50,7 +50,7 @@ def imprint_arguments(parameters):
         "center": parameters["grid_circler_center_coordinate"],
         "radius": parameters["circle_radius"],
         **{name: parameters[name] for name in (
-            "projection_tolerance", "guide_tolerance", "merge_tolerance",
+            "projection_distance", "tolerance",
             "minimum_area", "guide_segments",
         )},
     }
@@ -130,7 +130,7 @@ def cleanup_trace(projected, parameters, final_missing, metadata):
     Node IDs refer to the projection snapshot, before global compaction.
     """
     nodes, elements = projected.nodes, projected.elements
-    minimum_area = min(1.0, parameters["minimum_area"])
+    minimum_area = parameters["minimum_area"]
     rows = metadata["patch_rows"]
     if not len(rows):
         return []
@@ -251,7 +251,7 @@ def diagnose(case):
     moved = np.flatnonzero(displacement > 1e-12)
     changed_rows = np.flatnonzero(np.any(projected.elements != original.elements, axis=1))
     controls = {
-        "no_projection": control(dict(parameters, projection_tolerance=0.0), domain, area_epsilon),
+        "no_projection": control(dict(parameters, projection_distance=0.0), domain, area_epsilon),
         "no_guides": control(dict(parameters, guide_segments=[]), domain, area_epsilon),
         "no_target_merge": control(parameters, domain, area_epsilon, disable_target_merge=True),
         "no_area_cutoff": control(dict(parameters, minimum_area=0.0), domain, area_epsilon),
@@ -267,7 +267,7 @@ def diagnose(case):
         "parameters": parameters,
         "mesh_profile": mesh_profile(original, parameters),
         "minimum_area_requested": parameters["minimum_area"],
-        "minimum_area_effective": min(1.0, parameters["minimum_area"]),
+        "minimum_area_effective": parameters["minimum_area"],
         "inspection_bounds": case.get("inspection_bounds"),
         "area_epsilon": area_epsilon,
         "first_invalid_stage": next((name for name in STAGES if metrics[name]["invalid_element_rows"]), None),

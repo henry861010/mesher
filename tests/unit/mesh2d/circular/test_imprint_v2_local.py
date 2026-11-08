@@ -15,8 +15,8 @@ from mesher.mesh2d.circular.utils.pattern_segments import _PatternGuideSet
 
 
 def run(mesh, **overrides):
-    args = dict(center=[0., 0.], radius=1., projection_tolerance=0.,
-                guide_tolerance=0., merge_tolerance=0., minimum_area=0.)
+    args = dict(center=[0., 0.], radius=1., projection_distance=0.,
+                 tolerance=1e-12, minimum_area=0.)
     args.update(overrides)
     return _run_local_imprint(mesh, **args)
 
@@ -35,25 +35,25 @@ class GuideBarrierTests(unittest.TestCase):
                     cross[0][axis] = cross[1][axis] = fixed[axis]
                     cross[0][1-axis], cross[1][1-axis] = -.2, .2
                     mesh = Mesh2D([moving, fixed], np.empty((0, 4), dtype=np.int32))
-                    _to_circle(mesh, [0., 0.], 1., .1, 0., [parallel, cross])
+                    _to_circle(mesh, [0., 0.], 1., .1, 1e-12, [parallel, cross])
                     np.testing.assert_array_equal(mesh.nodes, [moving, fixed])
 
     def test_barrier_outside_path_does_not_block(self):
         for fixed_x in (1.1, .98):
             mesh = Mesh2D([[1.05, 0.], [fixed_x, 0.]], np.empty((0, 4), dtype=np.int32))
-            _to_circle(mesh, [0., 0.], 1., .1, 0., [
+            _to_circle(mesh, [0., 0.], 1., .1, 1e-12, [
                 [[-2., 0.], [2., 0.]], [[fixed_x, -.1], [fixed_x, .1]],
             ])
             np.testing.assert_allclose(mesh.nodes[0, :2], [1., 0.])
 
     def test_one_axis_node_is_not_a_barrier(self):
         mesh = Mesh2D([[1.05, 0.], [1.02, 0.]], np.empty((0, 4), dtype=np.int32))
-        _to_circle(mesh, [0., 0.], 1., .1, 0., [[[-2., 0.], [2., 0.]]])
+        _to_circle(mesh, [0., 0.], 1., .1, 1e-12, [[[-2., 0.], [2., 0.]]])
         np.testing.assert_allclose(mesh.nodes[:, 0], [1., 1.])
 
     def test_geometric_guide_intersection_without_mesh_node_does_not_block(self):
         mesh = Mesh2D([[1.05, 0.]], np.empty((0, 4), dtype=np.int32))
-        _to_circle(mesh, [0., 0.], 1., .1, 0., [
+        _to_circle(mesh, [0., 0.], 1., .1, 1e-12, [
             [[-2., 0.], [2., 0.]], [[1.02, -.1], [1.02, .1]],
         ])
         np.testing.assert_allclose(mesh.nodes[0, :2], [1., 0.])
@@ -61,7 +61,7 @@ class GuideBarrierTests(unittest.TestCase):
     def test_target_merging_cannot_move_a_blocked_node(self):
         mesh = Mesh2D([[1.05, 0.], [1.02, 0.], [1.01, .02]],
                       np.empty((0, 4), dtype=np.int32))
-        _to_circle(mesh, [0., 0.], 1., .1, 0., [
+        _to_circle(mesh, [0., 0.], 1., .1, 1e-12, [
             [[-2., 0.], [2., 0.]], [[1.02, -.1], [1.02, .1]],
         ])
         np.testing.assert_array_equal(mesh.nodes[0, :2], [1.05, 0.])
@@ -69,7 +69,7 @@ class GuideBarrierTests(unittest.TestCase):
 
     def test_can_reach_fixed_circle_anchor(self):
         mesh = Mesh2D([[.95, 0., 0.], [1., 0., 0.]], np.empty((0, 4), dtype=np.int32))
-        _to_circle(mesh, [0., 0.], 1., .1, 0., [
+        _to_circle(mesh, [0., 0.], 1., .1, 1e-12, [
             [[-2., 0.], [2., 0.]], [[1., -.2], [1., .2]],
         ])
         np.testing.assert_allclose(mesh.nodes[:, :2], [[1., 0.], [1., 0.]])
@@ -89,7 +89,7 @@ class GuideBarrierTests(unittest.TestCase):
 
     def test_finds_barrier_outside_band_and_element_selection(self):
         mesh = self.remote_barrier_mesh()
-        _to_circle(mesh, [0., 0.], 1., .1, 0., self.remote_guides(), indices=[0])
+        _to_circle(mesh, [0., 0.], 1., .1, 1e-12, self.remote_guides(), indices=[0])
         np.testing.assert_array_equal(mesh.nodes[0, :2], [.95, 0.])
         np.testing.assert_array_equal(mesh.nodes[3, :2], [.5, 0.])
 
@@ -97,7 +97,7 @@ class GuideBarrierTests(unittest.TestCase):
         mesh = self.remote_barrier_mesh()
         remote = mesh.nodes[mesh.elements[1]].copy()
         stats = {}
-        run(mesh, projection_tolerance=.1, guide_segments=self.remote_guides(), stats=stats)
+        run(mesh, projection_distance=.1, guide_segments=self.remote_guides(), stats=stats)
         self.assertEqual(stats['patch_elements'], 1)
         self.assertTrue(np.any(np.all(mesh.nodes[:, :2] == [.95, 0.], axis=1)))
         np.testing.assert_array_equal(mesh.nodes[mesh.elements[1]], remote)
@@ -106,13 +106,13 @@ class GuideBarrierTests(unittest.TestCase):
 class RadialGuideBarrierTests(unittest.TestCase):
     @staticmethod
     def project(
-        nodes, guides, guide_tolerance=0., elements=None, indices=None,
-        projection_tolerance=.1,
+        nodes, guides, tolerance=1e-12, elements=None, indices=None,
+        projection_distance=.1,
     ):
         if elements is None:
             elements = np.empty((0, 4), dtype=np.int32)
         mesh = Mesh2D(nodes, elements)
-        _to_circle(mesh, [0., 0.], 1., projection_tolerance, guide_tolerance, guides, indices)
+        _to_circle(mesh, [0., 0.], 1., projection_distance, tolerance, guides, indices)
         return mesh
 
     def test_blocks_both_axes_inward_and_outward_without_a_guide_node(self):
@@ -135,7 +135,7 @@ class RadialGuideBarrierTests(unittest.TestCase):
         mesh = self.project([source], guides)
         np.testing.assert_array_equal(mesh.nodes, [source])
 
-    def test_extended_endpoints_use_guide_tolerance_on_both_axes_and_ends(self):
+    def test_extended_endpoints_use_tolerance_on_both_axes_and_ends(self):
         extension, tolerance = .125, .0078125
         for offset, blocked in (
             (0., True), (extension, True), (extension + tolerance / 2., True),
@@ -152,19 +152,19 @@ class RadialGuideBarrierTests(unittest.TestCase):
                         # Duplicates and reversed endpoints have the same effect.
                         mesh = self.project(
                             [source], [guide[::-1], guide], tolerance,
-                            projection_tolerance=extension,
+                            projection_distance=extension,
                         )
                         expected = source.copy()
                         if not blocked:
                             expected[axis] = 1.
                         np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
 
-    def test_extension_tracks_projection_tolerance(self):
+    def test_extension_tracks_projection_distance(self):
         source = [1.01, 0., 0.0]
         guide = [[[1.005, .05], [1.005, .06]]]
         for tolerance, blocked in ((.02, False), (.1, True)):
-            with self.subTest(projection_tolerance=tolerance):
-                mesh = self.project([source], guide, projection_tolerance=tolerance)
+            with self.subTest(projection_distance=tolerance):
+                mesh = self.project([source], guide, projection_distance=tolerance)
                 expected = source if blocked else [1., 0., 0.0]
                 np.testing.assert_allclose(mesh.nodes, [expected], rtol=0, atol=1e-15)
 
@@ -249,9 +249,9 @@ class RadialGuideBarrierTests(unittest.TestCase):
         guides = [[[1.025, .09], [1.025, .1]]]
         mesh = self.project(nodes, guides, elements=[[0, 2, 3, 3]], indices=[0])
         np.testing.assert_array_equal(mesh.nodes[[0, 1, 3]], np.asarray(nodes)[[0, 1, 3]])
-        np.testing.assert_allclose(mesh.nodes[2], [np.cos(-.03), np.sin(-.03), 0.0])
+        np.testing.assert_array_equal(mesh.nodes[2], nodes[2])  # Moving it alone would invert its incident triangle.
         projected = mesh.nodes.copy()
-        _to_circle(mesh, [0., 0.], 1., .1, 0., guides, indices=[0])
+        _to_circle(mesh, [0., 0.], 1., .1, 1e-12, guides, indices=[0])
         np.testing.assert_array_equal(mesh.nodes, projected)
 
     def test_original_radial_path_is_checked_before_target_merging_only(self):
@@ -263,7 +263,7 @@ class RadialGuideBarrierTests(unittest.TestCase):
         mesh = self.project([[1.05, 0.], anchor], guides)
         # The radial target [1, 0] is safe. The existing merge to the guide
         # anchor crosses the vertical guide and is deliberately not rechecked.
-        np.testing.assert_allclose(mesh.nodes[:, :2], [anchor, anchor])
+        np.testing.assert_allclose(mesh.nodes[:, :2], [[1., 0.], anchor])
 
     def test_sparse_pairs_are_batched_even_when_one_path_spans_many_guides(self):
         guides = [[[x, .13], [x, .14]] for x in np.linspace(1.01, 1.04, 9)]
@@ -280,7 +280,7 @@ class RadialGuideBarrierTests(unittest.TestCase):
         source = center + [1.05, 0.]
         mesh = Mesh2D([source], np.empty((0, 4), dtype=np.int32))
         guide = center + [[1.025, -.2], [1.025, .2]]
-        _to_circle(mesh, center, 1., .1, 0., [guide])
+        _to_circle(mesh, center, 1., .1, .001, [guide])
         np.testing.assert_array_equal(mesh.nodes[:, :2], [source])
 
 
@@ -308,7 +308,7 @@ class LocalPatchTests(unittest.TestCase):
         elements = [[0, 1, 2, 2], [3, 4, 5, 6], [7, 8, 9, 9], [10, 11, 12, 12]]
         mesh = Mesh2D(nodes, elements)
         before = mesh.nodes[mesh.elements[1:]].copy()
-        run(mesh, merge_tolerance=.01)
+        run(mesh, tolerance=.01)
         remote = mesh.elements[np.min(mesh.nodes[mesh.elements, 0], axis=1) >= 10.]
         np.testing.assert_array_equal(mesh.nodes[remote], before)
         self.assertEqual(len(np.unique(remote[-2:])), 6)
@@ -322,13 +322,14 @@ class LocalPatchTests(unittest.TestCase):
             elements.append([start, start+1, start+2, start+2])
         mesh = Mesh2D(nodes, elements)
         stats = {}
-        run(mesh, merge_tolerance=.07, stats=stats)
-        self.assertLess(stats['core_elements'], 12)
-        self.assertEqual(stats['patch_elements'], 12)
-        np.testing.assert_array_equal(mesh.nodes[:, 2], 0.0)
+        before = mesh.nodes.copy(), mesh.elements.copy()
+        with self.assertRaisesRegex(ValueError, "ambiguous_geometry"):
+            run(mesh, tolerance=.07, stats=stats)
+        np.testing.assert_array_equal(mesh.nodes, before[0])
+        np.testing.assert_array_equal(mesh.elements, before[1])
 
     def test_cross_boundary_equivalence_retains_lowest_global_id(self):
-        for tolerance in (0., .01):
+        for tolerance in (1e-12, .01):
             with self.subTest(tolerance=tolerance):
                 mesh = Mesh2D(
                     [[0., 2., 0.], [0., 3., 0.], [-1., 3., 0.],
@@ -336,7 +337,7 @@ class LocalPatchTests(unittest.TestCase):
                     [[0, 1, 2, 2], [3, 4, 5, 5]],
                 )
                 stats = {}
-                run(mesh, merge_tolerance=tolerance, stats=stats)
+                run(mesh, tolerance=tolerance, stats=stats)
                 self.assertEqual(stats['core_elements'], 1)
                 self.assertEqual(stats['patch_elements'], 2)
                 shared = mesh.nodes[np.all(mesh.nodes[:, :2] == [0., 2.], axis=1)]
@@ -344,7 +345,7 @@ class LocalPatchTests(unittest.TestCase):
 
     def test_seam_shared_intersections_are_unique_with_zero_z(self):
         mesh = generate_rectilinear_mesh(.2, [-3., 3.], [-3., 3.])
-        run(mesh, radius=1.13, projection_tolerance=.02, merge_tolerance=.001)
+        run(mesh, radius=1.13, projection_distance=.02, tolerance=.001)
         np.testing.assert_array_equal(mesh.nodes[:, 2], 0.0)
         # Exact XY duplicates would reveal independent edge insertion at a seam.
         self.assertEqual(len(np.unique(mesh.nodes[:, :2], axis=0)), mesh.node_count)
@@ -378,7 +379,7 @@ class LocalPatchTests(unittest.TestCase):
             far = generate_rectilinear_mesh(1., [100., 100.+size], [100., 100.+size])
             mesh = Mesh2D(np.concatenate((near.nodes, far.nodes)), np.concatenate((near.elements, far.elements+near.node_count)))
             current = {}
-            run(mesh, radius=1.13, projection_tolerance=.02, merge_tolerance=.001, stats=current)
+            run(mesh, radius=1.13, projection_distance=.02, tolerance=.001, stats=current)
             stats.append(current)
         self.assertEqual(stats[0]['patch_elements'], stats[1]['patch_elements'])
         self.assertEqual(stats[0]['patch_nodes'], stats[1]['patch_nodes'])

@@ -242,7 +242,7 @@ class OutlineTargetTests(unittest.TestCase):
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] @ rotation.T * scale + shift
                 target = target @ rotation.T * scale + shift
                 ids = _target_ids(mesh, target)
-                result = self.run_layer(mesh, outline, h=.5*scale, outline_o=ids)
+                result = self.run_layer(mesh, outline, h=.5*scale, outline_o=ids, tolerance=.001 * scale)
                 self.assert_target(mesh, result, ids)
 
     def test_invalid_target_id_inputs_are_typed_and_atomic(self):

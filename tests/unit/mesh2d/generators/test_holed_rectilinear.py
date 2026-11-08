@@ -297,27 +297,29 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
         np.testing.assert_array_equal(repeated.mesh.nodes, baseline.mesh.nodes)
         np.testing.assert_array_equal(repeated.mesh.elements, baseline.mesh.elements)
 
-    def test_tolerance_does_not_merge_distinct_mandatory_coordinates(self):
+    def test_near_duplicate_patterns_share_one_support(self):
         outer = _rectangle(0, 0, 6, 6)
         patterns = np.array([[[1.17, 2.37], [2.43, 2.37]],
                              [[1.17, 2.3701], [2.43, 2.3701]]])
-        result = generate_rectilinear_mesh_optimal(
-            3, outer, pattern_lines=patterns, coordinate_tolerance=1e-3)
+        original = patterns.copy()
+        result = generate_rectilinear_mesh_optimal(3, outer, pattern_lines=patterns, tolerance=1e-3)
+        baseline = generate_rectilinear_mesh_optimal(3, outer, pattern_lines=patterns[:1])
         self.assert_valid(result, outer, [])
+        np.testing.assert_array_equal(result.mesh.nodes, baseline.mesh.nodes)
+        np.testing.assert_array_equal(result.mesh.elements, baseline.mesh.elements)
+        np.testing.assert_array_equal(patterns, original)
+        retained = generate_rectilinear_mesh_optimal(3, outer, pattern_lines=patterns, tolerance=1e-6)
         for point in patterns.reshape(-1, 2):
-            self.assert_node(result, point)
+            self.assert_node(retained, point)
 
-    def test_consecutive_float_pattern_coordinates_do_not_need_a_midpoint(self):
+    def test_adjacent_float_pattern_coordinates_have_one_identity(self):
         outer = _rectangle(0, 0, 3, 3)
         next_x = np.nextafter(1.0, 2.0)
         patterns = [[[1.0, 0], [1.0, 3]], [[next_x, 0], [next_x, 3]]]
         result = generate_rectilinear_mesh_optimal(10, outer, pattern_lines=patterns)
         self.assert_valid(result, outer, [])
-        self.assertEqual(result.mesh.element_count, 3)
-        np.testing.assert_array_equal(np.unique(result.mesh.nodes[:, 0]), [0, 1.0, next_x, 3])
-        for pattern in patterns:
-            for point in pattern:
-                self.assert_node(result, point)
+        self.assertEqual(result.mesh.element_count, 2)
+        np.testing.assert_array_equal(np.unique(result.mesh.nodes[:, 0]), [0, 1.0, 3])
 
     def test_inputs_are_unchanged_and_optional_closure_and_winding_work(self):
         outer = np.vstack((_rectangle(0, 0, 12, 10), [0, 0]))[::-1].copy()
@@ -329,14 +331,14 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
         for value, original in zip((outer, hole, patterns), originals):
             np.testing.assert_array_equal(value, original)
 
-    def test_scale_invariance_with_zero_coordinate_tolerance(self):
+    def test_scale_invariance_with_scaled_tolerance(self):
         outer, hole = _rectangle(0, 0, 12, 10), _rectangle(4, 2, 8, 8)
         pattern = np.array([[[1.17, 3.37], [2.43, 3.37]]])
         for scale in (1e-7, 1, 1e6):
             with self.subTest(scale=scale):
                 result = generate_rectilinear_mesh_optimal(
                     4 * scale, outer * scale, holes=[hole * scale],
-                    pattern_lines=pattern * scale, coordinate_tolerance=0)
+                    pattern_lines=pattern * scale, tolerance=.001 * scale)
                 self.assert_valid(result, outer * scale, [hole * scale])
                 for point in pattern.reshape(-1, 2) * scale:
                     self.assert_node(result, point)
@@ -353,58 +355,40 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
                 original_outer, original_pattern = outer.copy(), pattern.copy()
                 with self.assertRaises(ValueError):
                     generate_rectilinear_mesh_optimal(
-                        2, outer, pattern_lines=pattern, coordinate_tolerance=0)
+                        2, outer, pattern_lines=pattern, tolerance=1e-311)
                 np.testing.assert_array_equal(outer, original_outer)
                 np.testing.assert_array_equal(pattern, original_pattern)
 
-    def test_adjacent_float_geometry_coordinates_work_in_both_axes(self):
-        next_coordinate = np.nextafter(1.0, 2.0)
-        original_outer = _rectangle(0, 0, 3, 3)
-        original_hole = _rectangle(1, 1, next_coordinate, 2)
+    def test_unresolved_material_holes_are_rejected_in_both_axes(self):
+        outer = _rectangle(0, 0, 3, 3)
+        hole = _rectangle(1, 1, np.nextafter(1.0, 2.0), 2)
         for transpose in (False, True):
-            with self.subTest(transpose=transpose):
-                outer = original_outer[:, ::-1] if transpose else original_outer
-                hole = original_hole[:, ::-1] if transpose else original_hole
-                result = generate_rectilinear_mesh_optimal(
-                    10, outer, holes=[hole], coordinate_tolerance=0)
-                self.assert_exact_conformity(result)
-                for point in np.vstack((outer, hole)):
-                    self.assert_node(result, point)
-                coordinates = result.mesh.nodes[result.mesh.elements, :2]
-                areas = np.prod(np.ptp(coordinates, axis=1), axis=1)
-                self.assertTrue(np.all(areas > 0))
-                self.assertAlmostEqual(float(areas.sum()), 9.0, places=13)
+            with self.subTest(transpose=transpose), self.assertRaisesRegex(ValueError, "feature_below_resolution"):
+                generate_rectilinear_mesh_optimal(10, outer[:, ::-1] if transpose else outer,
+                    holes=[hole[:, ::-1] if transpose else hole])
 
-    def test_parity_falls_back_when_left_edge_has_no_representable_midpoint(self):
+    def test_unrepresentable_parity_geometry_is_rejected_before_grid_allocation(self):
         base = float(2**52)
         outer = _rectangle(0, base, 10, base + 6)
         hole = _rectangle(3, base + 2, 7, base + 3)
         patterns = np.array([[[5, base], [5, base + 2]]])
-        result = generate_rectilinear_mesh_optimal(
-            100, outer, holes=[hole], pattern_lines=patterns)
-        self.assert_valid(result, outer, [hole])
-        self.assert_exact_conformity(result)
-        self.assert_fallback_diagnostics(result)
-        for point in patterns.reshape(-1, 2):
-            self.assert_node(result, point)
+        with patch.object(holed_generator, "_RectangleIndex", side_effect=AssertionError("no allocation")):
+            with self.assertRaisesRegex(ValueError, "numeric_resolution_exceeded"):
+                generate_rectilinear_mesh_optimal(100, outer, holes=[hole], pattern_lines=patterns)
 
-    def test_parity_falls_back_when_unrelated_levels_exhaust_midpoint_candidates(self):
+    def test_unrepresentable_disconnected_constraints_are_rejected_atomically(self):
         base = float(2**52)
         outer = _rectangle(0, base, 20, base + 16)
-        holes = [_rectangle(4, base + 6, 6, base + 10),
-                 _rectangle(10, base + 2, 12, base + 14)]
-        patterns = [[[0, base + 8], [4, base + 8]]]
-        patterns.extend([[[14, base + i], [15, base + i]] for i in (7, 8, 9)])
-        result = generate_rectilinear_mesh_optimal(
-            100, outer, holes=holes, pattern_lines=patterns)
-        self.assert_valid(result, outer, holes)
-        self.assert_exact_conformity(result)
-        self.assert_fallback_diagnostics(result)
-        for point in np.asarray(patterns).reshape(-1, 2):
-            self.assert_node(result, point)
+        holes = [_rectangle(4, base + 6, 6, base + 10), _rectangle(10, base + 2, 12, base + 14)]
+        patterns = np.array([[[0, base + 8], [4, base + 8]], [[14, base + 7], [15, base + 7]]])
+        originals = [value.copy() for value in [outer, *holes, patterns]]
+        with self.assertRaisesRegex(ValueError, "numeric_resolution_exceeded"):
+            generate_rectilinear_mesh_optimal(100, outer, holes=holes, pattern_lines=patterns)
+        for actual, original in zip([outer, *holes, patterns], originals):
+            np.testing.assert_array_equal(actual, original)
 
     def test_fallback_discards_repairs_completed_before_another_hole_fails(self):
-        base = float(2**52)
+        base = 0.0
         outer = _rectangle(0, base, 20, base + 16)
         holes = [_rectangle(3, base + 2, 7, base + 3),
                  _rectangle(11, base + 6, 15, base + 12)]
@@ -414,7 +398,8 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
 
         def capture_repairs(builder):
             try:
-                return repair_parity(builder)
+                repair_parity(builder)
+                raise holed_generator._ParityRepairUnavailable("forced after successful local repairs")
             finally:
                 local_repairs.extend(cut.coordinate for cut in builder.cuts.values()
                                      if cut.kind == "parity")
@@ -422,8 +407,8 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
         with patch.object(holed_generator._Builder, "repair_parity", capture_repairs):
             result = generate_rectilinear_mesh_optimal(
                 100, outer, holes=holes, pattern_lines=patterns)
-        self.assertEqual(local_repairs, [base + 8])
-        self.assertFalse(np.any(result.mesh.nodes[:, 1] == base + 8))
+        self.assertEqual(local_repairs, [base + 7.5, base + 2.5])
+        self.assertFalse(np.any(np.isin(result.mesh.nodes[:, 1], local_repairs)))
         self.assert_fallback_diagnostics(result)
         self.assertEqual(result.diagnostics["cuts"],
                          {"geometry": 16, "pattern": 4, "sizing": 0, "parity": 0})
@@ -500,7 +485,7 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
         with patch.object(holed_generator, "_RectangleIndex",
                           side_effect=AssertionError("index allocation must not start")):
             with self.assertRaisesRegex(ValueError, "max_elements exceeded: limit=1000000,"):
-                generate_rectilinear_mesh_optimal(1e-5, outer)
+                generate_rectilinear_mesh_optimal(1e-5, outer, tolerance=1e-7)
 
     def test_seed_partition_respects_element_budget(self):
         outer = _rectangle(0, 0, 4, 4)
@@ -614,7 +599,7 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
                     outer = _rectangle(0, 0, 100, 100) * scale + origin
                     holes = [hole * scale + origin for hole in source_holes]
                     result = generate_rectilinear_mesh_optimal(
-                        target * scale, outer, holes=holes, coordinate_tolerance=0)
+                        target * scale, outer, holes=holes, tolerance=.001 * scale)
                     self.assert_valid(result, outer, holes)
                     quality = result.diagnostics["quality"]
                     self.assertTrue(all(np.isfinite(value) for value in quality.values()))
@@ -652,7 +637,7 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
         result = generate_rectilinear_mesh_optimal(3, outer, holes=[hole], pattern_lines=patterns)
         self.assert_valid(result, outer, [hole])
         legacy = generate_rectilinear_mesh(
-            3, [0, .77, 2.31, 4, 8, 20], [0, 2, *levels, 10, 12], coordinate_tolerance=0)
+            3, [0, .77, 2.31, 4, 8, 20], [0, 2, *levels, 10, 12], tolerance=1e-6)
         centers = legacy.nodes[legacy.elements, :2].mean(axis=1)
         retained = np.asarray([not _inside(center, hole) for center in centers])
         self.assertLess(len(result.mesh.elements), int(retained.sum()))
@@ -665,9 +650,9 @@ class GenerateRectilinearMeshWithHolesTests(unittest.TestCase):
         for size in (0, -1, np.nan, np.inf):
             with self.subTest(size=size), self.assertRaises(ValueError):
                 generate_rectilinear_mesh_optimal(size, outer)
-        for tolerance in (-1, np.nan, np.inf, None):
+        for tolerance in (0, -1, np.nan, np.inf):
             with self.subTest(tolerance=tolerance), self.assertRaises((ValueError, TypeError)):
-                generate_rectilinear_mesh_optimal(2, outer, coordinate_tolerance=tolerance)
+                generate_rectilinear_mesh_optimal(2, outer, tolerance=tolerance)
         for pattern in ([[[1, 1], [2, 2]]], [[[1, 1], [1, 1]]],
                         [[[1, 1], [np.nan, 1]]], [[1, 2], [3, 4]]):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):

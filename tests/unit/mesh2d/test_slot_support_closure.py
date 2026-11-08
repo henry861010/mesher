@@ -71,7 +71,7 @@ class SlotSupportClosureTests(unittest.TestCase):
                 for _ in range(rotation):
                     mesh.nodes[:, :2] = mesh.nodes[:, [1, 0]] * [-1., 1.]
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] * scale + shift
-                self.assert_repaired(mesh, outline, .4999 * scale)
+                self.assert_repaired(mesh, outline, .4999 * scale, tolerance=.001 * scale)
 
     def test_asymmetric_pattern_snapping_closes_the_actual_support_gap(self):
         mesh, outline = _sheared_slot(top_only=True)

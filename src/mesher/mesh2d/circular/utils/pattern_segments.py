@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ....tolerance import GeometryTolerance, GeometryToleranceError, resolve_tolerance, canonicalize_values, within_distance, circle_membership
+
 
 def _readonly(values, *, dtype=None):
     """Return an owned, read-only NumPy array."""
@@ -53,6 +55,8 @@ class _PatternGuideSet:
     upper_bounds: np.ndarray
     fixed_tolerances: np.ndarray
     bound_tolerances: np.ndarray
+    policy: GeometryTolerance
+    original_segments: np.ndarray
 
     @classmethod
     def from_values(
@@ -60,12 +64,13 @@ class _PatternGuideSet:
         guide_segments,
         *,
         coordinate_scale,
-        minimum_tolerance=0.0,
+        tolerance=None,
     ):
         """Normalize, validate, and classify raw pattern segments."""
         try:
             coordinate_scale = float(coordinate_scale)
-            minimum_tolerance = float(minimum_tolerance)
+            policy = resolve_tolerance(tolerance)
+            minimum_tolerance = policy.absolute
         except (TypeError, ValueError, OverflowError) as error:
             raise ValueError(
                 "pattern segment tolerances must be real numbers"
@@ -114,16 +119,12 @@ class _PatternGuideSet:
                 _readonly(empty_float),
                 _readonly(empty_float),
                 _readonly(empty_float),
+                policy,
+                values,
             )
 
-        segment_axis_scales = np.maximum(
-            coordinate_scale,
-            np.max(np.abs(values), axis=1),
-        )
-        axis_tolerances = np.maximum(
-            minimum_tolerance,
-            64.0 * np.finfo(np.float64).eps * segment_axis_scales,
-        )
+        # Axis membership is geometric; epsilon only belongs to arithmetic.
+        axis_tolerances = np.full((count, 2), policy.absolute)
         deltas = values[:, 1] - values[:, 0]
         vertical = (
             (np.abs(deltas[:, 0]) <= axis_tolerances[:, 0])
@@ -134,11 +135,36 @@ class _PatternGuideSet:
             & (np.abs(deltas[:, 0]) > axis_tolerances[:, 0])
         )
         if np.any(vertical == horizontal):
-            raise ValueError(
-                "each pattern segment must be non-zero and horizontal or vertical"
+            raise GeometryToleranceError(
+                "each pattern segment must be non-zero and horizontal or vertical",
+                code="ambiguous_geometry", stage="circle guide normalization",
+                guide_indices=np.flatnonzero(vertical == horizontal).tolist(),
+                deltas=deltas[vertical == horizontal].tolist(), tolerance=policy.absolute,
             )
 
+        original_values = values
+        values = np.array(values, copy=True)
         fixed_axes = np.where(vertical, 0, 1).astype(np.int8)
+        # Normalize a near-axis guide once, then canonicalize parallel supports.
+        # Bounded components reject transitive chains wider than the policy.
+        for axis in (0, 1):
+            rows = np.flatnonzero(fixed_axes == axis)
+            if not len(rows):
+                continue
+            supports = np.min(values[rows, :, axis], axis=1)
+            canonical = canonicalize_values(supports, policy, stage="circle guide supports")
+            values[rows, :, axis] = np.asarray(canonical)[:, None]
+        accepted_moves = within_distance(values, original_values, policy)
+        if not np.all(accepted_moves):
+            raise GeometryToleranceError(
+                "guide normalization would exceed the displacement budget",
+                code="ambiguous_geometry", stage="circle guide supports",
+                tolerance=policy.absolute,
+                guide_indices=np.flatnonzero(~np.all(accepted_moves, axis=1)).tolist(),
+                maximum_displacement=float(np.max(np.hypot.reduce(values - original_values, axis=-1))),
+            )
+        values = _readonly(values)
+
         varying_axes = (1 - fixed_axes).astype(np.int8)
         positions = np.arange(count, dtype=np.intp)
         fixed_values = values[positions, 0, fixed_axes]
@@ -160,6 +186,8 @@ class _PatternGuideSet:
             _readonly(upper_bounds),
             _readonly(fixed_tolerances),
             _readonly(bound_tolerances),
+            policy,
+            original_values,
         )
 
     def __len__(self):
@@ -192,6 +220,8 @@ class _PatternGuideSet:
             _readonly(self.upper_bounds[selected]),
             _readonly(self.fixed_tolerances[selected]),
             _readonly(self.bound_tolerances[selected]),
+            self.policy,
+            _readonly(self.original_segments[selected]),
         )
 
     def intersecting_circle(self, center, radius):
@@ -203,15 +233,18 @@ def _coerce_pattern_guides(
     guide_segments,
     *,
     coordinate_scale,
-    minimum_tolerance=0.0,
+    tolerance=None,
 ):
     """Reuse a prepared guide set or prepare raw array-like input."""
+    policy = resolve_tolerance(tolerance)
     if isinstance(guide_segments, _PatternGuideSet):
-        return guide_segments
+        if guide_segments.policy == policy:
+            return guide_segments
+        guide_segments = guide_segments.original_segments
     return _PatternGuideSet.from_values(
         guide_segments,
         coordinate_scale=coordinate_scale,
-        minimum_tolerance=minimum_tolerance,
+        tolerance=policy,
     )
 
 
@@ -243,13 +276,9 @@ def _circle_intersection_mask(pattern_guides, center, radius):
     with np.errstate(over="ignore", invalid="ignore"):
         fixed_offsets = pattern_guides.fixed_values - fixed_centers
         fixed_distances = np.abs(fixed_offsets)
-    line_hits = (
-        np.isfinite(fixed_distances)
-        & (
-            fixed_distances
-            <= radius + pattern_guides.fixed_tolerances
-        )
-    )
+    nearest_points = np.broadcast_to(center, (len(pattern_guides), 2)).copy()
+    nearest_points[np.arange(len(pattern_guides)), pattern_guides.fixed_axes] = pattern_guides.fixed_values
+    line_hits = circle_membership(nearest_points, center, radius, pattern_guides.policy)
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         normalized = np.minimum(fixed_distances / radius, 1.0)
         roots = radius * np.sqrt(
@@ -307,7 +336,9 @@ def _circle_line_intersections(segment, center, radius, *, tolerance=None):
     if not np.isfinite(fixed_offset):
         return np.empty((0, 2), dtype=np.float64)
     fixed_distance = abs(float(fixed_offset))
-    if fixed_distance > radius + line_tolerance:
+    nearest_point = center.copy()
+    nearest_point[segment.fixed_axis] = segment.fixed_value
+    if not circle_membership(nearest_point, center, radius, line_tolerance):
         return np.empty((0, 2), dtype=np.float64)
 
     normalized = min(fixed_distance / radius, 1.0)

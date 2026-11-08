@@ -2,6 +2,8 @@
 
 import numpy as np
 
+from ....tolerance import resolve_tolerance, circle_membership
+
 from ...model import Mesh2D, _validate_zero_z
 from ..utils.pattern_segments import (
     _PatternGuideSet,
@@ -44,6 +46,7 @@ class _CircularStripMesher(
         guide_segments,
         closed,
         min_quad_scaled_jacobian=0.3,
+        tolerance=None,
     ):
         """Store raw inputs for deferred, transactional validation.
 
@@ -55,6 +58,7 @@ class _CircularStripMesher(
             closed: Whether both boundaries are closed rings rather than arcs.
             min_quad_scaled_jacobian: Minimum scaled Jacobian for Quad4 merging.
         """
+        self.policy = resolve_tolerance(tolerance)
         self.mesh = mesh
         self.inner_input = inner_nodes
         self.outer_input = outer_nodes
@@ -260,42 +264,22 @@ class _CircularStripMesher(
         ):
             raise ValueError("the fitted circle geometry exceeds float64")
 
-        coordinate_scale = max(
-            float(np.max(np.abs(selected))),
-            float(np.max(np.abs(self.center))),
-            self.outer_radius,
-        )
-        coordinate_ulp = abs(float(np.spacing(coordinate_scale)))
-        local_scale = max(scale, self.outer_radius)
-        machine_tolerance = max(
-            8.0 * coordinate_ulp,
-            256.0 * np.finfo(np.float64).eps * local_scale,
-        )
-        self.geometry_tolerance = max(
-            machine_tolerance, 1.0e-10 * self.outer_radius
-        )
+        self.policy.check_resolution(selected, stage="circular strip")
+        self.geometry_tolerance = self.policy.absolute
         if (
             self.inner_radius
             >= self.outer_radius - self.geometry_tolerance
         ):
             raise ValueError("inner_nodes must lie on the smaller fitted circle")
 
-        inner_distances = np.hypot(
-            self.xy[self.inner_indices, 0] - self.center[0],
-            self.xy[self.inner_indices, 1] - self.center[1],
-        )
-        outer_distances = np.hypot(
-            self.xy[self.outer_indices, 0] - self.center[0],
-            self.xy[self.outer_indices, 1] - self.center[1],
-        )
-        self.fit_tolerance = max(
-            self.geometry_tolerance, 1.0e-9 * self.outer_radius
-        )
-        if np.any(
-            np.abs(inner_distances - self.inner_radius) > self.fit_tolerance
-        ) or np.any(
-            np.abs(outer_distances - self.outer_radius) > self.fit_tolerance
-        ):
+        self.fit_tolerance = self.policy.absolute
+        if not np.all(circle_membership(
+            self.xy[self.inner_indices], self.center, self.inner_radius,
+            self.policy, boundary=True,
+        )) or not np.all(circle_membership(
+            self.xy[self.outer_indices], self.center, self.outer_radius,
+            self.policy, boundary=True,
+        )):
             raise ValueError(
                 "inner_nodes and outer_nodes must lie on concentric circles"
             )
@@ -320,7 +304,7 @@ class _CircularStripMesher(
         self.pattern_guides = _coerce_pattern_guides(
             self.raw_pattern_lines,
             coordinate_scale=coordinate_scale,
-            minimum_tolerance=self.geometry_tolerance,
+            tolerance=self.policy,
         )
 
     def _read_existing_topology(self):
@@ -914,7 +898,7 @@ class _CircularStripMesher(
                 fraction = (
                     fixed_value - fixed_start
                 ) / fixed_delta
-                if -tolerance <= fraction <= 1.0 + tolerance:
+                if -tolerance / abs(fixed_delta) <= fraction <= 1.0 + tolerance / abs(fixed_delta):
                     cuts.append(
                         float(
                             start[varying_axis]
@@ -1166,6 +1150,7 @@ def _mesh_inner_outer_circle(
     guide_segments=None,
     closed: bool = True,
     min_quad_scaled_jacobian: float = 0.3,
+    tolerance=None,
 ) -> Mesh2D:
     """Mesh the strip between two concentric circular boundaries.
 
@@ -1201,5 +1186,5 @@ def _mesh_inner_outer_circle(
         only after the complete strip has passed validation.
     """
     return _CircularStripMesher(
-        mesh, inner_nodes, outer_nodes, guide_segments, closed, min_quad_scaled_jacobian
+        mesh, inner_nodes, outer_nodes, guide_segments, closed, min_quad_scaled_jacobian, tolerance
     ).build()

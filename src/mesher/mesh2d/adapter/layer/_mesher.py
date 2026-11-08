@@ -5,6 +5,7 @@ from dataclasses import replace
 from time import perf_counter
 
 import numpy as np
+from mesher.tolerance import GeometryTolerance, resolve_tolerance
 from numpy.typing import ArrayLike
 
 from ...model import Mesh2D
@@ -37,7 +38,7 @@ def _world_nodes(nodes, source_mesh, data):
     result[:count] = source_mesh.nodes
     restored = (result[count:, :2] - data["origin"]) / data["scale"]
     if (not np.all(np.isfinite(result))
-            or np.any(np.abs(restored - nodes[count:, :2]) > data["tol"])):
+            or np.any(np.abs(restored - nodes[count:, :2]) > data["numeric_tol"])):
         raise UnmeshableDirectQuadLayout("mapping new nodes back exceeds the geometric tolerance",
                                         stage="world_coordinates")
     return result
@@ -55,11 +56,16 @@ def _world_repair_diagnostics(value, data, key=None):
     return value
 
 
-def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_tolerance,
+def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, tolerance,
                   *, expand_size=None, repair_slots=True, max_added_elements=None,
                   repair_max_element_size=None, outline_o=None, fixed_outer_boundary=False,
                   small_element_size=None, dense_mapping_angle=30.0,
                   _dense_seam_targets=None):
+    try:
+        tolerance = resolve_tolerance(tolerance)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise QuadLayerError("tolerance must be finite and positive", code="invalid_input",
+                             stage="input_validation", parameter="tolerance") from error
     if not isinstance(fixed_outer_boundary, (bool, np.bool_)):
         _fail("fixed_outer_boundary must be a boolean", stage="input_validation",
               parameter="fixed_outer_boundary")
@@ -85,7 +91,7 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, ax
             _fail("repair_max_element_size must be finite and positive",
                   stage="input_validation", parameter="repair_max_element_size")
     try:
-        data = _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_tolerance,
+        data = _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, tolerance,
                         expand_size=expand_size)
     except QuadLayerError as error:
         error.context.setdefault("stage", "input_validation")
@@ -127,7 +133,7 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, ax
                 edge_provenance=[list(map(int, edges)) for edges in repair.provenance])
             try:
                 data = _prepare(working, repair.outline, element_size, pattern_lines,
-                                expand_ratio, axis_tolerance, expand_size=expand_size,
+                                expand_ratio, tolerance, expand_size=expand_size,
                                 _semantic_directions=repair.directions, _frame=original_data)
             except QuadLayerError as error:
                 error.context.setdefault("stage", "repair_outline")
@@ -135,7 +141,7 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, ax
             data["_original_data"] = original_data
             prepared_source = PreparedLayerSource(
                 working.nodes, working.elements, tuple(repair_diagnostics["prepared_outline"]),
-                len(mesh.nodes), len(mesh.elements))
+                len(mesh.nodes), len(mesh.elements), tolerance=data["tolerance"])
     data["_source_mesh"] = working
     data["_repair_diagnostics"] = repair_diagnostics
     data.update(fixed_outer_boundary=bool(fixed_outer_boundary),
@@ -159,8 +165,13 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, ax
             raise
     if fixed_outer_boundary:
         prepare_fixed_boundary(result, data)
-    result = replace(result, prepared_source=prepared_source,
-                     diagnostics={**result.diagnostics, **repair_diagnostics})
+    result = replace(result, prepared_source=prepared_source, tolerance=data["tolerance"],
+                     diagnostics={**result.diagnostics, **repair_diagnostics,
+                                  "geometry_tolerance": data["tolerance"].absolute,
+                                  "numerical_error_budget": {
+                                      "normalized_length": data["numeric_tol"],
+                                      "world_length": data["numeric_tol"] * data["scale"],
+                                      "normalization_scale": data["scale"]}})
     return data, result
 
 
@@ -169,7 +180,7 @@ def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, 
                        fixed_outer_boundary: bool = False,
                        expand_size: float | None = None,
                        expand_ratio: float = 1.0,
-                       axis_tolerance: float = 1e-3,
+                       tolerance: GeometryTolerance | float | None = None,
                        repair_slots: bool = True,
                        repair_max_element_size: float | None = None,
                        small_element_size: float | None = None,
@@ -205,7 +216,7 @@ def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, 
     Each optional endpoint maps independently, as in the construction API.
     """
     data, plan = _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio,
-                              axis_tolerance, expand_size=expand_size, repair_slots=repair_slots,
+                              tolerance, expand_size=expand_size, repair_slots=repair_slots,
                               repair_max_element_size=repair_max_element_size,
                               outline_o=outline_o, fixed_outer_boundary=fixed_outer_boundary,
                               small_element_size=small_element_size,
@@ -229,7 +240,7 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
                       fixed_outer_boundary: bool = False,
                       expand_size: float | None = None,
                       expand_ratio: float = 1.0,
-                      axis_tolerance: float = 1e-3,
+                      tolerance: GeometryTolerance | float | None = None,
                       max_added_elements: int = 1_000_000,
                       max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
                       min_size_ratio: float = 0.5,
@@ -252,6 +263,10 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     signed dominant X/Y direction into near-axis logical edges. It never
     moves source coordinates or omits intermediate nodes. ``result.outline``
     is a flat list of node IDs, reusable as the next call's ``outline_i``.
+    ``tolerance`` is a policy or positive absolute distance, defaulting to
+    1e-3. Every near-axis chain's total transverse drift must fit that distance;
+    the criterion does not grow with the chain length. Numerical area and
+    Jacobian checks retain their separate roundoff thresholds.
     ``pattern_lines`` contains finite XY segments of shape ``(n, 2, 2)``. Growth
     is to the left of each directed edge. ``expand_size=None`` uses
     ``element_size`` as the expansion baseline. A finite positive ``expand_size``
@@ -322,7 +337,7 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     Each resampled LINE outer segment may receive at most this many source
     segments; reverse refinement is unrestricted. ``min_size_ratio`` is finite
     and in (0, 1], default 0.5. LINE outer spacing lies between
-    ``min_size_ratio * element_size`` and ``element_size``, within tolerance.
+    ``min_size_ratio * element_size`` and ``element_size``, within numerical roundoff.
     Adjacent mandatory anchors closer than that minimum remain one unsplit
     segment and are recorded as an exception; the transition cap still applies.
     These constraints do not change layer thickness, source edges, corner
@@ -353,7 +368,7 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     return _generate_layer_adaptive_mesh(
         mesh, outline_i, element_size, pattern_lines=pattern_lines, outline_o=outline_o,
         fixed_outer_boundary=fixed_outer_boundary,
-        expand_size=expand_size, expand_ratio=expand_ratio, axis_tolerance=axis_tolerance,
+        expand_size=expand_size, expand_ratio=expand_ratio, tolerance=tolerance,
         max_added_elements=max_added_elements, repair_slots=repair_slots,
         repair_max_element_size=repair_max_element_size,
         max_transition_count=max_transition_count, min_size_ratio=min_size_ratio,
@@ -364,7 +379,7 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                                  pattern_lines=(), outline_o=None,
                                  expand_size: float | None = None,
                                  expand_ratio: float = 1.0,
-                                 axis_tolerance: float = 1e-3,
+                                 tolerance: GeometryTolerance | float | None = None,
                                  max_added_elements: int = 1_000_000,
                                  max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
                                  min_size_ratio: float = 0.5,
@@ -395,7 +410,7 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
               stage="input_validation", parameter="max_added_elements")
     max_added_elements = int(max_added_elements)
     data, plan = _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio,
-                              axis_tolerance, expand_size=expand_size, repair_slots=repair_slots,
+                              tolerance, expand_size=expand_size, repair_slots=repair_slots,
                               max_added_elements=max_added_elements,
                               repair_max_element_size=repair_max_element_size,
                               outline_o=outline_o, fixed_outer_boundary=fixed_outer_boundary,
@@ -470,4 +485,4 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
     mesh.replace_data(nodes=world_nodes, elements=elements)
     return QuadLayerResult(
         mesh=mesh, outline=[int(node) for chain in result_outline for node in chain[:-1]],
-        diagnostics=diagnostics)
+        diagnostics=diagnostics, tolerance=data["tolerance"])

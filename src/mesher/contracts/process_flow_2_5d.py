@@ -9,9 +9,12 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ..tolerance import GeometryTolerance, resolve_tolerance
+
 JsonObject = dict[str, Any]
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
+SUPPORTED_SCHEMA_VERSIONS = ("1.0.0", SCHEMA_VERSION)
 UNIT_SYSTEM = "um"
 MESHER = "process_flow_2_5d"
 REGION_MESHING_MODES = ("grid", "adapter")
@@ -51,10 +54,11 @@ def mesh_control_settings(mesh_control: JsonObject) -> tuple[float, str, int]:
             "symmetry",
             "controls",
         },
-        optional={"regionMeshing"},
+        optional={"regionMeshing", "geometryTolerance"},
     )
-    if mesh_control["schemaVersion"] != SCHEMA_VERSION:
-        raise ValueError(f"meshControl.schemaVersion must be {SCHEMA_VERSION!r}.")
+    if mesh_control["schemaVersion"] not in SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(f"meshControl.schemaVersion must be one of {SUPPORTED_SCHEMA_VERSIONS!r}.")
+    mesh_control_tolerance(mesh_control)
     if mesh_control["unitSystem"] != UNIT_SYSTEM:
         raise ValueError(f"meshControl.unitSystem must be {UNIT_SYSTEM!r}.")
     if mesh_control["mesher"] != MESHER:
@@ -80,6 +84,13 @@ def mesh_control_settings(mesh_control: JsonObject) -> tuple[float, str, int]:
     for index, control in enumerate(controls):
         _validate_mesh_control_entry(control, f"meshControl.controls[{index}]")
     return element_size, symmetry, len(controls)
+
+
+def mesh_control_tolerance(mesh_control: JsonObject) -> GeometryTolerance:
+    """Resolve the absolute length policy; legacy documents use 0.001 um."""
+    if "geometryTolerance" in mesh_control:
+        _positive_finite_number(mesh_control["geometryTolerance"], "meshControl.geometryTolerance")
+    return resolve_tolerance(mesh_control.get("geometryTolerance"))
 
 
 def _validate_mesh_control_entry(value: Any, path: str) -> None:

@@ -98,11 +98,11 @@ class CornerRepairTests(unittest.TestCase):
         for shear, threshold in ((0., 1.), (-.0005, .999)):
             mesh, outline = _step()
             mesh.nodes[:, 0] += shear * mesh.nodes[:, 1]
-            baseline = _mesher._prepare(mesh, outline, threshold, (), 1., 1e-3)
+            baseline = _mesher._prepare(mesh, outline, threshold, (), 1., .002)
             epsilon = baseline['tol'] * baseline['scale']
-            for delta, count in ((-1e-8, 0), (-epsilon / 2, 1), (0., 1), (1e-8, 1)):
+            for delta, count in ((-2 * epsilon, 0), (-epsilon / 2, 1), (0., 1), (1e-8, 1)):
                 with self.subTest(shear=shear, delta=delta):
-                    data = _mesher._prepare(mesh, outline, threshold + delta, (), 1., 1e-3)
+                    data = _mesher._prepare(mesh, outline, threshold + delta, (), 1., .002)
                     _mesher._expansion_distances(data)
                     self.assertEqual(len(_repair._find_corners(data)), count)
 
@@ -132,7 +132,7 @@ class CornerRepairTests(unittest.TestCase):
         mesh.nodes[:, 0] += .0005 * mesh.nodes[:, 1]
         # The left endpoint is (.0005, 1), and the upper endpoint is
         # (1.0015, 3). Their cardinal projection intersection is (.0005, 3).
-        result = self.run_corner(mesh, outline, 1.01)
+        result = self.run_corner(mesh, outline, 1.01, tolerance=.002)
         repair = result.diagnostics['corner_repairs'][0]
         mouth = mesh.nodes[repair['mouth_node_ids'], :2]
         self.assertTrue(np.any(np.all(np.isclose(mouth, [.0005, 3.], atol=1e-10), axis=1)))
@@ -187,7 +187,7 @@ class CornerRepairTests(unittest.TestCase):
                 mesh, outline = _step()
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] * scale + translation
                 preview = plan_quad_sections(mesh, outline, scale,
-                                             repair_max_element_size=.5 * scale)
+                                             repair_max_element_size=.5 * scale, tolerance=.001 * scale)
                 repair = preview.diagnostics['corner_repairs'][0]
                 self.assertAlmostEqual(repair['boundary_element_size'] / scale, .25)
                 self.assertAlmostEqual(repair['max_element_size'] / scale, .5)

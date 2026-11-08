@@ -13,12 +13,11 @@ def imprint_circle(
     *,
     center: ArrayLike,
     radius: float,
-    projection_tolerance: float,
-    guide_tolerance: float,
-    merge_tolerance: float,
+    projection_distance: float,
     minimum_area: float,
     guide_segments: ArrayLike | None = None,
     flat_quad_angle: float = 170.0,
+    tolerance=None,
 ) -> Mesh2D:
     """Project and split a mesh along a circular feature.
 
@@ -36,15 +35,10 @@ def imprint_circle(
         mesh: Mesh to update in place after every stage succeeds.
         center: Two finite coordinates for the circle center.
         radius: Strictly positive circle radius.
-        projection_tolerance: Non-negative radial projection and projected-node
-            merge distance. Also extends each finite guide endpoint by this
-            distance for radial path barriers only.
-        guide_tolerance: Non-negative absolute distance tolerance, in model
-            coordinate units, for deciding whether a node lies on a finite
-            guide segment. This is an on-segment membership tolerance, not a
-            radius for finding nearby nodes.
-        merge_tolerance: Non-negative node-equivalence and intersection
-            snapping distance.
+        projection_distance: Non-negative maximum node displacement during
+            circle projection. Also extends finite-guide radial path barriers.
+        tolerance: Shared absolute geometry policy. Defaults to 0.001 model
+            units; controls guide membership, node identity and intersections.
         minimum_area: Non-negative minimum retained element area.
         guide_segments: Optional finite horizontal or vertical guide segments
             with shape ``(L, 2, 2)``.
@@ -60,18 +54,16 @@ def imprint_circle(
         ValueError: If circle, tolerance, guide, or mesh data is invalid, or a
             generated element is unusable.
 
-    Warns:
-        RuntimeWarning: Cleanup discarded inverted or self-intersecting cells.
-            The message lists zero-based input element IDs and XY deletion
-            locations for manual inspection and repair of possible holes.
-            Ordinary degeneracy and area-cutoff removals are silent. Warnings
-            are emitted before commit, so treating a warning as an error leaves
-            the input mesh unchanged.
+    Note:
+        Cells cannot be discarded to make the imprint succeed. Unusable source
+        geometry, unresolved identity or a final area/quality conflict raises
+        a structured GeometryToleranceError before commit. Explicit cleanup is
+        available separately when deletion is intended.
     """
     return _run_local_imprint(
         mesh, center=center, radius=radius,
-        projection_tolerance=projection_tolerance, guide_tolerance=guide_tolerance,
-        merge_tolerance=merge_tolerance, minimum_area=minimum_area,
+        projection_distance=projection_distance, tolerance=tolerance,
+        minimum_area=minimum_area,
         guide_segments=guide_segments,
         flat_quad_angle=flat_quad_angle,
     )

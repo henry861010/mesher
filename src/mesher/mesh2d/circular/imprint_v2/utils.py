@@ -16,11 +16,9 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from ...model import Mesh2D, _validate_zero_z
+from ....tolerance import GeometryToleranceError, resolve_tolerance, within_distance, circle_membership
 from ...utils.equivalence import (
-    _coordinate_bin,
-    _equivalent_node_mapping,
-    _node_groups_touch,
-    _union_close_node_groups,
+    _bounded_equivalent_node_mapping,
 )
 from ..utils.geometry import _segments_intersect_xy
 from ..utils.pattern_segments import _PatternGuideSet, _coerce_pattern_guides
@@ -164,14 +162,9 @@ def _prepare_guide_circle_roots(
             pattern_guides.fixed_values - fixed_centers
         )
 
-    fixed_tolerances = np.maximum(
-        pattern_guides.fixed_tolerances,
-        numerical_tolerance,
-    )
-    line_intersects = (
-        np.isfinite(fixed_distances)
-        & (fixed_distances <= radius + fixed_tolerances)
-    )
+    nearest_points = np.broadcast_to(center, (guide_count, 2)).copy()
+    nearest_points[np.arange(guide_count), pattern_guides.fixed_axes] = pattern_guides.fixed_values
+    line_intersects = circle_membership(nearest_points, center, radius, pattern_guides.policy)
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         normalized_distances = np.minimum(fixed_distances / radius, 1.0)
         root_offsets = radius * np.sqrt(
@@ -184,6 +177,7 @@ def _prepare_guide_circle_roots(
         root_values[:, 0] = varying_centers - root_offsets
         root_values[:, 1] = varying_centers + root_offsets
 
+    fixed_tolerances = pattern_guides.fixed_tolerances
     bound_tolerances = np.maximum(
         pattern_guides.bound_tolerances,
         numerical_tolerance,
@@ -214,7 +208,7 @@ def _prepare_guide_circle_roots(
 
 
 def _iter_guide_matches(
-    candidate_xy, pattern_guides, guide_positions, effective_guide_tolerances,
+    candidate_xy, pattern_guides, guide_positions, effective_tolerances,
 ):
     """Yield exact sparse node/guide hits in bounded batches."""
     if candidate_xy.shape[0] == 0 or guide_positions.size == 0:
@@ -230,7 +224,7 @@ def _iter_guide_matches(
     ]
     sorted_fixed_values = pattern_guides.fixed_values[order]
     maximum_lookup_tolerance = float(
-        np.max(effective_guide_tolerances[order])
+        np.max(effective_tolerances[order])
     )
 
     candidate_fixed_values = candidate_xy[:, fixed_axis]
@@ -315,7 +309,7 @@ def _iter_guide_matches(
         )
         guide_hits = (
             point_segment_distances
-            <= effective_guide_tolerances[paired_guides]
+            <= effective_tolerances[paired_guides]
         )
         if not np.any(guide_hits):
             node_start = node_end
@@ -332,7 +326,7 @@ def _accumulate_guide_constraints(
     candidate_xy: NDArray[np.float64],
     pattern_guides: _PatternGuideSet,
     guide_positions: NDArray[np.intp],
-    effective_guide_tolerances: NDArray[np.float64],
+    effective_tolerances: NDArray[np.float64],
     root_values: NDArray[np.float64],
     valid_roots: NDArray[np.bool_],
     root_choice_tolerances: NDArray[np.float64],
@@ -357,7 +351,7 @@ def _accumulate_guide_constraints(
         pattern_guides: Prepared metadata for all ``L`` pattern segments.
         guide_positions: Positions of guides that share one fixed axis.  The
             array has shape ``(G,)`` and may be unsorted.
-        effective_guide_tolerances: Per-guide on-segment membership tolerances with
+        effective_tolerances: Per-guide on-segment membership tolerances with
             shape ``(L,)``.  Each value is the larger of the caller's guide
             tolerance and the guide's numerical tolerance.
         root_values: Precomputed varying-axis circle roots with shape
@@ -390,7 +384,7 @@ def _accumulate_guide_constraints(
         ``_to_circle`` after both orientations have been accumulated.
     """
     for hit_nodes, hit_guides in _iter_guide_matches(
-        candidate_xy, pattern_guides, guide_positions, effective_guide_tolerances,
+        candidate_xy, pattern_guides, guide_positions, effective_tolerances,
     ):
         constrained[hit_nodes] = True
         fixed_axis = int(pattern_guides.fixed_axes[guide_positions[0]])
@@ -479,114 +473,37 @@ def _merge_close_circle_targets(
     tolerance: float,
     numerical_tolerance: float,
 ) -> NDArray[np.float64]:
-    """Merge nearby projected targets in one clockwise circular sweep.
+    """Merge bounded Euclidean target groups, preserving a unique guide anchor.
 
-    Targets are ordered clockwise from the positive X axis.  Each free target
-    closer than ``tolerance`` to the current group representative receives the
-    representative's XY coordinate.  A guided target promotes itself to the
-    representative of a free group so guide/circle intersections remain
-    fixed.  Two distinct guided representatives form a group boundary even
-    when they are closer than ``tolerance``.
-
-    The first and last groups are compared after the linear pass so targets
-    straddling the positive-X seam receive the same treatment.  Only the
-    returned coordinate array changes; node identities and connectivity are
-    deliberately outside this helper's scope.
+    Every connected group must have diameter at most ``tolerance``. These
+    guide targets are derived circle roots, not independently supplied fixed
+    mesh anchors: roots that differ only by numerical error share a stable
+    lexicographic representative. Incompatible guided roots report a conflict.
+    Node IDs and connectivity are unchanged.
     """
-    target_count = target_xy.shape[0]
-    if target_count < 2 or tolerance <= 0.0:
+    if len(target_xy) < 2:
         return target_xy.copy()
-
-    offsets = target_xy - center
-    clockwise_angles = np.mod(
-        -np.arctan2(offsets[:, 1], offsets[:, 0]),
-        2.0 * np.pi,
+    representatives = _bounded_equivalent_node_mapping(
+        target_xy, np.arange(len(target_xy)), tolerance,
     )
-    order = np.argsort(clockwise_angles, kind="stable")
-
-    # Each tuple describes a contiguous slice of ``order`` and the target
-    # within that slice whose coordinate is the group's representative.
-    groups: list[tuple[int, int, int, bool]] = []
-    group_start = 0
-    representative = int(order[0])
-    representative_is_guided = bool(guided[representative])
-
-    for ordered_position in range(1, target_count):
-        candidate = int(order[ordered_position])
-        difference = target_xy[candidate] - target_xy[representative]
-        distance = float(np.hypot(difference[0], difference[1]))
-        candidate_is_guided = bool(guided[candidate])
-        distinct_guides = (
-            representative_is_guided
-            and candidate_is_guided
-            and distance > numerical_tolerance
-        )
-        if distance >= tolerance or distinct_guides:
-            groups.append(
-                (
-                    group_start,
-                    ordered_position,
-                    representative,
-                    representative_is_guided,
+    merged = target_xy.copy()
+    for representative in np.unique(representatives):
+        members = np.flatnonzero(representatives == representative)
+        anchors = members[guided[members]]
+        if len(anchors):
+            coordinates = target_xy[anchors]
+            if np.any(np.hypot(*(coordinates - coordinates[0]).T) > numerical_tolerance):
+                raise GeometryToleranceError(
+                    "distinct circle guide anchors cannot share one node identity",
+                    code="fixed_constraint_conflict", stage="circle projection",
+                    anchors=coordinates.tolist(), node_indices=anchors.tolist(),
+                    anchor_distance=float(np.max(np.hypot(*(coordinates - coordinates[0]).T))),
+                    tolerance=tolerance,
                 )
-            )
-            group_start = ordered_position
-            representative = candidate
-            representative_is_guided = candidate_is_guided
-            continue
-
-        if candidate_is_guided and not representative_is_guided:
-            representative = candidate
-            representative_is_guided = True
-
-    groups.append(
-        (
-            group_start,
-            target_count,
-            representative,
-            representative_is_guided,
-        )
-    )
-
-    # Reconcile the circular seam.  The first group is earlier in the sweep,
-    # except that a guide representative always takes precedence over a free
-    # representative on either side of the seam.
-    if len(groups) > 1:
-        first_start, first_end, first_rep, first_guided = groups[0]
-        last_start, last_end, last_rep, last_guided = groups[-1]
-        seam_difference = target_xy[last_rep] - target_xy[first_rep]
-        seam_distance = float(
-            np.hypot(seam_difference[0], seam_difference[1])
-        )
-        distinct_guides = (
-            first_guided
-            and last_guided
-            and seam_distance > numerical_tolerance
-        )
-        if seam_distance < tolerance and not distinct_guides:
-            if last_guided and not first_guided:
-                first_rep = last_rep
-                first_guided = True
-            else:
-                last_rep = first_rep
-                last_guided = first_guided
-            groups[0] = (
-                first_start,
-                first_end,
-                first_rep,
-                first_guided,
-            )
-            groups[-1] = (
-                last_start,
-                last_end,
-                last_rep,
-                last_guided,
-            )
-
-    merged_xy = target_xy.copy()
-    for start, end, group_representative, _ in groups:
-        merged_xy[order[start:end]] = target_xy[group_representative]
-    return merged_xy
+            anchor_order = np.lexsort((anchors, coordinates[:, 1], coordinates[:, 0]))
+            representative = int(anchors[anchor_order[0]])
+        merged[members] = target_xy[representative]
+    return merged
 
 
 def _counter_clockwise_elements(
@@ -650,6 +567,49 @@ def _counter_clockwise_elements(
     ]
     normalized[clockwise_quads] = elements[clockwise_quads][:, [0, 3, 2, 1]]
     return normalized
+
+
+def _preserve_projection_geometry(original, proposed, elements, tolerance):
+    """Withdraw projection moves that would invalidate an originally valid cell.
+
+    Projection is optional before intersection splitting. A failed local move
+    therefore leaves its source nodes in place; it must never be repaired by
+    deleting a folded cell. Reconsider neighbours after withdrawing a move.
+    """
+    if not len(elements):
+        return proposed
+    counts = np.where(elements[:, 2] == elements[:, 3], 3, 4)
+    slots = np.arange(4)[None, :]
+    valid_slots = slots < counts[:, None]
+    next_slots = (slots + 1) % counts[:, None]
+    previous_slots = (slots - 1) % counts[:, None]
+
+    def turns(nodes):
+        points = nodes[elements, :2]
+        following = np.take_along_axis(points, next_slots[..., None], axis=1) - points
+        previous = np.take_along_axis(points, previous_slots[..., None], axis=1) - points
+        cross = following[..., 0] * previous[..., 1] - following[..., 1] * previous[..., 0]
+        scale = np.maximum(np.hypot(following[..., 0], following[..., 1]),
+                           np.hypot(previous[..., 0], previous[..., 1]))
+        return cross, tolerance * np.max(np.where(valid_slots, scale, 0.), axis=1)[:, None]
+
+    original_turns, original_threshold = turns(original)
+    signs = np.sign(original_turns[:, 0])
+    originally_valid = np.all(~valid_slots | (original_turns * signs[:, None] > original_threshold), axis=1)
+    result = proposed.copy()
+    while True:
+        current_turns, threshold = turns(result)
+        invalid = originally_valid & ~np.all(
+            ~valid_slots | (current_turns * signs[:, None] > threshold), axis=1,
+        )
+        if not np.any(invalid):
+            return result
+        restore = np.unique(elements[invalid])
+        changed = np.any(result[restore, :2] != original[restore, :2], axis=1)
+        restore = restore[changed]
+        if not len(restore):
+            return result
+        result[restore] = original[restore]
 
 
 def _commit_circle_update(
@@ -850,10 +810,7 @@ def _blocked_guide_paths(
     target_scales[has_target] = np.maximum(
         target_scales[has_target], np.max(np.abs(reference[has_target]), axis=1),
     )
-    agreement = np.maximum(
-        2.0 * numerical_tolerance,
-        256 * np.finfo(np.float64).eps * target_scales,
-    )
+    agreement = np.full(count, float(np.max(tolerances)))
     spread = np.full(count, np.inf)
     spread[has_target] = np.hypot(*(maximums[has_target] - minimums[has_target]).T)
     stationary = np.zeros(count, dtype=np.bool_)
@@ -890,7 +847,7 @@ def _blocked_guide_paths(
 
 def _to_circle(
     mesh: Mesh2D, center: ArrayLike, radius: float,
-    projection_tolerance: float, guide_tolerance: float, guide_segments,
+    projection_distance: float, tolerance: float, guide_segments,
     indices: ArrayLike | None = None,
 ) -> Mesh2D:
     """Project circle-band nodes with radial and fixed-junction guide barriers.
@@ -899,7 +856,7 @@ def _to_circle(
     All orientable element rows are normalized counter-clockwise.
     """
     return _project_circle(
-        mesh, center, radius, projection_tolerance, guide_tolerance,
+        mesh, center, radius, projection_distance, tolerance,
         guide_segments, indices,
     )
 
@@ -908,34 +865,34 @@ def _project_circle(
     mesh: Mesh2D,
     center: ArrayLike,
     radius: float,
-    projection_tolerance: float,
-    guide_tolerance: float,
+    projection_distance: float,
+    tolerance: float,
     guide_segments,
     indices: ArrayLike | None = None,
     *, constraint_nodes: NDArray[np.float64] | None = None,
 ) -> Mesh2D:
     """Move nodes near a circle onto its boundary, honoring pattern guides.
 
-    ``projection_tolerance`` selects nodes by radial distance from the circle,
-    while ``guide_tolerance`` is an absolute distance tolerance for deciding
+    ``projection_distance`` selects nodes by radial distance from the circle,
+    while ``tolerance`` is an absolute distance tolerance for deciding
     whether a candidate lies on a finite pattern segment. It is an on-segment
     membership tolerance, not a radius for finding nearby nodes.
     Unconstrained nodes move radially unless the open path to their radial
-    circle target intersects a guide extended by ``projection_tolerance`` at
+    circle target intersects a guide extended by ``projection_distance`` at
     each end. This extension is used only for the radial path check; guide
     membership and constrained targets still use the original finite segments.
     Intersection membership on the extended guide uses
-    ``guide_tolerance``; numerical tolerance excludes the path endpoints, so
+    ``tolerance``; numerical tolerance excludes the path endpoints, so
     reaching a guide at the target is allowed. Blocked nodes retain their
     coordinates and do not participate in target merging. A
     constrained node moves to the nearest finite-segment/circle intersection
     only when every segment touching it agrees on the same target; otherwise
     that node is left alone. Paths crossing stationary two-axis guide nodes
-    are rejected before target merging. After projection, movable targets are swept
-    clockwise from the positive X axis. A target strictly closer than
-    ``projection_tolerance`` to the current representative receives the same
-    XY coordinate.  Guide targets remain fixed and take precedence over nearby
-    unconstrained targets. The merged paths are not rechecked for crossings.
+    are rejected before target merging. Movable targets form bounded Euclidean
+    groups with diameter at most ``tolerance``. Guide targets take precedence
+    over free targets; different fixed anchors raise a constraint conflict.
+    Every final displacement is at most ``projection_distance``. Moves that
+    would invalidate an originally valid adjacent cell are withdrawn.
 
     When ``indices`` is provided it contains element-row indices, and only
     nodes referenced by those elements are considered for projection.  ``None``
@@ -949,12 +906,10 @@ def _project_circle(
         mesh: Mesh whose existing nodes may be moved in the XY plane.
         center: Two finite coordinates for the circle center.
         radius: Strictly positive circle radius.
-        projection_tolerance: Non-negative radial distance from the circle to
-            process, merge distance between projected circle targets, and
-            extension at each guide endpoint for radial path barriers.
-        guide_tolerance: Non-negative absolute Euclidean point-to-segment
-            tolerance, in model coordinate units, for on-segment membership,
-            not for finding nodes in the segment's neighborhood.
+        projection_distance: Non-negative maximum displacement and radial
+            candidate distance, also used to extend guide path barriers.
+        tolerance: Positive absolute geometric distance policy for node
+            identity, guide membership, and element degeneracy.
         guide_segments: Finite horizontal or vertical pattern segments with
             shape ``(L, 2, 2)``, a prepared guide set, or ``None``.
         indices: Optional unique one-dimensional element-row indices.
@@ -981,18 +936,15 @@ def _project_circle(
            constraints leave that node unchanged. A radial path intersecting a
            extended finite guide, or a guided path crossing a stationary two-axis
            junction, also leaves the node unchanged and out of target merging.
-        5. Merge nearby movable targets in a clockwise circular sweep while
-           preserving guide anchors.
-        6. Validate every proposed target.
+        5. Merge bounded target groups while preserving guide anchors.
+        6. Validate displacement and withdraw moves that invalidate adjacent cells.
         7. Normalize all orientable element rows counter-clockwise and commit
            the proposed nodes and connectivity together.
 
         Nodes exactly at the circle center cannot be projected radially and
         remain unchanged.  Per-node guide conflicts are normal outcomes, not
-        exceptions.  The merge can create zero-length element edges.  Elements
-        with zero or indeterminate signed area are retained without reordering;
-        no element-quality, topology, deletion, or deduplication pass is
-        performed.
+        exceptions. Originally invalid cells remain available for the caller's
+        explicit repair or validation stage; this helper never deletes cells.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -1000,13 +952,10 @@ def _project_circle(
 
     center, circle_radius = _normalize_circle(center, radius)
     radial_tolerance = _normalize_nonnegative(
-        projection_tolerance,
-        "projection_tolerance",
+        projection_distance,
+        "projection_distance",
     )
-    guide_tolerance = _normalize_nonnegative(
-        guide_tolerance,
-        "guide_tolerance",
-    )
+    tolerance = resolve_tolerance(tolerance).absolute
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -1036,18 +985,22 @@ def _project_circle(
     ):
         raise ValueError("elements contain an out-of-range node index")
 
-    coordinate_scale = max(
-        1.0,
-        float(np.max(np.abs(center))),
-        circle_radius,
+    resolve_tolerance(tolerance).check_resolution(
+        np.asarray([center - circle_radius, center + circle_radius]), stage="circle projection",
     )
-    numerical_tolerance = (
-        128.0 * np.finfo(np.float64).eps * coordinate_scale
+    coordinate_scale = max(
+        1.0, float(np.max(np.abs(center))), circle_radius,
+    )
+    # Derived circle roots may differ by roundoff; this does not make supplied
+    # fixed coordinates interchangeable. Numeric root slack never exceeds the
+    # geometry policy, and identity/movement use separate bounded predicates.
+    numerical_tolerance = min(
+        tolerance, 128.0 * np.finfo(np.float64).eps * coordinate_scale,
     )
     pattern_guides = _coerce_pattern_guides(
         guide_segments,
         coordinate_scale=coordinate_scale,
-        minimum_tolerance=numerical_tolerance,
+        tolerance=tolerance,
     )
 
     if indices is None:
@@ -1107,18 +1060,8 @@ def _project_circle(
             circle_radius,
             numerical_tolerance,
         )
-        guide_numerical_tolerances = np.maximum.reduce(
-            (
-                pattern_guides.fixed_tolerances,
-                pattern_guides.bound_tolerances,
-                np.full(len(pattern_guides), numerical_tolerance),
-            )
-        )
-        effective_guide_tolerances = np.maximum(
-            guide_tolerance,
-            guide_numerical_tolerances,
-        )
-        root_choice_tolerances = guide_numerical_tolerances
+        effective_tolerances = np.full(len(pattern_guides), tolerance)
+        root_choice_tolerances = np.full(len(pattern_guides), numerical_tolerance)
 
         for fixed_axis in (0, 1):
             orientation_guides = np.flatnonzero(
@@ -1128,7 +1071,7 @@ def _project_circle(
                 candidate_xy,
                 pattern_guides,
                 orientation_guides,
-                effective_guide_tolerances,
+                effective_tolerances,
                 root_values,
                 valid_roots,
                 root_choice_tolerances,
@@ -1147,19 +1090,7 @@ def _project_circle(
         target_maximums[has_constraint_target, 1]
         - target_minimums[has_constraint_target, 1],
     )
-    target_scales = np.full(candidate_count, coordinate_scale)
-    if np.any(has_constraint_target):
-        target_scales[has_constraint_target] = np.maximum(
-            target_scales[has_constraint_target],
-            np.max(
-                np.abs(reference_targets[has_constraint_target]),
-                axis=1,
-            ),
-        )
-    agreement_tolerances = (
-        256.0 * np.finfo(np.float64).eps * target_scales
-    )
-    conflicting = target_spreads > agreement_tolerances
+    conflicting = target_spreads > tolerance
     guided_movable = (
         constrained
         & ~blocked
@@ -1185,7 +1116,7 @@ def _project_circle(
     if len(pattern_guides) and np.any(radial_movable):
         path_blocked = _blocked_radial_paths(
             candidate_xy, target_xy, radial_movable, pattern_guides,
-            effective_guide_tolerances, numerical_tolerance,
+            effective_tolerances, numerical_tolerance,
             extension_length=radial_tolerance,
         )
         radial_movable[path_blocked] = False
@@ -1195,7 +1126,7 @@ def _project_circle(
     if np.any(guided_movable):
         path_blocked = _blocked_guide_paths(
             candidate_xy, target_xy, guided_movable, pattern_guides,
-            effective_guide_tolerances, root_values, valid_roots,
+            effective_tolerances, root_values, valid_roots,
             root_choice_tolerances, numerical_tolerance,
             float_nodes if constraint_nodes is None else constraint_nodes,
         )
@@ -1203,50 +1134,63 @@ def _project_circle(
         movable[path_blocked] = False
         target_xy[path_blocked] = candidate_xy[path_blocked]
 
-    movable_positions = np.flatnonzero(movable)
-    target_xy[movable_positions] = _merge_close_circle_targets(
-        target_xy[movable_positions],
-        guided_movable[movable_positions],
-        center,
-        radial_tolerance,
-        numerical_tolerance,
+    too_far = (
+        ~within_distance(target_xy, candidate_xy, radial_tolerance)
+        if radial_tolerance > 0.0
+        else np.any(target_xy != candidate_xy, axis=1)
     )
+    movable[too_far] = False
+    guided_movable[too_far] = False
+    target_xy[too_far] = candidate_xy[too_far]
+    movable_positions = np.flatnonzero(movable)
+    try:
+        target_xy[movable_positions] = _merge_close_circle_targets(
+            target_xy[movable_positions],
+            guided_movable[movable_positions],
+            center,
+            tolerance,
+            numerical_tolerance,
+        )
+    except GeometryToleranceError as error:
+        context = dict(error.context)
+        if "node_indices" in context:
+            context["node_indices"] = candidate_node_indices[movable_positions][context["node_indices"]].tolist()
+        context["source"] = "projected circle targets"
+        raise GeometryToleranceError(error.message, code=error.code, **context) from error
 
+    too_far = (
+        ~within_distance(target_xy, candidate_xy, radial_tolerance)
+        if radial_tolerance > 0.0
+        else np.any(target_xy != candidate_xy, axis=1)
+    )
+    movable[too_far] = False
+    target_xy[too_far] = candidate_xy[too_far]
     if not np.all(np.isfinite(target_xy[movable])):
         raise ValueError("projected circle coordinates exceed float64 range")
-    projected_offsets = target_xy[movable] - center
-    projected_distances = np.hypot(
-        projected_offsets[:, 0],
-        projected_offsets[:, 1],
-    )
-    validation_tolerance = max(
-        4.0 * numerical_tolerance,
-        circle_radius * 1.0e-12,
-    )
-    if np.any(
-        np.abs(projected_distances - circle_radius)
-        > validation_tolerance
-    ):
+    if not np.all(circle_membership(
+        target_xy[movable], center, circle_radius, tolerance, boundary=True,
+    )):
         raise ValueError("a projected node is not on the target circle")
 
     proposed_nodes = float_nodes.copy()
     proposed_nodes[candidate_node_indices[movable], :2] = target_xy[movable]
+    proposed_nodes = _preserve_projection_geometry(float_nodes, proposed_nodes, elements, tolerance)
     return _commit_circle_update(mesh, proposed_nodes, elements)
 
 
 def _imprint_circle(
-    mesh: Mesh2D, center: ArrayLike, radius: float, merge_tolerance: float,
+    mesh: Mesh2D, center: ArrayLike, radius: float, tolerance: float,
     indices: ArrayLike | None = None,
 ) -> Mesh2D:
     """Split selected simple Tri3/convex Quad4 cells along a circle atomically."""
-    return _split_circle(mesh, center, radius, merge_tolerance, indices)[0]
+    return _split_circle(mesh, center, radius, tolerance, indices)[0]
 
 
 def _split_circle(
     mesh: Mesh2D,
     center: ArrayLike,
     radius: float,
-    merge_tolerance: float,
+    tolerance: float,
     indices: ArrayLike | None = None,
 ) -> tuple[Mesh2D, NDArray[np.int64], NDArray[np.int64]]:
     """Split selected elements where a circle properly crosses two edges.
@@ -1257,7 +1201,7 @@ def _split_circle(
     crossed edges).  Tangencies, same-edge double intersections, and elements
     with any other number of proper crossings are left unchanged.
 
-    ``merge_tolerance`` is a geometric merge distance.  An intersection within
+    ``tolerance`` is a geometric merge distance.  An intersection within
     that distance of an edge endpoint reuses the endpoint after projecting its
     XY coordinate radially onto the circle.  Intersections within that distance
     of one another are treated as a single contact.  Newly inserted nodes on a
@@ -1275,7 +1219,7 @@ def _split_circle(
         mesh: Mesh to update in place.
         center: Two finite coordinates for the circle center.
         radius: Strictly positive circle radius.
-        merge_tolerance: Non-negative endpoint/intersection merge distance.
+        tolerance: Non-negative endpoint/intersection merge distance.
         indices: Optional unique one-dimensional element-row selection.
 
     Returns:
@@ -1292,10 +1236,7 @@ def _split_circle(
     _validate_zero_z(mesh.nodes)
 
     center, circle_radius = _normalize_circle(center, radius)
-    merge_tolerance = _normalize_nonnegative(
-        merge_tolerance,
-        "merge_tolerance",
-    )
+    tolerance = resolve_tolerance(tolerance).absolute
 
     nodes = np.asarray(mesh.nodes)
     elements = np.asarray(mesh.elements)
@@ -1372,11 +1313,7 @@ def _split_circle(
     element_scales = np.max(
         np.where(valid_edges, edge_lengths, 0.0), axis=1
     )
-    geometry_tolerances = (
-        2048.0
-        * np.finfo(np.float64).eps
-        * np.maximum(element_scales, 1.0) ** 2
-    )
+    geometry_tolerances = tolerance * element_scales
     triangle_cross = corner_cross[:, 0]
     triangle_geometry_valid = np.abs(triangle_cross) > geometry_tolerances
     quad_positive = np.all(
@@ -1388,8 +1325,13 @@ def _split_circle(
     if np.any(is_triangle & ~triangle_geometry_valid) or np.any(
         ~is_triangle & ~(quad_positive | quad_negative)
     ):
-        raise ValueError(
-            "selected elements must be non-degenerate Tri3 or convex Quad4"
+        invalid = (is_triangle & ~triangle_geometry_valid) | (~is_triangle & ~(quad_positive | quad_negative))
+        raise GeometryToleranceError(
+            "selected elements must be non-degenerate Tri3 or convex Quad4",
+            code="ambiguous_geometry", stage="circle split precondition",
+            element_indices=element_indices[invalid].tolist(), tolerance=tolerance,
+            corner_crosses=corner_cross[invalid].tolist(),
+            area_thresholds=geometry_tolerances[invalid].tolist(),
         )
 
     coordinate_scale = max(
@@ -1401,10 +1343,7 @@ def _split_circle(
         8.0 * coordinate_ulp,
         256.0 * np.finfo(np.float64).eps * circle_radius,
     )
-    effective_merge_tolerance = max(
-        merge_tolerance,
-        numerical_tolerance,
-    )
+    effective_tolerance = tolerance
 
     element_minimum = np.min(selected_xy, axis=1)
     element_maximum = np.max(selected_xy, axis=1)
@@ -1555,13 +1494,13 @@ def _split_circle(
     )
     start_snap = (
         valid_roots
-        & (start_distances <= effective_merge_tolerance)
+        & (start_distances <= effective_tolerance)
         & (start_distances <= end_distances)
     )
     end_snap = (
         valid_roots
         & ~start_snap
-        & (end_distances <= effective_merge_tolerance)
+        & (end_distances <= effective_tolerance)
     )
     snap_vertex_positions = np.full(valid_roots.shape, -1, dtype=np.int64)
     snap_vertex_positions[start_snap] = root_edge_positions[start_snap]
@@ -1697,9 +1636,9 @@ def _split_circle(
 
     tolerance_ratio = min(
         1.0,
-        0.5 * (effective_merge_tolerance / circle_radius),
+        0.5 * (effective_tolerance / circle_radius),
     )
-    angular_merge_tolerance = 2.0 * np.arcsin(tolerance_ratio)
+    angular_tolerance = 2.0 * np.arcsin(tolerance_ratio)
     circular_gaps = np.full(
         (candidate_count, 8), -np.inf, dtype=np.float64
     )
@@ -1770,7 +1709,7 @@ def _split_circle(
     np.mod(rotated_gaps, 2.0 * np.pi, out=rotated_gaps)
     group_starts[:, 1:] = (
         rotated_valid[:, 1:]
-        & (rotated_gaps > angular_merge_tolerance)
+        & (rotated_gaps > angular_tolerance)
     )
     group_ids = np.cumsum(group_starts, axis=1, dtype=np.int64) - 1
     unique_counts = np.count_nonzero(group_starts, axis=1).astype(np.int64)
@@ -2331,7 +2270,7 @@ def _split_circle(
 
 def _remove_redundant_element(
     mesh: Mesh2D,
-    merge_tolerance: float,
+    tolerance: float,
     minimum_area: float,
 ) -> Mesh2D:
     """Remove unusable elements and equivalence coincident mesh nodes.
@@ -2351,7 +2290,7 @@ def _remove_redundant_element(
 
     Args:
         mesh: Mesh to clean in place.
-        merge_tolerance: Non-negative XY node-equivalence distance.
+        tolerance: Non-negative XY node-equivalence distance.
         minimum_area: Non-negative area cutoff for retained and repaired
             elements.
 
@@ -2367,10 +2306,7 @@ def _remove_redundant_element(
         raise TypeError("mesh must be a Mesh2D instance")
     _validate_zero_z(mesh.nodes)
 
-    merge_tolerance = _normalize_nonnegative(
-        merge_tolerance,
-        "merge_tolerance",
-    )
+    tolerance = resolve_tolerance(tolerance).absolute
     minimum_area = _normalize_nonnegative(minimum_area, "minimum_area")
 
     nodes = np.asarray(mesh.nodes)
@@ -2399,7 +2335,7 @@ def _remove_redundant_element(
 
     discarded = []
     proposed_nodes, proposed_elements, _, _, _ = _cleanup_data(
-        working_nodes, working_elements, merge_tolerance, minimum_area,
+        working_nodes, working_elements, tolerance, minimum_area,
         discarded=discarded,
     )
 
@@ -2497,7 +2433,7 @@ def _warn_invalid_removals(discarded, *, element_rows=None, stacklevel):
 
 
 def _cleanup_data(
-    working_nodes, working_elements, merge_tolerance, minimum_area, *, discarded=None,
+    working_nodes, working_elements, tolerance, minimum_area, *, discarded=None,
 ):
     """Return clean arrays and provenance; optionally collect abnormal removals."""
     old_to_representative = np.arange(len(working_nodes), dtype=np.int64)
@@ -2519,10 +2455,10 @@ def _cleanup_data(
             candidate_elements[:, 2] == candidate_elements[:, 3]
         )
         referenced_nodes = np.unique(candidate_elements)
-        old_to_representative = _equivalent_node_mapping(
+        old_to_representative = _bounded_equivalent_node_mapping(
             working_nodes,
             referenced_nodes,
-            merge_tolerance,
+            tolerance,
         )
         remapped_elements = old_to_representative[candidate_elements]
         proposed_elements, repair_sources = _repair_elements_data(
@@ -2530,6 +2466,7 @@ def _cleanup_data(
             remapped_elements,
             candidate_is_triangle,
             minimum_area,
+            tolerance,
         )
         candidate_sources = np.flatnonzero(retained)
         source_rows = candidate_sources[repair_sources]
@@ -2643,6 +2580,7 @@ def _signed_xy_area(
 def _is_strictly_convex_quad(
     nodes: NDArray[np.float64],
     node_indices: list[int],
+    tolerance=None,
 ) -> bool:
     """Return whether a counter-clockwise Quad4 has four convex corners."""
     points = nodes[np.asarray(node_indices, dtype=np.int64), :2]
@@ -2653,7 +2591,9 @@ def _is_strictly_convex_quad(
             following[:, 0] * preceding[:, 1]
             - following[:, 1] * preceding[:, 0]
         )
-    return bool(np.all(np.isfinite(corner_cross)) and np.all(corner_cross > 0.0))
+    scale = float(np.max(np.hypot(*following.T)))
+    threshold = resolve_tolerance(tolerance).absolute * scale
+    return bool(np.all(np.isfinite(corner_cross)) and np.all(corner_cross > threshold))
 
 
 def _repair_elements(nodes, elements, is_triangle, area_tolerance):
@@ -2666,6 +2606,7 @@ def _repair_elements_data(
     elements: NDArray[np.int64],
     is_triangle: NDArray[np.bool_],
     area_tolerance: float,
+    tolerance=None,
 ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
     """Repair collapsed or concave rows and discard unusable geometry."""
     repaired: list[list[int]] = []
@@ -2693,7 +2634,7 @@ def _repair_elements_data(
             repaired.append([compact[0], compact[1], compact[2], compact[2]])
             continue
 
-        if _is_strictly_convex_quad(nodes, compact):
+        if _is_strictly_convex_quad(nodes, compact, tolerance):
             sources.append(source)
             repaired.append(compact)
             continue
@@ -2705,9 +2646,14 @@ def _repair_elements_data(
         for first_positions, second_positions in diagonals:
             first = [compact[position] for position in first_positions]
             second = [compact[position] for position in second_positions]
+            def minimum_triangle_area(ids):
+                points = nodes[np.asarray(ids), :2]
+                edges = np.roll(points, -1, axis=0) - points
+                return max(area_tolerance, 0.5 * resolve_tolerance(tolerance).absolute
+                           * float(np.max(np.hypot(*edges.T))))
             if (
-                _signed_xy_area(nodes, first) > area_tolerance
-                and _signed_xy_area(nodes, second) > area_tolerance
+                _signed_xy_area(nodes, first) > minimum_triangle_area(first)
+                and _signed_xy_area(nodes, second) > minimum_triangle_area(second)
             ):
                 sources.append(source)
                 repaired.append([first[0], first[1], first[2], first[2]])

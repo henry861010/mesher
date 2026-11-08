@@ -2,13 +2,45 @@ import unittest
 
 import numpy as np
 
-from mesher import Mesh2D
+from mesher import GeometryToleranceError, Mesh2D
 from mesher.mesh2d import EditorMesh2D
 
 from ._fixtures import empty_mesh, two_quads
 
 
 class EditorMesh2DTests(unittest.TestCase):
+    def test_equivalence_rejects_new_concave_or_flat_quad_atomically(self):
+        for target in ([.4999, .0004], [.4999, 0]):
+            for offset in (0.0, 1e8):
+                nodes = np.asarray([[0, 0], [.5, -.0004], [1, 0], [0, 1],
+                                    target, [2, 2], [1, 2]]) + offset
+                mesh = Mesh2D(nodes, [[0, 1, 2, 3], [4, 5, 6, 6]])
+                before = mesh.nodes.copy(), mesh.elements.copy()
+                with self.subTest(target=target, offset=offset), self.assertRaises(GeometryToleranceError) as caught:
+                    EditorMesh2D.equivalence(mesh)
+                self.assertEqual(caught.exception.code, "topology_conflict")
+                np.testing.assert_array_equal(mesh.nodes, before[0])
+                np.testing.assert_array_equal(mesh.elements, before[1])
+
+    def test_equivalence_rejects_new_winding_flip_or_crossing_atomically(self):
+        for first in ([[0, 0], [1, 0], [.5, .0004]],
+                      [[0, 0], [1, 0], [.5, .0004], [0, 1]]):
+            # The close external node sits across a long edge. Welding it
+            # either reverses a Tri3 or turns a valid concave Quad4 into a
+            # crossing polygon, without eliminating an element row.
+            count = len(first)
+            nodes = [*first, [.5, -.0004], [2, -1], [2, 1]]
+            row = [0, 1, 2, 2] if count == 3 else [0, 1, 2, 3]
+            for offset in (0.0, 1e8):
+                mesh = Mesh2D(np.asarray(nodes) + offset,
+                              [row, [count, count + 1, count + 2, count + 2]])
+                before = mesh.nodes.copy(), mesh.elements.copy()
+                with self.subTest(vertices=count, offset=offset), self.assertRaisesRegex(
+                        ValueError, "topology_conflict"):
+                    EditorMesh2D.equivalence(mesh)
+                np.testing.assert_array_equal(mesh.nodes, before[0])
+                np.testing.assert_array_equal(mesh.elements, before[1])
+
     def test_static_api_has_no_mesh_or_cache_and_is_not_exported_at_root(self):
         import mesher
         from mesher.mesh2d.editor import EditorMesh2D as EditorFromPackage
@@ -109,7 +141,7 @@ class EditorMesh2DTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     EditorMesh2D.search_element(triangle, value, 0, 1, 1)
 
-    def test_equivalence_welds_xy_preserves_lowest_id_xy_and_duplicate_cells(self):
+    def test_equivalence_welds_xy_preserves_stable_coordinate_and_duplicate_cells(self):
         mesh = two_quads()
         other = two_quads()
         other.nodes[:, :2] += 0.0001
@@ -118,21 +150,24 @@ class EditorMesh2DTests(unittest.TestCase):
         np.testing.assert_array_equal(merged.nodes, mesh.nodes)
         np.testing.assert_array_equal(merged.elements, np.tile(mesh.elements, (2, 1)))
 
-    def test_equivalence_is_transitive_and_boundary_inclusive(self):
+    def test_equivalence_rejects_transitive_chain_atomically(self):
         nodes = np.array([[0, 0], [2, 0], [0, 2]], dtype=float)
         mesh = Mesh2D(
             np.concatenate((nodes, nodes + [0.125, 0], nodes + [0.25, 0])),
             [[0, 1, 2, 2], [3, 4, 5, 5], [6, 7, 8, 8]],
         )
-        EditorMesh2D.equivalence(mesh, 0.125)
-        self.assertEqual(mesh.node_count, 3)
-        np.testing.assert_array_equal(mesh.elements, np.tile([0, 1, 2, 2], (3, 1)))
+        before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
+        with self.assertRaises(GeometryToleranceError) as caught:
+            EditorMesh2D.equivalence(mesh, tolerance=0.125)
+        self.assertEqual(caught.exception.code, "ambiguous_geometry")
+        np.testing.assert_array_equal(mesh.nodes, before_nodes)
+        np.testing.assert_array_equal(mesh.elements, before_elements)
 
-    def test_exact_equivalence_keeps_nearby_distinct_nodes(self):
+    def test_smaller_positive_tolerance_keeps_nearby_distinct_nodes(self):
         first = Mesh2D([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 2, 2]])
         second = Mesh2D([[-0.0, 0, 0], [1.0001, 0, 0], [0, 1, 0]], [[0, 1, 2, 2]])
         mesh = EditorMesh2D.merge(first, second)
-        EditorMesh2D.equivalence(mesh, 0)
+        EditorMesh2D.equivalence(mesh, tolerance=1e-12)
         np.testing.assert_array_equal(mesh.nodes, [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1.0001, 0, 0]])
         np.testing.assert_array_equal(mesh.elements, [[0, 1, 2, 2], [0, 3, 2, 2]])
 
@@ -142,39 +177,50 @@ class EditorMesh2DTests(unittest.TestCase):
                 nodes = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
                 nodes[(edge + 1) % 4] = nodes[edge] + [0.01, 0.01]
                 mesh = Mesh2D(nodes, [[0, 1, 2, 3]])
-                EditorMesh2D.equivalence(mesh, 0.1)
+                EditorMesh2D.equivalence(mesh, tolerance=0.1)
                 self.assertEqual(mesh.node_count, 3)
                 self.assertEqual(mesh.element_count, 1)
                 self.assertEqual(mesh.elements[0, 2], mesh.elements[0, 3])
                 self.assertEqual(len(np.unique(mesh.elements[0, :3])), 3)
 
-    def test_removes_collapsed_triangles_nonadjacent_duplicates_and_zero_area(self):
+    def test_rejects_collapsed_triangles_nonadjacent_duplicates_and_zero_area(self):
         for nodes, elements, tolerance in (
             ([[0, 0], [0.01, 0], [0, 2]], [[0, 1, 2, 2]], 0.1),
-            ([[0, 0], [1, 0], [0, 1]], [[0, 1, 0, 2]], 0),
-            ([[0, 0], [1, 0], [2, 0]], [[0, 1, 2, 2]], 0),
+            ([[0, 0], [1, 0], [0, 1]], [[0, 1, 0, 2]], 1e-12),
+            ([[0, 0], [1, 0], [2, 0]], [[0, 1, 2, 2]], 1e-12),
         ):
             mesh = Mesh2D(nodes, elements)
-            EditorMesh2D.equivalence(mesh, tolerance)
-            self.assertEqual(mesh.nodes.shape, (0, 3))
-            self.assertEqual(mesh.elements.shape, (0, 4))
+            before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
+            with self.assertRaises(GeometryToleranceError) as caught:
+                EditorMesh2D.equivalence(mesh, tolerance=tolerance)
+            self.assertEqual(caught.exception.code, "feature_below_resolution")
+            np.testing.assert_array_equal(mesh.nodes, before_nodes)
+            np.testing.assert_array_equal(mesh.elements, before_elements)
 
     def test_keeps_clockwise_concave_and_very_small_elements(self):
-        for nodes, element in (
-            ([[0, 0], [0, 1], [1, 1], [1, 0]], [0, 1, 2, 3]),
-            ([[0, 0], [2, 0], [0.5, 0.5], [0, 2]], [0, 1, 2, 3]),
-            ([[0, 0], [1e-200, 0], [0, 1e-200]], [0, 1, 2, 2]),
-            ([[-1e308, -1e308], [1e308, -1e308], [0, 1e308]], [0, 1, 2, 2]),
+        for nodes, element, tolerance in (
+            ([[0, 0], [0, 1], [1, 1], [1, 0]], [0, 1, 2, 3], .001),
+            ([[0, 0], [2, 0], [0.5, 0.5], [0, 2]], [0, 1, 2, 3], .001),
+            ([[0, 0], [1e-200, 0], [0, 1e-200]], [0, 1, 2, 2], 1e-210),
         ):
             mesh = Mesh2D(nodes, [element])
             before = mesh.elements.copy()
-            EditorMesh2D.equivalence(mesh, 0)
+            EditorMesh2D.equivalence(mesh, tolerance=tolerance)
             np.testing.assert_array_equal(mesh.elements, before)
+
+    def test_unresolvable_large_coordinates_fail_without_mutation(self):
+        mesh = Mesh2D([[-1e308, -1e308], [1e308, -1e308], [0, 1e308]], [[0, 1, 2, 2]])
+        nodes, elements = mesh.nodes, mesh.elements
+        with self.assertRaises(GeometryToleranceError) as caught:
+            EditorMesh2D.equivalence(mesh)
+        self.assertEqual(caught.exception.code, "numeric_resolution_exceeded")
+        self.assertIs(mesh.nodes, nodes)
+        self.assertIs(mesh.elements, elements)
 
     def test_unreferenced_nodes_do_not_supply_representatives_or_bridge_groups(self):
         nodes = [[0.09, 0], [0, 0], [0.18, 0], [0, 2], [2, 2]]
         mesh = Mesh2D(nodes, [[1, 3, 4, 4], [2, 3, 4, 4]])
-        EditorMesh2D.equivalence(mesh, 0.1)
+        EditorMesh2D.equivalence(mesh, tolerance=0.1)
         expected_nodes = np.column_stack((np.asarray(nodes)[1:], np.zeros(4)))
         np.testing.assert_array_equal(mesh.nodes, expected_nodes)
         np.testing.assert_array_equal(mesh.elements, [[0, 2, 3, 3], [1, 2, 3, 3]])
@@ -190,12 +236,12 @@ class EditorMesh2DTests(unittest.TestCase):
         self.assertIs(mesh.elements, elements)
 
     def test_invalid_tolerances_and_referenced_coordinates_are_atomic(self):
-        for tolerance in (-1, np.nan, np.inf, True, None, 1j):
+        for tolerance in (-1, np.nan, np.inf, True, 0, 1j):
             with self.subTest(tolerance=tolerance):
                 mesh = two_quads()
                 nodes, elements = mesh.nodes, mesh.elements
                 with self.assertRaises(ValueError):
-                    EditorMesh2D.equivalence(mesh, tolerance)
+                    EditorMesh2D.equivalence(mesh, tolerance=tolerance)
                 self.assertIs(mesh.nodes, nodes)
                 self.assertIs(mesh.elements, elements)
         mesh = two_quads()

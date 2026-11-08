@@ -467,7 +467,7 @@ def _validate_repair(mesh, nodes, quads, outline, data, selected, mouths, consum
     old_cells = _ccw_cells(mesh.nodes[mesh.elements, :2])
     new_cell_index = BoxIndex(cells.min(axis=1), cells.max(axis=1), tol)
     old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
-    _check_overlaps(cells, old_cells, new_cell_index, old_cell_index, tol)
+    _check_overlaps(cells, old_cells, new_cell_index, old_cell_index, data["numeric_tol"])
     _check_patterns(data["pattern_records"], cells, old_cells, new_cell_index, old_cell_index,
                     new_edges, old_edges, new_edge_index, old_edge_index, tol)
     actual = sum(area(cell) for cell in cells)

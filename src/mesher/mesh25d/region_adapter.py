@@ -12,6 +12,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from ..tolerance import GeometryTolerance, GeometryToleranceError, canonicalize_points, resolve_tolerance
+
 from ..mesh2d.adapter import (
     QuadLayerError, generate_full_adaptive_mesh, generate_layer_adaptive_mesh,
 )
@@ -49,7 +51,7 @@ class AdapterPlan:
     outer_outline: Loop
     pattern_lines: tuple[Segment, ...]
     element_size: float
-    coordinate_tolerance: float
+    tolerance: GeometryTolerance
 
     def region_summary(self) -> list[dict[str, Any]]:
         return [
@@ -104,6 +106,10 @@ def _run(operation: Callable, *, sources, stage, **context):
         return operation()
     except QuadLayerError as error:
         raise _annotate(error, sources, stage=stage, **context)
+    except GeometryToleranceError as error:
+        error.context.setdefault("region_sources", list(sources))
+        error.context.setdefault("stage", stage)
+        raise
     except (ValueError, TypeError, OverflowError) as error:
         raise _annotate(
             QuadLayerError(str(error), code="region_meshing_failed"),
@@ -116,7 +122,7 @@ def _rectangle(bounds) -> Loop:
     return ((left, bottom), (right, bottom), (right, top), (left, top))
 
 
-def _orthogonal_loop(points, *, sources) -> Loop:
+def _orthogonal_loop(points, *, sources, tolerance=None) -> Loop:
     try:
         values = np.asarray(points, dtype=float)
     except (ValueError, TypeError, OverflowError):
@@ -124,6 +130,7 @@ def _orthogonal_loop(points, *, sources) -> Loop:
     if (values.ndim != 2 or values.shape[1] != 2 or len(values) < 3
             or not np.all(np.isfinite(values))):
         _fail("polygon coordinates must be finite XY pairs", sources=sources)
+    values = canonicalize_points(values, tolerance, stage="region_planning", source=sources)
     # Optional closure and redundant consecutive vertices do not change a loop.
     loop = []
     for point in values:
@@ -146,8 +153,8 @@ def _parents(polygons, tolerance, *, sources, stage):
             _fail("boundaries must be simple polygons with positive area",
                   sources=sources, stage=stage, boundary_index=index)
         for other_index in range(index):
-            if polygon.boundary.distance(polygons[other_index].boundary) <= tolerance:
-                _fail("boundaries intersect, touch, or lie within coordinate_tolerance",
+            if polygon.boundary.distance(polygons[other_index].boundary) <= resolve_tolerance(tolerance).absolute:
+                _fail("boundaries intersect, touch, or lie within tolerance",
                       sources=sources, stage=stage,
                       boundary_indices=(other_index, index))
     return tuple(
@@ -200,12 +207,12 @@ def _transition_sizes(seed_size: float, global_size: float) -> tuple[float, ...]
 
 def _check_separation(shapes, sources, domain, tolerance, *, stage):
     for index, shape in enumerate(shapes):
-        if not domain.contains(shape) or shape.distance(domain.boundary) <= tolerance:
+        if not domain.contains(shape) or shape.distance(domain.boundary) <= resolve_tolerance(tolerance).absolute:
             _fail("region or transition must lie strictly inside the meshing domain; "
                   "boundary contact and insufficient transition clearance are unsupported",
                   sources=[sources[index]], stage=stage)
         for other in range(index):
-            if shape.distance(shapes[other]) <= tolerance:
+            if shape.distance(shapes[other]) <= resolve_tolerance(tolerance).absolute:
                 _fail("regions or transitions overlap, touch, or have insufficient clearance",
                       sources=[sources[other], sources[index]], stage=stage)
 
@@ -218,11 +225,12 @@ def plan_region_adapter(
     outer_bounds: tuple[float, float, float, float],
     pattern_lines: list[Segment],
     element_size: float,
-    coordinate_tolerance: float,
+    tolerance: GeometryTolerance,
 ) -> AdapterPlan | None:
     """Resolve supported regions without generating meshes or changing inputs."""
     from shapely.geometry import Polygon, box
 
+    tolerance = resolve_tolerance(tolerance)
     domain = box(*control_bounds)
     regions = []
     for index, control in enumerate(controls.xy):
@@ -233,9 +241,9 @@ def plan_region_adapter(
         if box(*bounds).disjoint(domain):
             continue
         raw_loops = [_rectangle(bounds)] if face["type"] == "BOX" else face["dim"]
-        loops = [_orthogonal_loop(loop, sources=[source]) for loop in raw_loops]
+        loops = [_orthogonal_loop(loop, sources=[source], tolerance=tolerance) for loop in raw_loops]
         polygons = [Polygon(loop) for loop in loops]
-        _parents(polygons, coordinate_tolerance, sources=[source], stage="region_planning")
+        _parents(polygons, tolerance, sources=[source], stage="region_planning")
         shape = _shape(polygons)
         if shape.disjoint(domain):
             continue
@@ -248,16 +256,16 @@ def plan_region_adapter(
 
     sources = [region.source for region in regions]
     _check_separation([region.geometry for region in regions], sources, domain,
-                      coordinate_tolerance, stage="region_planning")
+                      tolerance, stage="region_planning")
     # The circular guide collector skips oblique edges; never silently drop a
     # material/KOZ constraint in this experimental branch.
     for face_index, face in enumerate(faces):
         if face["type"] == "POLYGON":
             for loop in face["dim"]:
-                _orthogonal_loop(loop, sources=[*sources, f"geometry face[{face_index}]"])
+                _orthogonal_loop(loop, sources=[*sources, f"geometry face[{face_index}]"], tolerance=tolerance)
 
     return AdapterPlan(tuple(regions), _rectangle(outer_bounds), tuple(pattern_lines),
-                       element_size, coordinate_tolerance)
+                       element_size, tolerance)
 
 
 def _edge_cycle(outline):
@@ -305,14 +313,14 @@ def build_region_adapter(plan: AdapterPlan, *, progress: ProgressCallback | None
             parts = [generate_rectilinear_mesh_optimal(
                 region.seed_size, part.outer, holes=part.holes,
                 pattern_lines=plan.pattern_lines,
-                coordinate_tolerance=plan.coordinate_tolerance,
+                tolerance=plan.tolerance,
             ).mesh for part in region.domains]
             return _merge(parts)[0]
 
         mesh = _run(seed, sources=[region.source], stage="seed_meshing")
         boundary = EditorMesh2D.outlines(mesh)
         shape, parent = _mesh_state(mesh, boundary, sources=[region.source],
-                                    tolerance=plan.coordinate_tolerance)
+                                    tolerance=plan.tolerance)
         meshes.append(mesh)
         outlines.append(boundary)
         shapes.append(shape)
@@ -325,7 +333,7 @@ def build_region_adapter(plan: AdapterPlan, *, progress: ProgressCallback | None
             for boundary_index, outline in enumerate(outlines[region_index]):
                 result = _run(
                     lambda: generate_layer_adaptive_mesh(
-                        mesh, outline, size, pattern_lines=plan.pattern_lines,
+                        mesh, outline, size, pattern_lines=plan.pattern_lines, tolerance=plan.tolerance,
                     ),
                     sources=[region.source], stage="intermediate_layer",
                     region_layer_index=layer_index, boundary_index=boundary_index,
@@ -334,12 +342,12 @@ def build_region_adapter(plan: AdapterPlan, *, progress: ProgressCallback | None
             shapes[region_index], _ = _run(
                 lambda: _mesh_state(
                     mesh, next_outlines, sources=[region.source],
-                    tolerance=plan.coordinate_tolerance, parents=parents[region_index],
+                    tolerance=plan.tolerance, parents=parents[region_index],
                 ), sources=[region.source], stage="intermediate_validation",
                 region_layer_index=layer_index,
             )
             _run(
-                lambda: _check_separation(shapes, sources, domain, plan.coordinate_tolerance,
+                lambda: _check_separation(shapes, sources, domain, plan.tolerance,
                                           stage="intermediate_validation"),
                 sources=[region.source], stage="intermediate_validation",
                 region_layer_index=layer_index,
@@ -357,7 +365,7 @@ def build_region_adapter(plan: AdapterPlan, *, progress: ProgressCallback | None
     try:
         result = generate_full_adaptive_mesh(
             combined, [plan.element_size], outer_outline=plan.outer_outline,
-            pattern_lines=plan.pattern_lines, coordinate_tolerance=plan.coordinate_tolerance,
+            pattern_lines=plan.pattern_lines, tolerance=plan.tolerance,
         )
     except QuadLayerError as error:
         indices = list(error.context.get("boundary_indices", ()))

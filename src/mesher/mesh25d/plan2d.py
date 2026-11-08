@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ..tolerance import GeometryToleranceError, canonicalize_values, resolve_tolerance, subdivision_count
+
 from ..mesh2d.circular.extend import extend_circular_mesh
 from ..mesh2d.circular.imprint_v2 import imprint_circle
 from ..mesh2d.controls import XYRegionControl
@@ -33,11 +35,6 @@ if TYPE_CHECKING:
 
 JsonObject = dict[str, Any]
 _CIRCLE_PROJECTION_TOLERANCE_RATIO = 0.2
-# 判斷 node 是否在 guide segment 上面；而非用來找 segment 附近 node。
-_CIRCLE_GUIDE_TOLERANCE_RATIO = 0.001
-_CIRCLE_GUIDE_TOLERANCE_MINIMUM = 1.0
-_CIRCLE_MERGE_TOLERANCE_RATIO = 0.002
-_CIRCLE_MINIMUM_AREA_RATIO = 0.0004
 
 
 @dataclass(frozen=True)
@@ -86,21 +83,17 @@ def plan_2d(
         circle_patterns,
         domain,
         band_width=circle_band_width,
+        tolerance=pattern.tolerance,
     )
     circle_plan = _build_circle_meshing_plan(
         base_face,
         all_faces,
         circle_patterns,
         band_width=circle_band_width,
+        tolerance=pattern.tolerance,
     )
-    pattern_segments = _collect_pattern_segments(all_faces)
-    circle_clearance_tolerance = pattern.clearance_tolerance
-    if koz_circle_patterns:
-        # Refinement may be driven by the gap to a neighboring feature, which
-        # can be smaller than the source feature's own KOZ width.
-        circle_clearance_tolerance = min(
-            circle_clearance_tolerance, planar_element_size / 100.0
-        )
+    pattern_segments = _collect_pattern_segments(all_faces, tolerance=pattern.tolerance)
+    circle_clearance_tolerance = pattern.tolerance
     _validate_circle_clearances(
         list(circle_plan.imprint_patterns),
         circle_band_width,
@@ -132,6 +125,7 @@ def plan_2d(
                 _add_xy_control_lines(
                     controls.xy, x_lines, y_lines,
                     x_bounds=(left, right), y_bounds=(bottom, top),
+                    tolerance=pattern.tolerance,
                 )
                 x_lines, y_lines = _restrict_grid_lines_to_domain(x_lines, y_lines, domain)
             else:
@@ -142,7 +136,7 @@ def plan_2d(
                     outer_bounds=(min(x_lines), min(y_lines), max(x_lines), max(y_lines)),
                     pattern_lines=[*pattern_segments, *support_segments],
                     element_size=planar_element_size,
-                    coordinate_tolerance=pattern.coordinate_tolerance,
+                    tolerance=pattern.tolerance,
                 )
         if adaptive and any(
             adaptive.intersects_annulus(extension.center, extension.inner.radius, extension.outer.radius)
@@ -191,7 +185,7 @@ def build_2d_mesh(plan: Plan2D, *, progress: ProgressCallback | None = None) -> 
     if plan.adaptive is None:
         mesh = generate_rectilinear_mesh(
             plan.element_size, plan.x_lines, plan.y_lines,
-            coordinate_tolerance=plan.pattern.coordinate_tolerance,
+            tolerance=plan.pattern.tolerance,
         )
     else:
         from .region_adapter import build_region_adapter
@@ -201,12 +195,13 @@ def build_2d_mesh(plan: Plan2D, *, progress: ProgressCallback | None = None) -> 
         mesh, list(plan.circle_plan.imprint_patterns),
         guide_segments=plan.pattern_segments, element_size=plan.element_size,
         progress=progress, completed_offset=0, total_operations=plan.feature_total,
-        source_refs=plan.circle_source_refs,
+        source_refs=plan.circle_source_refs, tolerance=plan.pattern.tolerance,
     )
     _extend_circle_patterns(
         mesh, plan.circle_plan.extensions, element_size=plan.element_size,
         progress=progress, completed_offset=len(plan.circle_plan.imprint_patterns),
         total_operations=plan.feature_total, source_refs=plan.circle_source_refs,
+        tolerance=plan.pattern.tolerance,
     )
     return mesh
 
@@ -218,6 +213,7 @@ def _add_xy_control_lines(
     *,
     x_bounds: tuple[float, float],
     y_bounds: tuple[float, float],
+    tolerance=None,
 ) -> None:
     """Union independent region cuts without changing the geometry footprint."""
     for control in controls:
@@ -228,22 +224,23 @@ def _add_xy_control_lines(
         ):
             continue
         size = control["element_size"]
-        x_lines.extend(_section_avg_lines(xs, size, x_bounds))
-        y_lines.extend(_section_avg_lines(ys, size, y_bounds))
+        x_lines.extend(_section_avg_lines(xs, size, x_bounds, tolerance=tolerance))
+        y_lines.extend(_section_avg_lines(ys, size, y_bounds, tolerance=tolerance))
 
 
 def _section_avg_lines(
     coordinates: list[float],
     element_size: float,
     bounds: tuple[float, float],
+    *, tolerance=None,
 ) -> list[float]:
     """Subdivide vertex intervals before clipping, preserving each region's cuts."""
-    ordered = sorted(set(coordinates))
+    ordered = sorted(set(canonicalize_values(coordinates, tolerance, stage="xy_controls")))
     lines = [value for value in ordered if bounds[0] <= value <= bounds[1]]
     for start, end in zip(ordered, ordered[1:]):
         if end <= bounds[0] or start >= bounds[1]:
             continue
-        count = max(1, math.floor((end - start) / element_size))
+        count = subdivision_count(end - start, element_size, rounding="floor")
         lines.extend(
             value for value in np.linspace(start, end, count + 1)[1:-1].tolist()
             if bounds[0] <= value <= bounds[1]
@@ -263,6 +260,7 @@ def _imprint_circle_patterns(
     completed_offset: int = 0,
     total_operations: int = 0,
     source_refs: dict[_CirclePattern, list[str]] | None = None,
+    tolerance=None,
 ) -> None:
     for index, pattern in enumerate(circle_patterns):
         operation_index = completed_offset + index + 1
@@ -279,21 +277,25 @@ def _imprint_circle_patterns(
                 mesh_2d,
                 center=pattern.center,
                 radius=pattern.radius,
-                projection_tolerance=(
+                projection_distance=(
                     _CIRCLE_PROJECTION_TOLERANCE_RATIO * element_size
                 ),
-                guide_tolerance=max(
-                    _CIRCLE_GUIDE_TOLERANCE_RATIO * element_size,
-                    _CIRCLE_GUIDE_TOLERANCE_MINIMUM,
-                ),
-                merge_tolerance=(
-                    _CIRCLE_MERGE_TOLERANCE_RATIO * element_size
-                ),
-                minimum_area=(
-                    _CIRCLE_MINIMUM_AREA_RATIO * element_size**2
-                ),
+                tolerance=resolve_tolerance(tolerance),
+                # Process-flow exposes no minimum child-area constraint.
+                # Positive Jacobians and the common length policy govern
+                # validity; a size-dependent cleanup heuristic must not erase
+                # a valid cut region or become a new final-output restriction.
+                minimum_area=0.0,
                 guide_segments=guide_segments,
             )
+        except GeometryToleranceError as exc:
+            context = dict(exc.context)
+            context.setdefault("source", (source_refs or {}).get(pattern, []))
+            context.setdefault("stage", "circle_imprint")
+            raise GeometryToleranceError(
+                f"Failed to imprint circle pattern {_circle_label(pattern)}: {exc.message}",
+                code=exc.code, **context,
+            ) from exc
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"Failed to imprint circle pattern {_circle_label(pattern)}: {exc}"
@@ -329,6 +331,7 @@ def _extend_circle_patterns(
     completed_offset: int = 0,
     total_operations: int = 0,
     source_refs: dict[_CirclePattern, list[str]] | None = None,
+    tolerance=None,
 ) -> None:
     for index, extension in enumerate(extensions):
         operation_index = completed_offset + index + 1
@@ -348,7 +351,17 @@ def _extend_circle_patterns(
                 center_y=extension.center[1],
                 inner_radius=extension.inner.radius,
                 outer_radius=extension.outer.radius,
+                tolerance=resolve_tolerance(tolerance),
             )
+        except GeometryToleranceError as exc:
+            context = dict(exc.context)
+            context.setdefault("source", (source_refs or {}).get(extension.outer, []))
+            context.setdefault("stage", "circle_extension")
+            raise GeometryToleranceError(
+                f"Failed to extend circular mesh from {_circle_label(extension.inner)} "
+                f"to {_circle_label(extension.outer)}: {exc.message}",
+                code=exc.code, **context,
+            ) from exc
         except (TypeError, ValueError, RuntimeError) as exc:
             raise ValueError(
                 "Failed to extend circular mesh from "

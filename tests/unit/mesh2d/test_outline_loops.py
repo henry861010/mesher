@@ -93,7 +93,7 @@ class OutlineLoopTests(unittest.TestCase):
             self.assertEqual(caught.exception.context["parameter"], "outline_i")
             self.assertEqual(caught.exception.code, "invalid_input")
 
-    def test_axis_tolerance_applies_to_complete_automatically_grouped_runs(self):
+    def test_tolerance_applies_to_complete_automatically_grouped_runs(self):
         for shear, accepted in ((1e-4, True), (.02, False)):
             mesh, loop, _ = next(self.fixtures())
             mesh.nodes[:, 0] += shear * mesh.nodes[:, 1]

@@ -19,7 +19,7 @@ result = generate_rectilinear_mesh_optimal(
     outer_outline=np.array([[0, 0], [12, 0], [12, 8], [0, 8]]),
     holes=[np.array([[4, 2], [7, 2], [7, 6], [4, 6]])],
     pattern_lines=[[[1, 3], [3, 3]]],
-    coordinate_tolerance=1e-3,
+    tolerance=1e-3,
     max_elements=1_000_000,
 )
 
@@ -44,9 +44,11 @@ loop or inside holes are ignored.
 
 `target_edge_size` is a positive maximum edge length, rather than a promise of
 uniform spacing. Coordinates required by geometry and patterns can produce
-smaller edges. Coordinates are preserved rather than snapped.
-`coordinate_tolerance` rejects touching or nearly touching separate boundaries
-and nonadjacent edges; it is not a minimum edge length or mesh-quality threshold.
+smaller edges. Compatible geometry and pattern supports are canonicalized
+jointly before visibility or intersections. Each point moves by at most the
+absolute `tolerance` (default `0.001`); proximity chains wider than T, disappearing
+holes/gaps, and incompatible fixed coordinates raise structured errors. This
+policy is independent of the target size and numerical calculation epsilon.
 
 `max_elements` is a positive integer, with a default of `1_000_000`; `None`,
 booleans, and floating-point values are rejected. It limits the complete mesh,
@@ -89,7 +91,7 @@ If an odd hole boundary has no representable local parity-repair cut, the
 generator retries with a global rectilinear grid. This fallback projects
 retained coordinates across the domain, so coordinates can propagate beyond a
 hole and the mesh can contain more cells than the local result would have.
-Geometry and retained pattern endpoints stay exact, holes stay empty, the
+Canonical geometry and retained pattern endpoints stay exact, holes stay empty, the
 maximum edge size is preserved, and every boundary still has even parity.
 The same `max_elements` limit applies. Invalid geometry, numerical-range
 failures, budget failures, and other consistency errors do not trigger fallback.

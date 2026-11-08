@@ -12,11 +12,13 @@ from ..mesh3d.controls import LayerInfo, ZControl
 from ..mesh3d.extrusion import Dragger
 from ..mesh3d.model import Mesh3D
 from .progress import ProgressCallback
+from ..tolerance import GeometryTolerance, canonicalize_values, resolve_tolerance
 
 
 @dataclass(frozen=True)
 class LayerPlan:
     layer_infos: list[LayerInfo]
+    tolerance: GeometryTolerance = GeometryTolerance()
 
 
 def plan_layers(
@@ -24,6 +26,7 @@ def plan_layers(
     controls: list[ZControl],
     *,
     element_size: float,
+    tolerance=None,
 ) -> LayerPlan:
     """Combine boundaries without interpreting control method names.
 
@@ -31,16 +34,23 @@ def plan_layers(
     are clipped to the material event extent. Material event ordering and
     payloads remain unchanged, including events on the terminal boundary.
     """
+    policy = resolve_tolerance(tolerance)
     if not assignments:
-        return LayerPlan([])
+        return LayerPlan([], policy)
+    values = [float(assignment["z"]) for assignment in assignments]
+    values.extend(float(control[key]) for control in controls for key in ("start", "end"))
+    policy.check_resolution(np.asarray(values), stage="layer_planning", source="Z boundaries")
+    fixed = [True] * len(assignments) + [False] * (2 * len(controls))
+    canonical = canonicalize_values(values, policy, fixed=fixed, stage="layer_planning", source="Z boundaries")
     events: dict[float, list[dict[str, Any]]] = {}
     for assignment in sorted(assignments, key=lambda item: (item["z"], item["type"])):
         events.setdefault(assignment["z"], []).append(assignment)
     model_start, model_end = min(events), max(events)
     boundaries = set(events)
     intervals = []
-    for control in controls:
-        start, end = control["start"], control["end"]
+    for index, control in enumerate(controls):
+        offset = len(assignments) + 2 * index
+        start, end = canonical[offset:offset + 2]
         if start == end:
             if model_start <= start <= model_end:
                 boundaries.add(start)
@@ -59,7 +69,7 @@ def plan_layers(
             size = min([size, *(value for start, stop, value in intervals
                                 if start <= z and end <= stop)])
         infos.append(LayerInfo(z=z, element_size=size, assignments=events.get(z, [])))
-    return LayerPlan(infos)
+    return LayerPlan(infos, policy)
 
 
 def build_3d_mesh(
@@ -68,7 +78,7 @@ def build_3d_mesh(
     *,
     progress: ProgressCallback | None = None,
 ) -> Mesh3D:
-    dragger = Dragger()
+    dragger = Dragger(tolerance=plan.tolerance)
     dragger.set_2D(mesh.nodes, _clockwise_elements(mesh.elements))
     return dragger.build(plan.layer_infos, progress=progress)
 

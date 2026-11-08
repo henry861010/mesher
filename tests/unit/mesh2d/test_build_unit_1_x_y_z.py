@@ -260,7 +260,7 @@ class BuildUnit1XYZTests(unittest.TestCase):
                         mesh, edges = _sketch_patch()
                     mesh.nodes = mesh.nodes * scale + shift
                     original = mesh.nodes.copy()
-                    build_unit_1_x_y_z(mesh, *edges)
+                    build_unit_1_x_y_z(mesh, *edges, tolerance=.001 * scale)
                     self.assert_valid_patch(mesh, edges, original)
 
     def test_existing_mixed_elements_are_preserved(self):

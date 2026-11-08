@@ -6,6 +6,7 @@ import math
 import operator
 
 import numpy as np
+from mesher.tolerance import subdivision_count
 
 
 _SIZE_RTOL = float(32 * np.finfo(float).eps)
@@ -66,7 +67,7 @@ def _segment_count(length, target, budget, stage):
     ratio = length / target
     if not math.isfinite(ratio):
         budget.check(max(budget.limit, 2 * _INDEX_LIMIT) + 1, stage)
-    count = math.ceil(ratio)
+    count = subdivision_count(length, target)
     budget.check(count, stage)
     return count
 

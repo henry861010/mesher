@@ -80,13 +80,17 @@ class RegionAdapterIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(analysis["adapterRegions"]), 1)
                 self.assertEqual(analysis["adapterRegions"][0]["seedSize"], 0.5)
 
-    def test_material_and_narrow_koz_boundaries_survive_adapter_assembly(self):
+    def test_narrow_koz_requires_explicit_precision_and_survives_adapter_assembly(self):
         structure = _structure()
         structure["root"]["vias"] = [{
             "id": "metal", "geometry": _geometry((-2, -2, 2, 2)),
             "material": "Cu", "density": 100, "koz": 0.0001,
         }]
-        mesh = build_mesh(structure, _settings([_region((-4, -4, 4, 4), 1)]))
+        settings = _settings([_region((-4, -4, 4, 4), 1)])
+        with self.assertRaisesRegex(ValueError, "KOZ width must exceed geometryTolerance"):
+            build_mesh(structure, settings)
+        settings["geometryTolerance"] = 1e-6
+        mesh = build_mesh(structure, settings)
         metal = mesh.elements[mesh.element_comps == mesh.comps["Cu"], :8]
         self.assertGreater(len(metal), 0)
         corners = mesh.nodes[metal, :2]

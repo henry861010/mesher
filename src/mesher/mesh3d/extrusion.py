@@ -23,6 +23,10 @@ from matplotlib.path import Path
 
 from ..mesh2d.model import _validate_zero_z
 from .model import Mesh3D
+from ..tolerance import (
+    GeometryToleranceError, circle_membership, resolve_tolerance, subdivision_count,
+    within_distance, within_segment,
+)
 
 ELEMENT_2D_LEN = 4
 NODE_2D_LEN = 2
@@ -37,6 +41,16 @@ START_DENSITY = 2
 START_CONVERT = 1
 END = 0
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _planar_areas(nodes, elements):
+    corners = nodes[elements, :2]
+    local = corners - corners[:, :1]
+    return .5 * np.abs(np.sum(
+        local[..., 0] * np.roll(local[..., 1], -1, axis=1)
+        - local[..., 1] * np.roll(local[..., 0], -1, axis=1), axis=1,
+    ))
+
 
 class Dragger:
     """Build a 3D solid mesh from a mixed 2D process layout.
@@ -70,8 +84,9 @@ class Dragger:
             top-layer 3D node id. ``-1`` means the node is not active.
     """
 
-    def __init__(self):
+    def __init__(self, *, tolerance=None):
         """Initialize empty 2D state, 3D output buffers, and component table."""
+        self.tolerance = resolve_tolerance(tolerance)
         ### component
         self.comps = {"EMPTY":0}
         
@@ -114,6 +129,7 @@ class Dragger:
         if nodes.ndim != 2 or nodes.shape[1] < 2:
             raise ValueError("mesh2D.nodes must have shape (n, 2+)") 
         _validate_zero_z(nodes)
+        self.tolerance.check_resolution(nodes[:, :2], stage="extrusion_input")
         if elements.ndim != 2 or elements.shape[1] != 4:
             raise ValueError("mesh2D.elements must have shape (m, 4)")
         if np.any(elements < 0) or np.any(elements >= len(nodes)):
@@ -134,15 +150,40 @@ class Dragger:
                 "formatted as [n0, n1, n2, n2]"
             )
         
-        self.element_2D = elements
+        areas = _planar_areas(nodes, elements)
+        if np.any(~np.isfinite(areas)) or np.any(areas <= 0):
+            raise GeometryToleranceError(
+                "extrusion requires source elements with positive finite area",
+                code="invalid_source_element", stage="extrusion_input",
+            )
+        for count, rows in ((3, triangle_mask), (4, ~triangle_mask)):
+            corners = nodes[elements[rows, :count], :2]
+            if not len(corners):
+                continue
+            edges = np.roll(corners, -1, axis=1) - corners
+            if np.any(within_distance(edges, np.zeros(2), self.tolerance)):
+                raise GeometryToleranceError(
+                    "source element contains an unresolved edge",
+                    code="invalid_source_element", stage="extrusion_input",
+                    tolerance=self.tolerance.absolute,
+                )
+            next_edges = np.roll(edges, -1, axis=1)
+            turns = edges[..., 0] * next_edges[..., 1] - edges[..., 1] * next_edges[..., 0]
+            scale = np.max(np.abs(edges), axis=(1, 2))
+            numerical_area = 64 * np.finfo(float).eps * scale**2
+            if np.any(~(np.all(turns > numerical_area[:, None], axis=1)
+                        | np.all(turns < -numerical_area[:, None], axis=1))):
+                raise GeometryToleranceError(
+                    "source element has an invalid planar Jacobian",
+                    code="invalid_source_element", stage="extrusion_input",
+                )
+        self.element_2D = elements.copy()
         self.element_2D_comp = np.zeros(len(elements), dtype=np.int32)
-        self.element_2D_volume = np.empty(len(elements), dtype=np.float64)
+        self.element_2D_volume = areas
         self.element_2D_priority = np.zeros(len(elements), dtype=np.float64)
         self.element_2D_density_occupy = np.zeros(len(elements), dtype=np.float64)
-        self.node_2D = nodes[:,:2]
-        self.node_2D_to_3D = np.zeros(len(nodes), dtype=np.int32) - 1
-        
-        self._cal_volumes()
+        self.node_2D = nodes[:, :2].copy()
+        self.node_2D_to_3D = np.full(len(nodes), -1, dtype=np.int32)
         
     ### buffer growth
     def _pre_allocate_nodes(self, size: int = 1):
@@ -204,21 +245,7 @@ class Dragger:
         Returns:
             None: Results are written to ``self.element_2D_volume``.
         """
-        corner_xy = self.node_2D[self.element_2D]
-
-        # Extract coordinates as (N, 4) for each x and y
-        x1, y1 = corner_xy[:, 0, 0], corner_xy[:, 0, 1]
-        x2, y2 = corner_xy[:, 1, 0], corner_xy[:, 1, 1]
-        x3, y3 = corner_xy[:, 2, 0], corner_xy[:, 2, 1]
-        x4, y4 = corner_xy[:, 3, 0], corner_xy[:, 3, 1]
-
-        # Shoelace formula also handles a padded triangle's repeated vertex.
-        volume = 0.5 * np.abs(
-            x1*y2 + x2*y3 + x3*y4 + x4*y1 -
-            (y1*x2 + y2*x3 + y3*x4 + y4*x1)
-        )
-
-        self.element_2D_volume = volume.astype(np.float64, copy=False)
+        self.element_2D_volume = _planar_areas(self.node_2D, self.element_2D)
         
     def _normalize_element_indices(self, indices=None):
         """Normalize optional element indices into a 1D int32 array.
@@ -247,13 +274,15 @@ class Dragger:
         return corner_xy
     
     def _signed_area(self, points):
+        points = np.asarray(points, dtype=float)
+        points = points - points[0]
         total = 0
         for index, (x1, y1) in enumerate(points):
             x2, y2 = points[(index + 1) % len(points)]
             total += x1 * y2 - x2 * y1
         return total
     
-    def _search_faces(self, face, koz=0, indices=None, tolerance=0.01):   
+    def _search_faces(self, face, koz=0, indices=None):
         indices = self._normalize_element_indices(indices)
         
         if face is None:
@@ -268,41 +297,37 @@ class Dragger:
         face_dim = face["dim"]
         
         if face_type == "BOX":
-            mask_bl_x = (face_dim[0]+koz-tolerance < element_coordinates[:,:,0])
-            mask_bl_y = (face_dim[1]+koz-tolerance < element_coordinates[:,:,1])
-            mask_tr_x = (element_coordinates[:,:,0] < face_dim[2]-koz+tolerance)
-            mask_tr_y = (element_coordinates[:,:,1] < face_dim[3]-koz+tolerance)
-            mask = np.all(mask_bl_x & mask_bl_y & mask_tr_x & mask_tr_y, axis=1)
-            return mask
+            lower = np.minimum(face_dim[:2], face_dim[2:]) + koz
+            upper = np.maximum(face_dim[:2], face_dim[2:]) - koz
+            if np.any(lower > upper):
+                return np.zeros(len(indices), dtype=bool)
+            closest = np.clip(element_coordinates, lower, upper)
+            return np.all(within_distance(element_coordinates, closest, self.tolerance), axis=1)
         elif face_type == "POLYGON":
             flat_coordinates = element_coordinates.reshape(-1, 2)
             flat_mask = np.zeros(len(flat_coordinates), dtype=bool)
             
-            paths = [Path(np.array(poly, dtype=np.float64)) for poly in face_dim]
-            for loop_index, (poly, path) in enumerate(zip(face_dim, paths)):
-                depth = sum(
-                    other.contains_point(poly[0])
-                    for index, other in enumerate(paths)
-                    if index != loop_index
-                )
-                radius = tolerance if self._signed_area(poly) > 0 else -tolerance
-                # Expand hulls but shrink holes so points on either kind of
-                # boundary belong to the retained region, regardless of winding.
-                if depth % 2:
-                    radius = -radius
-                flat_mask_sub = path.contains_points(flat_coordinates, radius=radius)
-                
-                flat_mask ^= flat_mask_sub
+            boundary = np.zeros(len(flat_coordinates), dtype=bool)
+            for poly in face_dim:
+                loop = np.asarray(poly, dtype=np.float64)
+                if len(loop) < 3:
+                    continue
+                origin = loop[0]
+                flat_mask ^= Path(loop - origin).contains_points(flat_coordinates - origin)
+                for first, last in zip(loop, np.roll(loop, -1, axis=0)):
+                    boundary |= within_segment(flat_coordinates, first, last, self.tolerance)
+            flat_mask |= boundary
 
             # Combine loop parity per corner before requiring every corner to
             # be inside. Elements partially entering a hole must be excluded.
             return flat_mask.reshape(len(element_coordinates), 4).all(axis=1)
         elif face_type == "CIRCLE":
             center_x, center_y, radius = face_dim
-            dx = element_coordinates[:, :, 0] - center_x
-            dy = element_coordinates[:, :, 1] - center_y
-            distance_squared = dx * dx + dy * dy
-            return np.all(distance_squared <= (radius - koz + tolerance) ** 2, axis=1)
+            effective_radius = radius - koz
+            if effective_radius < 0:
+                return np.zeros(len(indices), dtype=bool)
+            return np.all(circle_membership(element_coordinates, [center_x, center_y],
+                                            effective_radius, self.tolerance), axis=1)
         else:
             raise ValueError(f"The face type {face_type} is not supported by Dragger")
         
@@ -455,7 +480,6 @@ class Dragger:
                     mask = self._search_faces(
                         density_face,
                         indices=target_indices,
-                        tolerance=min(0.01, koz / 100.0),
                     )
                 target_indices = target_indices[mask]
                 
@@ -500,11 +524,43 @@ class Dragger:
             as its bottom surface, keeping adjacent extrusions connected.
         """
         ### calculate drag_num & element_size
-        distance  = round(float(end) - float(begin), 5)
+        distance = float(end) - float(begin)
         if distance <= 0:
             return 0
-        drag_num = int(max(1, np.floor(distance / element_size)))
+        if within_distance(begin, end, self.tolerance):
+            raise GeometryToleranceError(
+                "a material layer cannot be resolved at geometryTolerance",
+                code="feature_below_resolution", stage="extrusion", begin=begin,
+                end=end, measured_distance=distance, tolerance=self.tolerance.absolute,
+            )
+        self.tolerance.check_resolution([begin, end], stage="extrusion")
+        if element_size <= self.tolerance.absolute:
+            raise GeometryToleranceError(
+                "requested Z element size must exceed geometryTolerance",
+                code="feature_below_resolution", stage="extrusion",
+                measured_distance=float(element_size), tolerance=self.tolerance.absolute,
+                begin=begin, end=end,
+            )
+        drag_num = subdivision_count(distance, element_size, rounding="floor")
         element_size = distance / drag_num
+        if element_size <= self.tolerance.absolute:
+            raise GeometryToleranceError(
+                "requested Z subdivision would create unresolved layers",
+                code="feature_below_resolution", stage="extrusion",
+                measured_distance=element_size, tolerance=self.tolerance.absolute,
+                begin=begin, end=end, subdivision_count=drag_num,
+            )
+        # Validate every represented cut before allocating or updating buffers.
+        z_cuts = np.linspace(begin, end, drag_num + 1, dtype=self.nodes.dtype)
+        gaps = np.diff(z_cuts)
+        if (np.any(~np.isfinite(z_cuts)) or np.any(gaps <= 0)
+                or np.any(within_distance(z_cuts[:-1, None], z_cuts[1:, None], self.tolerance))):
+            raise GeometryToleranceError(
+                "Z subdivision cannot represent distinct cuts above geometryTolerance",
+                code="numeric_resolution_exceeded", stage="extrusion",
+                measured_distance=float(np.min(gaps)), tolerance=self.tolerance.absolute,
+                begin=begin, end=end, subdivision_count=drag_num,
+            )
 
         ### target element index
         elem2D_idx = np.flatnonzero(self.element_2D_comp != 0)
@@ -544,7 +600,7 @@ class Dragger:
         dst_nodes = self.nodes[node_start : node_start + N * drag_num]
         dst_nodes[:, :2] = np.broadcast_to(xy, (drag_num, N, 2)).reshape(N * drag_num, 2)
 
-        z_vals = begin + element_size * (np.arange(1, drag_num + 1, dtype=dst_nodes.dtype))
+        z_vals = z_cuts[1:]
         dst_nodes[:, 2] = np.repeat(z_vals, N)
 
         self.node_num += N * drag_num
@@ -663,7 +719,7 @@ class Dragger:
             print(f"element_num: {self.element_num}")
             print(f"node_num: {self.node_num}")
 
-        return Mesh3D(
+        mesh = Mesh3D(
             nodes=self.nodes[: self.node_num],
             elements=self.elements[: self.element_num],
             element_comps=self.element_comps[: self.element_num],
@@ -676,6 +732,27 @@ class Dragger:
             sections=self.sections,
             element_node_num=self.element_node_num[: self.element_num],
         )
+        self.tolerance.check_resolution(mesh.nodes, stage="solid_validation")
+        if mesh.element_count:
+            corners = mesh.nodes[mesh.elements[:, :8]]
+            heights = corners[:, 4:, 2] - corners[:, :4, 2]
+            if np.any(heights <= 0) or np.any(~np.isfinite(heights)):
+                raise GeometryToleranceError(
+                    "extrusion produced a solid with non-positive height",
+                    code="invalid_solid", stage="solid_validation",
+                )
+            if np.any(within_distance(corners[:, :4, 2:3], corners[:, 4:, 2:3], self.tolerance)):
+                raise GeometryToleranceError(
+                    "extrusion produced a solid below geometryTolerance",
+                    code="feature_below_resolution", stage="solid_validation",
+                    measured_distance=float(np.min(heights)), tolerance=self.tolerance.absolute,
+                )
+            if not np.array_equal(corners[:, :4, :2], corners[:, 4:, :2]):
+                raise GeometryToleranceError(
+                    "extrusion produced unmatched lower and upper faces",
+                    code="invalid_solid", stage="solid_validation",
+                )
+        return mesh
 
 
 def _emit_progress(

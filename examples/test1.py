@@ -88,9 +88,8 @@ def main():
         mesh,
         center=center,
         radius=radius,
-        projection_tolerance=1,
-        guide_tolerance=1,
-        merge_tolerance=0.01,
+        projection_distance=1,
+        tolerance=0.001,
         minimum_area=0.01,
         guide_segments=reference_lines,
     )

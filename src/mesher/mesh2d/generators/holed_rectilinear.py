@@ -19,6 +19,9 @@ import math
 from typing import Any
 
 import numpy as np
+from mesher.tolerance import (GeometryTolerance, GeometryToleranceError, resolve_tolerance,
+                             subdivision_count, within_distance)
+from ._canonical import canonical_geometry
 from numpy.typing import ArrayLike, NDArray
 
 from ..editor import EditorMesh2D
@@ -244,14 +247,47 @@ class _Builder:
                                 for loop in domain.loops]
         self.index = None
         self._size_preflight_done = False
+        self.supports = [sorted({float(point[1 - axis]) for loop in domain.loops
+                                 for point in loop}) for axis in (0, 1)]
+
+    def support_coordinate(self, axis, coordinate):
+        """Reuse one support identity before evaluating a visibility interval."""
+        levels = self.supports[axis]
+        tolerance = self.domain.tolerance
+        lo = bisect_left(levels, math.nextafter(coordinate - tolerance, -math.inf))
+        hi = bisect_right(levels, math.nextafter(coordinate + tolerance, math.inf))
+        close = [value for value in levels[lo:hi]
+                 if within_distance(value, coordinate, self.domain.policy)]
+        if len(close) > 1:
+            raise GeometryToleranceError("a generated cut bridges distinct support identities",
+                                         code="ambiguous_geometry", stage="grid_cut", source="generated_support",
+                                         coordinate=coordinate, supports=close, tolerance=tolerance)
+        return close[0] if close else coordinate
 
     def add(self, axis, coordinate, interval, kind):
+        original = float(coordinate)
+        coordinate = self.support_coordinate(axis, original)
+        if coordinate != original:
+            interval = next((candidate for candidate in self.domain.intervals(axis, coordinate)
+                             if candidate.start_owner == interval.start_owner
+                             and candidate.end_owner == interval.end_owner
+                             and candidate.start <= interval.end and candidate.end >= interval.start), None)
+            if interval is None:
+                raise GeometryToleranceError("a generated cut changes topology within tolerance",
+                                             code="feature_below_resolution", stage="grid_cut",
+                                             source="generated_support", tolerance=self.domain.tolerance,
+                                             measured_distance=abs(original - coordinate),
+                                             coordinate=original, canonical_coordinate=coordinate)
         cut = _Cut(axis, float(coordinate), interval, kind)
         if cut.key in self.cuts:
             return False
         if self.index is not None and not self.index.split(cut):
             raise ValueError("a new visibility cut did not split any rectangle")
         self.cuts[cut.key] = cut
+        levels = self.supports[axis]
+        position = bisect_left(levels, coordinate)
+        if position == len(levels) or levels[position] != coordinate:
+            levels.insert(position, coordinate)
         a, b = cut.points
         self.boundary_points[interval.start_owner].add(a)
         self.boundary_points[interval.end_owner].add(b)
@@ -300,7 +336,7 @@ class _Builder:
                 if not math.isfinite(ratio):
                     self.budget.check(max(self.budget.limit, 2 * np.iinfo(np.int32).max) + 1,
                                       "sizing")
-                count = math.ceil(ratio)
+                count = subdivision_count(length, target)
                 self.budget.check(self.index.leaf_count + count - 1, "sizing")
                 # Median-first insertion avoids a linear-depth subdivision tree.
                 ranges = [(1, count)]
@@ -384,6 +420,12 @@ def _assemble(domain, rectangles, boundary_points, target, budget, *, patterns=(
         heights = rectangles[:, 3] - rectangles[:, 1]
         areas = widths * heights
         aspects = np.maximum(widths / heights, heights / widths)
+    minimum = float(min(np.min(widths), np.min(heights)))
+    if minimum <= domain.tolerance:
+        raise GeometryToleranceError("grid cuts create edges below geometric resolution",
+                                     code="feature_below_resolution", stage="grid_assembly",
+                                     source="generated_edges", measured_distance=minimum,
+                                     tolerance=domain.tolerance)
     if (not np.all(np.isfinite(areas)) or not np.all(areas > 0)
             or not np.all(np.isfinite(aspects))):
         raise ValueError("rectangle area or aspect ratio is not numerically representable")
@@ -433,12 +475,12 @@ def generate_rectilinear_mesh_optimal(
     *,
     holes: Iterable[ArrayLike] = (),
     pattern_lines: Iterable[ArrayLike] = (),
-    coordinate_tolerance: float = 1e-3,
+    tolerance: GeometryTolerance | float | None = None,
     max_elements: int = 1_000_000,
 ) -> RectilinearHolesResult:
     """Mesh an orthogonal polygon minus disjoint holes with rectangular Quad4s.
 
-    Geometry and retained pattern endpoints are fixed. Local geometric and
+    Geometry and retained pattern endpoints share canonical supports. Local geometric and
     pattern cuts stop at the first outer/hole boundary, while crossing other
     grid lines. Local equal subdivisions enforce the maximum edge size.
     At most one extra cut per hole repairs local boundary parity. If no local
@@ -448,8 +490,9 @@ def generate_rectilinear_mesh_optimal(
     Loops are finite ``(n, 2)`` XY arrays with optional repeated closure;
     patterns are finite horizontal/vertical ``(m, 2, 2)`` segments. Patterns
     are clipped to the domain. Holes must be strictly interior, separated,
-    and nonnested. ``coordinate_tolerance`` rejects ambiguous geometric
-    contacts; it never snaps coordinates or discards mandatory features.
+    and nonnested. ``tolerance`` is a policy or positive absolute distance,
+    defaulting to 1e-3. Coordinates within that distance share support values;
+    ambiguous clusters and collapsed required edges fail explicitly.
     ``max_elements`` is a positive integer budget checked before cell
     allocation; it is not a process-memory limit. Invalid, over-budget or
     numerically unrepresentable geometry raises ``ValueError``. Before area
@@ -464,9 +507,17 @@ def generate_rectilinear_mesh_optimal(
         raise ValueError("target_edge_size must be finite and positive") from exc
     if not math.isfinite(target) or target <= 0:
         raise ValueError("target_edge_size must be finite and positive")
+    policy = resolve_tolerance(tolerance)
+    if target <= policy.absolute:
+        raise GeometryToleranceError("target size must exceed the geometric tolerance",
+                                     code="feature_below_resolution", stage="grid_sampling",
+                                     source="target_edge_size", measured_distance=target,
+                                     target_size=target, tolerance=policy.absolute)
+    outer_outline, holes, pattern_lines = canonical_geometry(
+        outer_outline, holes, pattern_lines, policy)
     budget = _ElementBudget(max_elements)
-    domain = OrthogonalDomain(outer_outline, holes, coordinate_tolerance)
-    patterns = normalize_patterns(pattern_lines)
+    domain = OrthogonalDomain(outer_outline, holes, policy)
+    patterns = normalize_patterns(pattern_lines, policy)
     builder = _Builder(domain, budget)
     builder.seed(patterns, target)
     builder.size(target)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from mesher.tolerance import GeometryToleranceError, resolve_tolerance
 
 from ...model import Mesh2D, _validate_zero_z
 
@@ -199,12 +200,37 @@ def _stage_unit_1_1_1_x(
     return new_nodes, new_quads
 
 
+def _physical_boundary(nodes, boundary, tolerance):
+    policy = resolve_tolerance(tolerance)
+    points = nodes[boundary, :2]
+    policy.check_resolution(points, stage="unit_boundary", source="fixed_boundary")
+    lengths = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
+    if np.any(lengths <= policy.absolute):
+        raise GeometryToleranceError("a fixed unit boundary edge is below geometric resolution",
+                                     code="feature_below_resolution", stage="unit_boundary",
+                                     source="fixed_boundary", measured_distance=float(lengths.min()),
+                                     minimum_length=float(lengths.min()), tolerance=policy.absolute)
+    return policy
+
+
+def _physical_quads(nodes, quads, tolerance):
+    policy = resolve_tolerance(tolerance)
+    points = nodes[quads, :2]
+    lengths = np.linalg.norm(np.roll(points, -1, axis=1) - points, axis=2)
+    if np.any(lengths <= policy.absolute):
+        raise GeometryToleranceError("generated unit edges are below geometric resolution",
+                                     code="feature_below_resolution", stage="unit_construction",
+                                     source="generated_edges", measured_distance=float(lengths.min()),
+                                     minimum_length=float(lengths.min()), tolerance=policy.absolute)
+
+
 def build_unit_1_1_1_x(
     mesh: Mesh2D,
     edge1: np.ndarray,
     edge2: np.ndarray,
     edge3: np.ndarray,
     edge4: np.ndarray,
+    *, tolerance=None,
 ) -> Mesh2D:
     """Append an all-Quad4 patch bounded by three one-segment edges.
 
@@ -215,6 +241,9 @@ def build_unit_1_1_1_x(
 
     All inputs are validated before the mesh is changed. The patch interior is
     assumed to be empty; existing nodes and elements are preserved.
+    ``tolerance`` is a policy or positive absolute distance (default 1e-3).
+    Fixed and generated edges must exceed it; numerical shape checks remain
+    independent of this physical resolution.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
@@ -222,6 +251,7 @@ def build_unit_1_1_1_x(
     edges = (edge1, edge2, edge3, edge4)
     long_index = _validate_boundary(mesh, edges)
     boundary = np.concatenate([edge[:-1] for edge in edges])
+    policy = _physical_boundary(mesh.nodes, boundary, tolerance)
     if _polygon_area_twice(mesh.nodes[boundary]) < 0.0:
         edges = tuple(edge[::-1] for edge in edges[::-1])
         long_index = 3 - long_index
@@ -229,6 +259,7 @@ def build_unit_1_1_1_x(
     new_nodes, new_quads = _stage_unit_1_1_1_x(mesh.nodes, edges, long_index)
     combined_nodes = np.concatenate((mesh.nodes, new_nodes), axis=0)
     _validate_quads(combined_nodes, new_quads)
+    _physical_quads(combined_nodes, new_quads, policy)
     combined_elements = np.concatenate((mesh.elements, new_quads), axis=0)
     mesh.replace_data(nodes=combined_nodes, elements=combined_elements)
     return mesh

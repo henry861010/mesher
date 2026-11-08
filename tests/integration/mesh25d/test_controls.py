@@ -1,5 +1,6 @@
 import copy
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -9,6 +10,7 @@ from mesher.mesh25d.domain import SymmetryMode
 from mesher.mesh25d.geometry.assignments import extract_assignments
 from mesher.mesh25d.geometry.context import prepare_geometry
 from mesher.meshcontrol import get_control_obj
+from mesher.tolerance import GeometryToleranceError
 from .test_builder import _box_structure, _mesh_control
 
 
@@ -18,6 +20,27 @@ def section(method, start=0, end=35, size=10):
 
 
 class ControlIntegrationTests(unittest.TestCase):
+    def test_control_geometry_errors_retain_structured_context(self):
+        model = _box_structure()["root"]
+        control = section("Z_SECTION_TOP", size=.001)
+        with self.assertRaises(GeometryToleranceError) as caught:
+            resolve_controls(model, model, [control], global_element_size=1)
+        self.assertEqual(caught.exception.code, "feature_below_resolution")
+        self.assertEqual(caught.exception.context["control_index"], 0)
+        self.assertIn("controls[0]", caught.exception.context["source"])
+        self.assertEqual(caught.exception.context["tolerance"], .001)
+        self.assertEqual(caught.exception.context["measured_distance"], .001)
+        # Errors originating inside a control retain their code and evidence.
+        error = GeometryToleranceError("unrepresentable subdivision", code="numeric_resolution_exceeded",
+                                       stage="control_division", measured_distance=1e-10)
+        with patch("mesher.meshcontrol.methods.MeshControl_ZsectionTop.get_25D_z_controls", side_effect=error):
+            with self.assertRaises(GeometryToleranceError) as caught:
+                resolve_controls(model, model, [section("Z_SECTION_TOP")], global_element_size=1)
+        self.assertEqual(caught.exception.code, "numeric_resolution_exceeded")
+        self.assertEqual(caught.exception.context["stage"], "control_division")
+        self.assertEqual(caught.exception.context["measured_distance"], 1e-10)
+        self.assertEqual(caught.exception.context["control_index"], 0)
+
     def test_section_methods_produce_their_own_remainder_layers(self):
         structure = _box_structure()
         structure["root"]["bodies"][0]["geometry"]["thk"] = 35

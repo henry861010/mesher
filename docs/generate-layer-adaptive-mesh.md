@@ -78,7 +78,7 @@ assert result.diagnostics['added_elements'] > 0
 | `fixed_outer_boundary` | `False` | Python／NumPy boolean | `True` 時禁止外框新增、刪除或移動節點 |
 | `expand_size` | `None` | 有限正長度或 `None` | 控制擴展厚度；`None` 取 `element_size` |
 | `expand_ratio` | `1.0` | 有限數值，≥1 | 搜尋平行 pattern 的距離範圍倍率 |
-| `axis_tolerance` | `1e-3` | 有限數值，`0 ≤ value < 1` | source 邏輯邊相對長度的橫向偏差容許值；不移動 source |
+| `tolerance` | `GeometryTolerance(0.001)` | 有限正絕對距離或共用容差物件 | source 邏輯邊對軸向的實際偏離距離；與邊長無關、不移動 source |
 | `max_added_elements` | `1_000_000` | 正的 Python／NumPy 整數 | 本次 repair 與轉接新增 Quad4 的共同上限；等於上限可接受 |
 | `max_transition_count` | `20` | 正的 Python／NumPy 整數 | 一般 LINE 外框一段最多對應幾個 source 邊段；固定模式停用 |
 | `min_size_ratio` | `0.5` | 有限數值，`0 < value ≤ 1` | 一般 LINE 外框取樣間距下限相對 `element_size` 的比例；固定模式停用 |

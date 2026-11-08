@@ -139,12 +139,12 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] @ rotation.T * scale + shift
                 patterns = canonical_patterns @ rotation.T * scale + shift
                 snapshot = self._snapshot(mesh)
-                plan = plan_quad_sections(mesh, outline, .5 * scale, pattern_lines=patterns)
+                plan = plan_quad_sections(mesh, outline, .5 * scale, pattern_lines=patterns, tolerance=.001 * scale)
                 self.assert_unchanged(mesh, snapshot)
                 front = (plan.front - shift) @ rotation / scale
                 np.testing.assert_allclose(front.min(axis=0), [-.5, -.5], atol=1e-8)
                 np.testing.assert_allclose(front.max(axis=0), [4.5, 3.4], atol=1e-8)
-                generate_layer_adaptive_mesh(mesh, outline, .5 * scale, pattern_lines=patterns)
+                generate_layer_adaptive_mesh(mesh, outline, .5 * scale, pattern_lines=patterns, tolerance=.001 * scale)
                 self.assert_frozen_prefix(mesh, snapshot)
                 xy = (mesh.nodes[:, :2] - shift) @ rotation / scale
                 self.assert_axis_covered(mesh, [-.5, 3.4], [4.5, 3.4], xy=xy)
@@ -180,14 +180,19 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 mesh, outline = _grid()
                 self.assert_atomic_error(mesh, outline, patterns, code="unsupported_pattern_layout")
 
-    def test_long_guides_cannot_split_straight_or_shallow_frozen_edges(self):
+    def test_long_guides_reject_crossings_but_accept_within_tolerance_contacts(self):
         for tilted, pattern in ((False, [[-1000., 1.5], [1000., 1.5]]),
                                 (True, [[4.0002, -1000.], [4.0002, 1000.]])):
             with self.subTest(tilted=tilted):
                 mesh, outline = _rectangle()
                 if tilted:
                     mesh.nodes[2, 0] += .0004
-                self.assert_atomic_error(mesh, outline, [pattern], code="fixed_boundary_conflict")
+                if tilted:
+                    snapshot = self._snapshot(mesh)
+                    generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=[pattern])
+                    self.assert_frozen_prefix(mesh, snapshot)
+                else:
+                    self.assert_atomic_error(mesh, outline, [pattern], code="fixed_boundary_conflict")
 
     def test_pattern_crossing_a_remote_old_cell_is_rejected(self):
         mesh, outline = _rectangle()

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 import numpy as np
+from mesher.tolerance import within_distance
 
 
 def cross(a, b):
@@ -91,8 +92,12 @@ class BoxIndex:
 def on_segment(p, a, b, tol):
     d, v = b - a, p - a
     length = float(np.linalg.norm(d))
-    return (length > tol and abs(float(cross(d, v))) <= tol * length
-            and -tol * length <= float(v @ d) <= length * length + tol * length)
+    if length <= tol:
+        return False
+    if tol == 0:
+        return bool(cross(d, v) == 0 and 0 <= v @ d <= length * length)
+    nearest = a + np.clip(float(v @ d) / (length * length), 0., 1.) * d
+    return within_distance(p, nearest, tol)
 
 
 def segment_contacts(a, b, c, d, tol):
@@ -138,9 +143,14 @@ def point_location(point, polygon, tol):
     length = np.linalg.norm(delta, axis=1)
     relative = point - a
     projection = np.sum(relative * delta, axis=1)
-    if np.any((np.abs(cross(delta, relative)) <= tol * length)
-              & (projection >= -tol * length)
-              & (projection <= length * length + tol * length)):
+    fraction = np.divide(projection, length * length, out=np.zeros_like(projection),
+                         where=length != 0)
+    nearest = a + np.clip(fraction, 0., 1.)[:, None] * delta
+    # A zero tolerance is reserved for exact topological/numerical predicates.
+    on_boundary = ((cross(delta, relative) == 0) & (projection >= 0)
+                   & (projection <= length * length) if tol == 0
+                   else within_distance(point, nearest, tol))
+    if np.any(on_boundary):
         return 0
     crossing = (a[:, 1] > point[1]) != (b[:, 1] > point[1])
     selected_a, selected_b = a[crossing], b[crossing]

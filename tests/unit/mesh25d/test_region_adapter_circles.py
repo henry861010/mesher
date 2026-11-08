@@ -14,7 +14,7 @@ def _plan(bounds=None):
     pattern = Pattern2D(
         {"type": "CIRCLE", "dim": [0, 0, 20]},
         [{"type": "CIRCLE", "dim": [0, 0, 5]}],
-        {}, {}, 1e-3, 1e-6,
+        {}, {}, 0.001,
     )
     xy = ([] if bounds is None else [
         {"region": {"type": "BOX", "dim": list(bounds)}, "element_size": 0.1},

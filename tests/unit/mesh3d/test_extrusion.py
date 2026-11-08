@@ -4,9 +4,42 @@ import numpy as np
 
 from mesher.mesh3d.extrusion import Dragger, START_DENSITY
 from mesher.mesh2d.generators import generate_rectilinear_mesh
+from mesher.tolerance import GeometryToleranceError
 
 
 class PolygonFaceSelectionTests(unittest.TestCase):
+    def test_unresolved_z_subdivision_is_rejected_before_buffer_changes(self):
+        for begin, end, size, code in (
+            (0.0, 1.0, .001, "feature_below_resolution"),
+            (0.0, 1.0, .0005, "feature_below_resolution"),
+            (1e9, 1e9 + .0100001, .001000005, "numeric_resolution_exceeded"),
+        ):
+            dragger = Dragger()
+            dragger.set_2D([[0, 0], [1, 0], [1, 1], [0, 1]], [[0, 1, 2, 3]])
+            dragger.element_2D_comp[:] = 1
+            before = {name: value.copy() for name, value in vars(dragger).items()
+                      if isinstance(value, np.ndarray)}
+            with self.subTest(begin=begin, size=size), self.assertRaises(GeometryToleranceError) as caught:
+                dragger._drag(size, begin, end)
+            self.assertEqual(caught.exception.code, code)
+            self.assertEqual(dragger.node_num, 0)
+            self.assertEqual(dragger.element_num, 0)
+            for name, expected in before.items():
+                np.testing.assert_array_equal(getattr(dragger, name), expected)
+
+    def test_rejected_source_geometry_preserves_previous_dragger_state(self):
+        dragger = Dragger()
+        dragger.set_2D([[0, 0], [1, 0], [1, 1], [0, 1]], [[0, 1, 2, 3]])
+        before = {name: value.copy() for name, value in vars(dragger).items()
+                  if isinstance(value, np.ndarray)}
+        for nodes in ([[0, 0], [.0004, 0], [.0004, 1], [0, 1]],
+                      [[0, 0], [1, 0], [.1, .1], [0, 1]],
+                      [[0, 0], [1, 1], [1, 0], [0, 1]]):
+            with self.subTest(nodes=nodes), self.assertRaises(ValueError):
+                dragger.set_2D(nodes, [[0, 1, 2, 3]])
+            for name, expected in before.items():
+                np.testing.assert_array_equal(getattr(dragger, name), expected)
+
     def test_partial_hole_entry_is_rejected_for_either_loop_winding(self):
         dragger = Dragger()
         # First quad enters the hole with two corners; the second only

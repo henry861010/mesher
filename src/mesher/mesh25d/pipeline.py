@@ -6,7 +6,7 @@ from typing import Any
 
 from process_flow_kernel import validate_geometry_semantic_keys
 
-from ..contracts.process_flow_2_5d import mesh_control_settings
+from ..contracts.process_flow_2_5d import mesh_control_settings, mesh_control_tolerance
 from ..mesh3d.model import Mesh3D
 from .controls import resolve_controls
 from .domain import normalize_symmetry
@@ -32,6 +32,7 @@ def build_mesh(
     """
     stage = _start_stage(progress, "validating", "Checking geometry input.")
     element_size, symmetry, _ = mesh_control_settings(mesh_control)
+    tolerance = mesh_control_tolerance(mesh_control)
     region_meshing = mesh_control.get("regionMeshing", "grid")
     normalized_symmetry = normalize_symmetry(symmetry)
     validate_geometry_semantic_keys(geometry_structure)
@@ -39,10 +40,11 @@ def build_mesh(
     _complete_stage(progress, "validating", stage)
 
     stage = _start_stage(progress, "analyzing_geometry", "Analyzing geometry patterns.")
-    geometry = prepare_geometry(root, normalized_symmetry)
+    geometry = prepare_geometry(root, normalized_symmetry, tolerance=tolerance)
     controls = resolve_controls(
-        root, geometry.container, mesh_control["controls"],
+        geometry.original, geometry.container, mesh_control["controls"],
         global_element_size=element_size,
+        tolerance=tolerance,
     )
     plan2d = plan_2d(
         geometry.pattern, controls, element_size=element_size, domain=geometry.domain,
@@ -50,6 +52,7 @@ def build_mesh(
     )
     plan3d = plan_layers(
         extract_assignments(geometry.container), controls.z, element_size=element_size,
+        tolerance=tolerance,
     )
     layer_infos = plan3d.layer_infos
     _complete_stage(
@@ -66,6 +69,8 @@ def build_mesh(
             "assignmentCount": sum(len(info["assignments"]) for info in layer_infos[:-1]),
             "planarElementSize": plan2d.element_size,
             "symmetry": normalized_symmetry.value,
+            "geometryTolerance": tolerance.absolute,
+            "unitSystem": mesh_control["unitSystem"],
             "regionMeshing": region_meshing,
             **({"adapterRegions": plan2d.adaptive.region_summary() if plan2d.adaptive else []}
                if region_meshing == "adapter" else {}),

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...mesh3d import Mesh3D
+from ...tolerance import resolve_tolerance
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
@@ -16,9 +17,13 @@ def write_cdb_text(
     *,
     mesh: Mesh3D,
     progress: ProgressCallback | None = None,
+    tolerance=None,
+    unit_system: str = "um",
 ) -> dict[str, object]:
     """Write a 3D mesh to a deterministic line-oriented CDB text artifact."""
     path = Path(output_path)
+    policy = resolve_tolerance(tolerance)
+    policy.check_resolution(mesh.nodes, stage="export")
     total_records = (
         mesh.node_count
         + 6 * mesh.element_count
@@ -48,6 +53,9 @@ def write_cdb_text(
     with path.open("w", encoding="utf-8", buffering=1024 * 1024) as handle:
         handle.write("# Process Flow CDB text export\n")
         handle.write("# Format: raw mesh array sections\n")
+        handle.write(f"# unit_system={unit_system}\n")
+        handle.write(f"# geometry_tolerance={policy.absolute!r}\n")
+        handle.write("# tolerance_policy_version=1\n")
         handle.write(f"node_count={mesh.node_count}\n")
         handle.write(f"element_count={mesh.element_count}\n")
         handle.write(f"component_count={mesh.component_count}\n")
@@ -160,8 +168,11 @@ def write_cdb_text(
         "typeCount": len(mesh.types),
         "realCount": len(mesh.reals),
         "sectionCount": len(mesh.sections),
+        "geometryTolerance": policy.absolute,
+        "unitSystem": unit_system,
+        "tolerancePolicyVersion": "1",
     }
 
 
 def _format_float(value: object) -> str:
-    return f"{float(value):.12g}"
+    return repr(float(value))

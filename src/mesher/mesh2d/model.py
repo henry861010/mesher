@@ -41,6 +41,32 @@ class Mesh2D:
         self._nodes = normalized_nodes
         self._elements = normalized_elements
 
+    @classmethod
+    def from_planar(cls, nodes: ArrayLike, elements: ArrayLike, *, tolerance=None):
+        """Explicitly normalize finite XYZ plane noise to the exact Z=0 model.
+
+        The constructor remains strict. This adapter owns a copy and only moves
+        Z coordinates whose distance to the XY plane is within the given policy.
+        """
+        from ..tolerance import GeometryToleranceError, resolve_tolerance, within_distance
+
+        policy = resolve_tolerance(tolerance)
+        values = np.array(nodes, dtype=float, copy=True)
+        if values.ndim != 2 or values.shape[1] not in (2, 3):
+            raise ValueError("nodes must have shape (n, 2) or (n, 3).")
+        policy.check_resolution(values, stage="planar_normalization")
+        if values.shape[1] == 3:
+            accepted = within_distance(values[:, 2, None], np.zeros((len(values), 1)), policy)
+            if not np.all(accepted):
+                index = int(np.flatnonzero(~accepted)[0])
+                raise GeometryToleranceError(
+                    "node is farther from the XY plane than the geometric tolerance",
+                    code="fixed_constraint_conflict", stage="planar_normalization",
+                    node_index=index, measured_distance=abs(float(values[index, 2])),
+                    tolerance=policy.absolute)
+            values[:, 2] = 0.0
+        return cls(values, elements)
+
     @property
     def nodes(self) -> NDArray[np.float64]:
         return self._nodes

@@ -16,7 +16,7 @@ def box_plan(controls, *, bounds=None, global_size=20):
     pattern = Pattern2D(
         base_face={"type": "BOX", "dim": [0, 0, 20, 20] if bounds is None else bounds},
         faces=[], circle_sources={}, koz_circle_sources={},
-        coordinate_tolerance=1e-6, clearance_tolerance=1e-6,
+        tolerance=0.001,
     )
     return plan_2d(
         pattern, ResolvedControls(controls, [], []), element_size=global_size,
@@ -93,7 +93,7 @@ class XYGridPlanningTests(unittest.TestCase):
         pattern = Pattern2D(
             base_face={"type": "CIRCLE", "dim": [0, 0, 1]}, faces=[],
             circle_sources={}, koz_circle_sources={},
-            coordinate_tolerance=1e-6, clearance_tolerance=1e-6,
+            tolerance=0.001,
         )
         plans = [plan_2d(
             pattern, ResolvedControls(controls, [], []), element_size=1,

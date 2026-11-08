@@ -126,13 +126,20 @@ class LineSamplingTests(unittest.TestCase):
         self.assert_infeasible(lambda: line_count_bounds([1.25, 10], 2, 1, 1e-10, 10, 0.9))
         self.assert_infeasible(lambda: line_count_bounds([1.5], 1, 1, 1e-10, 10, 1))
 
-    def test_tolerance_accepts_almost_exact_size_bounds(self):
-        for delta in (-5e-11, 5e-11):
+    def test_numerical_roundoff_accepts_almost_exact_size_bounds(self):
+        for delta in (-np.spacing(2.), np.spacing(2.)):
             with self.subTest(delta=delta):
                 sampler = LineSampling(_xyz([0, 1, 2 + delta]), _xyz([0, 2 + delta], 1),
                                        1, 1e-10, min_size_ratio=1, max_transition_count=10)
                 self.assertEqual(sampler.counts(2, 2), [2])
                 sampler.validate_sample(sampler.sample(2)[0])
+
+    def test_geometric_tolerance_does_not_relax_subdivision_counts(self):
+        for delta in (-5e-11, 5e-11):
+            with self.subTest(delta=delta):
+                self.assert_infeasible(lambda: LineSampling(
+                    _xyz([0, 1, 2 + delta]), _xyz([0, 2 + delta], 1),
+                    1, 1e-10, min_size_ratio=1, max_transition_count=10))
 
     def test_density_and_count_planning_do_not_allocate_the_output_front(self):
         with patch.object(LineSampling, "sample", side_effect=AssertionError("must not sample")):

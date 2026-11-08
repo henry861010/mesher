@@ -189,7 +189,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         )
         return mesh, inner_nodes, outer_nodes
 
-    def assert_valid_elements(self, mesh, new_elements):
+    def assert_valid_elements(self, mesh, new_elements, tolerance=None):
         self.assertGreater(new_elements.shape[0], 0)
         for element in new_elements:
             perimeter = _element_perimeter(element)
@@ -201,7 +201,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         self.assertTrue(np.all(signed_areas > 0.0))
 
         report = MeshQualityChecker(
-            Mesh2D(nodes=np.asarray(mesh.nodes)[:, :2], elements=new_elements)
+            Mesh2D(nodes=np.asarray(mesh.nodes)[:, :2], elements=new_elements), tolerance=tolerance
         ).check_jacobian()
         self.assertEqual(report.invalid_indices.size, 0)
         self.assertTrue(np.all(report.values > 0.0))
@@ -386,7 +386,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             elements=np.empty((0, 4), dtype=np.int32),
         )
 
-        _mesh_inner_outer_circle(mesh, inner_nodes, outer_nodes, closed=True)
+        _mesh_inner_outer_circle(mesh, inner_nodes, outer_nodes, closed=True, tolerance=1e-8)
 
         inner_set = set(map(int, inner_nodes))
         outer_set = set(map(int, outer_nodes))
@@ -930,6 +930,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
             inner_nodes,
             outer_nodes,
             closed=True,
+            tolerance=1e-12,
         )
 
         self.assertIs(result, mesh)
@@ -937,7 +938,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
         np.testing.assert_array_equal(mesh.nodes, original_values)
         self.assertLess(mesh.elements.shape[0], 12)
         self.assertTrue(np.any(mesh.elements[:, 2] != mesh.elements[:, 3]))
-        self.assert_valid_elements(mesh, mesh.elements)
+        self.assert_valid_elements(mesh, mesh.elements, tolerance=1e-12)
 
     def test_existing_triangle_inside_annulus_is_an_atomic_error(self):
         inner_points = _points_on_circle(

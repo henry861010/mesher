@@ -4,6 +4,9 @@ from typing import NamedTuple
 
 import numpy as np
 
+from ....tolerance import (GeometryToleranceError, resolve_tolerance, subdivision_count,
+                          circle_membership, within_distance)
+
 from ...model import Mesh2D
 from ..utils.pattern_segments import (
     _PatternGuideSet,
@@ -44,10 +47,14 @@ def _add_pattern_anchor(
     matches = [
         position
         for position, record in enumerate(anchor_records)
-        if np.hypot(*(point - record["point"])) <= linear_tolerance
+        if within_distance(point, record["point"], linear_tolerance)
     ]
     if len(matches) > 1:
-        raise ValueError("pattern guide_segments produce ambiguous circle anchors")
+        raise GeometryToleranceError(
+            "pattern guide_segments produce ambiguous circle anchors",
+            code="ambiguous_geometry", stage="circular pattern anchors",
+            point=point.tolist(), anchor_indices=matches, tolerance=linear_tolerance,
+        )
     if not matches:
         anchor_records.append(
             {
@@ -61,14 +68,24 @@ def _add_pattern_anchor(
     constraints = record["constraints"]
     previous = constraints.get(int(fixed_axis))
     if previous is not None and previous != float(fixed_value):
-        raise ValueError("pattern guide_segments produce conflicting circle anchors")
+        raise GeometryToleranceError(
+            "pattern guide_segments produce conflicting circle anchors",
+            code="fixed_constraint_conflict", stage="circular pattern anchors",
+            fixed_axis=int(fixed_axis), fixed_values=[previous, float(fixed_value)],
+            distance=abs(previous - float(fixed_value)), tolerance=linear_tolerance,
+        )
     constraints[int(fixed_axis)] = float(fixed_value)
     merged = np.asarray(record["point"], dtype=np.float64).copy()
     for axis, value in constraints.items():
         merged[int(axis)] = value
-    radial_distance = float(np.hypot(*(merged - center)))
-    if abs(radial_distance - radius) > fit_tolerance:
-        raise ValueError("pattern line anchors cannot lie on one circle node")
+    if not circle_membership(merged, center, radius, fit_tolerance, boundary=True):
+        raise GeometryToleranceError(
+            "pattern line anchors cannot lie on one circle node",
+            code="fixed_constraint_conflict", stage="circular pattern anchors",
+            point=merged.tolist(), radius=radius,
+            radial_residual=abs(float(np.hypot(*(merged - center))) - radius),
+            tolerance=fit_tolerance,
+        )
     record["point"] = merged
 
 
@@ -104,7 +121,8 @@ def _subdivisions_for_gap(
     )
     if not np.isfinite(requested) or requested > maximum_node_count:
         raise ValueError("target_edge_size would require too many circle nodes")
-    return max(1, int(np.ceil(requested)))
+    return (subdivision_count(arc_length, target_edge_size) if np.isfinite(arc_length)
+            else subdivision_count(gap, angular_step))
 
 
 class _PatternCircleInputs(NamedTuple):
@@ -132,6 +150,7 @@ def _read_pattern_circle_inputs(
     radius,
     target_edge_size,
     guide_segments,
+    tolerance=None,
 ):
     """Normalize pattern-circle mesh, scalar, and line inputs.
 
@@ -189,14 +208,10 @@ def _read_pattern_circle_inputs(
         raise ValueError("target_edge_size must be positive")
 
     coordinate_scale = max(abs(radius), *np.abs(center).tolist())
-    linear_tolerance = max(
-        64.0 * np.finfo(np.float64).eps * coordinate_scale,
-        256.0 * np.finfo(np.float64).eps * radius,
-    )
+    policy = resolve_tolerance(tolerance)
+    policy.check_resolution(np.asarray([center - radius, center + radius]), stage="circle pattern")
     pattern_guides = _coerce_pattern_guides(
-        guide_segments,
-        coordinate_scale=coordinate_scale,
-        minimum_tolerance=linear_tolerance,
+        guide_segments, coordinate_scale=coordinate_scale, tolerance=policy,
     )
     return _PatternCircleInputs(
         nodes,
@@ -402,8 +417,7 @@ def _validate_pattern_circle(
     if circle_xy.shape[0] < 3 or not np.all(np.isfinite(circle_xy)):
         raise ValueError("pattern circle must contain at least three finite nodes")
     offsets = circle_xy - center
-    distances = np.hypot(offsets[:, 0], offsets[:, 1])
-    if np.any(np.abs(distances - radius) > fit_tolerance):
+    if not np.all(circle_membership(circle_xy, center, radius, fit_tolerance, boundary=True)):
         raise ValueError("generated pattern nodes do not lie on the target circle")
     generated_angles = np.mod(
         np.arctan2(offsets[:, 1], offsets[:, 0]),
@@ -541,8 +555,7 @@ def _validate_pattern_arc(
         raise ValueError("generated pattern-arc endpoints were not preserved")
 
     offsets = arc_xy - center
-    distances = np.hypot(offsets[:, 0], offsets[:, 1])
-    if np.any(np.abs(distances - radius) > fit_tolerance):
+    if not np.all(circle_membership(arc_xy, center, radius, fit_tolerance, boundary=True)):
         raise ValueError("generated pattern nodes do not lie on the target circle")
     start_offset = arc_endpoints[0] - center
     end_offset = arc_endpoints[1] - center
@@ -569,6 +582,7 @@ def _generate_pattern_circle_nodes(
     target_edge_size,
     guide_segments=None,
     arc_endpoints=None,
+    tolerance=None,
 ) -> np.ndarray:
     """Return a CCW ring or endpoint-bounded arc with bounded spacing.
 
@@ -606,6 +620,7 @@ def _generate_pattern_circle_nodes(
         radius,
         target_edge_size,
         guide_segments,
+        tolerance,
     )
     nodes, center, radius, target_edge_size, pattern_guides = inputs
 
@@ -613,11 +628,8 @@ def _generate_pattern_circle_nodes(
     # this local circle.  Each segment receives its own scale below.
     scale_values = [abs(radius), *np.abs(center).tolist()]
     coordinate_scale = max(scale_values)
-    linear_tolerance = max(
-        64.0 * np.finfo(np.float64).eps * coordinate_scale,
-        256.0 * np.finfo(np.float64).eps * radius,
-    )
-    fit_tolerance = max(linear_tolerance, 1.0e-9 * radius)
+    linear_tolerance = resolve_tolerance(tolerance).absolute
+    fit_tolerance = linear_tolerance
     angular_tolerance = max(
         256.0 * np.finfo(np.float64).eps,
         linear_tolerance / radius,
@@ -660,12 +672,7 @@ def _generate_pattern_circle_nodes(
             np.isfinite(arc_endpoints)
         ):
             raise ValueError("arc_endpoints must have shape (2, 2)")
-        endpoint_offsets = arc_endpoints - center
-        endpoint_radii = np.hypot(
-            endpoint_offsets[:, 0],
-            endpoint_offsets[:, 1],
-        )
-        if np.any(np.abs(endpoint_radii - radius) > fit_tolerance):
+        if not np.all(circle_membership(arc_endpoints, center, radius, fit_tolerance, boundary=True)):
             raise ValueError("arc_endpoints must lie on the pattern circle")
         circle_xy = _sample_pattern_arc(
             anchor_records,

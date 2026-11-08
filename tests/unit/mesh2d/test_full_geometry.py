@@ -113,11 +113,11 @@ class FullGeometryTests(unittest.TestCase):
         with self.assertRaises(QuadLayerError):
             validate_fronts(topology, [front])
 
-    def test_front_separation_uses_global_coordinate_tolerance(self):
+    def test_front_separation_uses_global_tolerance(self):
         mesh = EditorMesh2D.merge(_rectangle(), _rectangle(4.0005, 0., 6., 3.))
         with self.assertRaises(QuadLayerError):
             discover_boundaries(mesh, _outer())
-        topology = discover_boundaries(mesh, _outer(), coordinate_tolerance=1e-4)
+        topology = discover_boundaries(mesh, _outer(), tolerance=1e-4)
         validate_fronts(topology, _fronts(mesh, topology))
 
     def test_section_front_retains_every_anchor_and_implicit_closure(self):

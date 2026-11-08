@@ -64,7 +64,7 @@ def build_global_projection_reference(target_size, outer, holes, patterns):
     """
     coordinates = np.vstack([outer, *holes, patterns.reshape(-1, 2)])
     full_grid = generate_rectilinear_mesh(
-        target_size, coordinates[:, 0], coordinates[:, 1], coordinate_tolerance=0.0
+        target_size, coordinates[:, 0], coordinates[:, 1], tolerance=0.001
     )
     centers = full_grid.nodes[full_grid.elements, :2].mean(axis=1)
     keep = _inside_polygon(centers, outer)

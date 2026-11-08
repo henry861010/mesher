@@ -133,13 +133,13 @@ class FixedLayerBoundaryTests(unittest.TestCase):
             repair_slots=False, fixed_outer_boundary=True).diagnostics["added_elements"]
         mesh = Mesh2D(source.nodes, source.elements)
         result = _mesher._generate_layer_adaptive_mesh(
-            mesh, outline, 1e-6, outline_o=target, repair_slots=False,
+            mesh, outline, 1e-6, outline_o=target, repair_slots=False, tolerance=1e-8,
             max_added_elements=count, fixed_outer_boundary=True)
         self.assertEqual(result.diagnostics["added_elements"], count)
         self.assert_exact_interface(mesh, result, target)
         rejected = Mesh2D(source.nodes, source.elements)
         error = self.assert_atomic_failure(rejected, lambda: _mesher._generate_layer_adaptive_mesh(
-            rejected, outline, 1e-6, outline_o=target, repair_slots=False,
+            rejected, outline, 1e-6, outline_o=target, repair_slots=False, tolerance=1e-8,
             max_added_elements=count - 1, fixed_outer_boundary=True))
         self.assertEqual(error.code, "element_limit_exceeded")
 

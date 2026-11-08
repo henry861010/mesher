@@ -61,32 +61,36 @@ class OrthogonalDomainTests(unittest.TestCase):
         self.assertEqual(domain.intervals(0, 2), (Interval(0, 2, 0, 0), Interval(6, 8, 0, 0)))
 
     def test_strict_contains_and_exact_boundary_queries(self):
-        domain = OrthogonalDomain(box(0, 0, 4, 4), [box(1, 1, 2, 2)], coordinate_tolerance=0.01)
+        domain = OrthogonalDomain(box(0, 0, 4, 4), [box(1, 1, 2, 2)], tolerance=0.01)
         self.assertTrue(domain.contains([0.001, 2]))
         self.assertIsNone(domain.boundary_owner([0.001, 2]))
         self.assertEqual(domain.boundary_owner([0, 2]), 0)
         self.assertFalse(domain.contains([0, 2]))
         self.assertFalse(domain.contains([1.5, 1.5]))
 
-    def test_close_collinear_anchors_are_retained_without_snapping(self):
-        outer = [[0, 0], [0.0001, 0], [0.0002, 0], [4, 0], [4, 4], [0, 4]]
-        domain = OrthogonalDomain(outer, coordinate_tolerance=0.01)
+    def test_unresolved_collinear_anchors_are_rejected_without_modifying_input(self):
+        outer = np.array([[0, 0], [0.0001, 0], [0.0002, 0], [4, 0], [4, 4], [0, 4]])
+        original = outer.copy()
+        with self.assertRaisesRegex(ValueError, "feature_below_resolution"):
+            OrthogonalDomain(outer, tolerance=0.01)
+        np.testing.assert_array_equal(outer, original)
+        domain = OrthogonalDomain(outer, tolerance=1e-5)
         np.testing.assert_array_equal(domain.loops[0], outer)
 
     def test_similar_coordinate_levels_far_apart_are_allowed(self):
         domain = OrthogonalDomain(
             box(0, 0, 20, 20),
             [box(1, 1, 3, 3), box(10, 3.0001, 12, 5)],
-            coordinate_tolerance=0.01,
+            tolerance=0.01,
         )
-        self.assertEqual(domain.loops[2][0, 1], 3.0001)
+        self.assertEqual(domain.loops[2][0, 1], 3.0)
 
     def test_physical_near_contacts_are_rejected(self):
         for holes in ([box(0.005, 1, 2, 3)], [box(1, 1, 3, 3), box(3.005, 1, 5, 3)]):
-            with self.subTest(holes=holes), self.assertRaisesRegex(ValueError, "coordinate_tolerance"):
-                OrthogonalDomain(box(0, 0, 10, 10), holes, coordinate_tolerance=0.01)
-        with self.assertRaisesRegex(ValueError, "coordinate_tolerance"):
-            OrthogonalDomain(box(0, 0, 1, 0.005), coordinate_tolerance=0.01)
+            with self.subTest(holes=holes), self.assertRaisesRegex(ValueError, "tolerance"):
+                OrthogonalDomain(box(0, 0, 10, 10), holes, tolerance=0.01)
+        with self.assertRaisesRegex(ValueError, "tolerance"):
+            OrthogonalDomain(box(0, 0, 1, 0.005), tolerance=0.01)
 
     def test_invalid_loop_shapes_are_rejected(self):
         invalid = [
@@ -122,7 +126,7 @@ class OrthogonalDomainTests(unittest.TestCase):
     def test_tolerance_and_query_validation(self):
         for value in (-1, float("inf"), float("nan"), True, "bad"):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                OrthogonalDomain(box(0, 0, 4, 4), coordinate_tolerance=value)
+                OrthogonalDomain(box(0, 0, 4, 4), tolerance=value)
         domain = OrthogonalDomain(box(0, 0, 4, 4))
         with self.assertRaises(ValueError):
             domain.intervals(2, 1)
@@ -140,7 +144,7 @@ class OrthogonalDomainTests(unittest.TestCase):
             [box(first, 1, 1, 2), box(second, 3, 1, 4)],
         )
         self.assertEqual(domain.section_after(1, first),
-                         (Interval(0, 1, 0, 1), Interval(2, 6, 1, 0)))
+                         (Interval(0, 1, 0, 1), Interval(2, 3, 1, 2), Interval(4, 6, 2, 0)))
         self.assertEqual(domain.section_after(1, second),
                          (Interval(0, 1, 0, 1), Interval(2, 3, 1, 2), Interval(4, 6, 2, 0)))
         self.assertEqual(domain.section_after(1, 1), (Interval(0, 6, 0, 0),))
@@ -189,36 +193,36 @@ class OrthogonalDomainTests(unittest.TestCase):
 
     def test_spatial_validation_preserves_inclusive_tolerance_decision(self):
         outer = box(0, 0, 20, 20)
-        with self.assertRaisesRegex(ValueError, "coordinate_tolerance"):
+        with self.assertRaisesRegex(ValueError, "tolerance"):
             OrthogonalDomain(outer, [box(2, 2, 5, 5), box(6, 2, 9, 5)],
-                             coordinate_tolerance=1)
+                             tolerance=1)
         domain = OrthogonalDomain(
             outer, [box(2, 2, 5, 5), box(np.nextafter(6., np.inf), 2, 9, 5)],
-            coordinate_tolerance=1,
+            tolerance=1,
         )
         self.assertEqual(len(domain.loops), 3)
 
     def test_numeric_envelope_rejects_before_overflowing_area_arithmetic(self):
         with np.errstate(over="raise", invalid="raise"):
             with self.assertRaisesRegex(ValueError, "area-accumulation numeric range"):
-                OrthogonalDomain(box(0, 0, 1e154, 1e154))
+                OrthogonalDomain(box(0, 0, 1e154, 1e154), tolerance=1e140)
             maximum = np.finfo(float).max
-            with self.assertRaisesRegex(ValueError, "coordinate spans"):
+            with self.assertRaisesRegex(ValueError, "numeric_resolution_exceeded"):
                 OrthogonalDomain(box(-maximum, 0, maximum, 1))
 
     def test_numeric_envelope_includes_all_loops(self):
         # Each loop fits separately, while their combined weighted bound does not.
-        OrthogonalDomain(box(0, 0, 3e153, 3e153))
-        OrthogonalDomain(box(0, 0, 2e153, 2e153))
+        OrthogonalDomain(box(0, 0, 3e153, 3e153), tolerance=1e140)
+        OrthogonalDomain(box(0, 0, 2e153, 2e153), tolerance=1e140)
         with self.assertRaisesRegex(ValueError, "area-accumulation numeric range"):
             OrthogonalDomain(box(0, 0, 3e153, 3e153),
-                             [box(5e152, 5e152, 2.5e153, 2.5e153)])
+                             [box(5e152, 5e152, 2.5e153, 2.5e153)], tolerance=1e140)
 
     def test_numeric_envelope_allows_small_scales_and_large_origins(self):
-        small = OrthogonalDomain(box(0, 0, 1e-150, 1e-150), coordinate_tolerance=0)
+        small = OrthogonalDomain(box(0, 0, 1e-150, 1e-150), tolerance=1e-155)
         self.assertAlmostEqual(small.area / 1e-300, 1)
         origin, extent = 1e150, 1e135
-        domain = OrthogonalDomain(box(origin, origin, origin + extent, origin + extent))
+        domain = OrthogonalDomain(box(origin, origin, origin + extent, origin + extent), tolerance=8e134)
         actual_span = (origin + extent) - origin
         self.assertEqual(domain.area, actual_span * actual_span)
 

@@ -4,6 +4,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from ....tolerance import resolve_tolerance, circle_membership
+
 from ...model import Mesh2D, _validate_zero_z
 
 from .geometry import (
@@ -240,14 +242,7 @@ def _validate_circle_targets(
         raise ValueError("projected circle coordinates exceed float64 range")
 
     target_offsets = candidate_xy - center
-    target_distances = np.hypot(
-        target_offsets[:, 0],
-        target_offsets[:, 1],
-    )
-    if np.any(
-        np.abs(target_distances - radius)
-        > max(tolerance, radius * 1.0e-12)
-    ):
+    if not np.all(circle_membership(candidate_xy, center, radius, tolerance, boundary=True)):
         raise ValueError("a generated target node is not on the circle")
 
     target_raw_angles = np.arctan2(
@@ -356,6 +351,7 @@ def _read_projection_inputs(
     node_indices,
     guide_segments,
     closed,
+    tolerance=None,
 ):
     """Normalize every input needed by boundary projection.
 
@@ -446,11 +442,13 @@ def _read_projection_inputs(
     if selected_xy.size:
         scale_values.append(float(np.max(np.abs(selected_xy))))
     coordinate_scale = max(scale_values)
-    tolerance = 64.0 * np.finfo(np.float64).eps * coordinate_scale
+    policy = resolve_tolerance(tolerance)
+    policy.check_resolution(selected_xy, stage="circle projection")
+    tolerance = policy.absolute
     pattern_guides = _coerce_pattern_guides(
         guide_segments,
         coordinate_scale=coordinate_scale,
-        minimum_tolerance=tolerance,
+        tolerance=policy,
     )
     angular_tolerance = max(
         64.0 * np.finfo(np.float64).eps,
@@ -644,8 +642,10 @@ def _preferred_projection_angles(
     with np.errstate(over="ignore", invalid="ignore"):
         distances = offset_scale * scaled_norms
 
-    strictly_inside = distances < radius - tolerance
-    strictly_outside = distances > radius + tolerance
+    in_disk = circle_membership(selected_xy, center, radius, tolerance)
+    on_boundary = circle_membership(selected_xy, center, radius, tolerance, boundary=True)
+    strictly_inside = in_disk & ~on_boundary
+    strictly_outside = ~in_disk
     if not (np.all(strictly_inside) or np.all(strictly_outside)):
         raise ValueError(
             "all chain nodes must lie strictly on the same side of the circle"
@@ -1202,6 +1202,7 @@ def _to_circle(
     node_indices,
     guide_segments=None,
     closed=None,
+    tolerance=None,
 ) -> Mesh2D:
     """Extend an ordered boundary chain with a mixed Tri3/Quad4 strip.
 
@@ -1260,6 +1261,7 @@ def _to_circle(
         node_indices,
         guide_segments,
         closed,
+        tolerance,
     )
     (
         nodes,

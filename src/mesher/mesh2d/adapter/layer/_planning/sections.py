@@ -491,4 +491,5 @@ def _partition_sections(data, chords, anchors, registry, corners):
                             "section_count": len(sections), "seam_count": len(seams),
                             "pattern_chord_count": len(chords),
                             "fixed_outer_boundary": data.get("fixed_outer_boundary", False),
-                            "corner_mappings": [], **dense.diagnostics()})
+                            "corner_mappings": [], **dense.diagnostics()},
+                           tolerance=data["tolerance"])

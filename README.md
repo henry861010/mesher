@@ -40,10 +40,10 @@ or `process_flow_kernel`.
 
 ## Mesh models
 
-The package root exports only the central mesh models and the planar topology enum:
+The package root exports the central mesh models, planar topology enum, and geometry tolerance policy:
 
 ```python
-from mesher import ElementType2D, Mesh2D, Mesh3D
+from mesher import ElementType2D, GeometryTolerance, GeometryToleranceError, Mesh2D, Mesh3D
 ```
 
 `Mesh2D` owns contiguous `float64` nodes with shape `(n, 3)` and `int32`
@@ -51,7 +51,8 @@ connectivity with shape `(m, 4)`. XY input is padded with a zero Z coordinate;
 XYZ input must have exactly zero Z at every node, including unused nodes.
 Nonzero Z (even tiny noise), NaN, and infinity raise `ValueError` with the first
 invalid node's index and Z value. No Z tolerance or automatic projection is
-applied. To explicitly project source coordinates, pass `xyz[:, :2]`.
+applied. Use `Mesh2D.from_planar(nodes, elements, tolerance=policy)` for an explicit
+projection that validates the total Z displacement against T.
 Tri3 rows use `[n0, n1, n2, n2]`; `element_types` exposes the inferred topology.
 
 `mesh.nodes` remains writable. Direct edits can temporarily make a mesh invalid;
@@ -59,7 +60,8 @@ public mesh operations validate Z before work, including no-op operations.
 Getters remain available for inspection and repair. Constructors, the `nodes`
 setter, and `replace_data` validate new coordinates before assigning them.
 All 2D geometry uses XY and generated nodes have Z=0. `GeometryTolerance` has
-only `absolute` and `relative` settings; `planar` and `planarity` are removed.
+only the positive `absolute` setting; relative and implicit planar tolerances
+are not supported.
 The 3D extruder validates its 2D source and generates Z from the layer plan.
 
 `Mesh3D` owns `(n, 3)` nodes and fixed-width `(m, 20)` ANSYS connectivity.
@@ -68,6 +70,21 @@ remaining slot repeats the last effective node id. Per-element `int32` arrays
 store component, element-type, real-constant, and section ids, while `comps`,
 `types`, `reals`, and `sections` hold their definition tables. The process-flow
 extruder currently emits SOLID185 connectivity with eight effective slots.
+
+## Geometry tolerance
+
+All geometry operations use an immutable `GeometryTolerance(absolute=0.001)` in
+model coordinate units. Pass it as `tolerance=policy`; finite positive numeric
+values are also accepted. Boundaries include distance exactly equal to T.
+Normalization moves each point by at most T and rejects ambiguous groups,
+conflicting fixed coordinates, and required features that would disappear.
+Numeric precision, areas, angles, mesh sizes, and projection reach are separate
+quantities. Coordinates unable to resolve T raise `numeric_resolution_exceeded`.
+
+Process-flow mesh-control schema `1.1.0` accepts top-level `geometryTolerance`.
+Existing `1.0.0` input remains supported and defaults to `0.001`. See the
+[API migration guide](docs/tolerance-migration.md) for changed arguments,
+error codes, and test migration reasons.
 
 ## 2D mesh editing
 
@@ -81,20 +98,21 @@ indices = EditorMesh2D.search_element(mesh, 0.0, 0.0, 1.0, 1.0)
 EditorMesh2D.delete_element(mesh, indices)  # In place; keeps all node IDs.
 
 combined = EditorMesh2D.merge(mesh, other_mesh)  # New mesh; sources unchanged.
-EditorMesh2D.equivalence(combined, tol=0.001)  # Weld explicitly, in place.
+EditorMesh2D.equivalence(combined, tolerance=0.001)  # Weld explicitly, in place.
 raw_outlines = EditorMesh2D.outline(combined)  # Preserve element winding.
 outlines = EditorMesh2D.outlines(combined)  # Loops -> node IDs; existing mesh on the right.
 ```
 
 Deletion and equivalence return the input mesh. Merge preserves source order,
 owns independent arrays, and does not weld coincident nodes. Equivalence uses
-transitive XY distance groups and retains the lowest original node ID's
-XY coordinate with Z=0. It converts adjacent-vertex Quad4 collapses to padded Tri3,
-removes unusable or zero-area cells, and removes unreferenced nodes; winding,
-concave cells, and duplicate elements are retained. Tolerance must be finite and
-non-negative; zero merges only identical XY coordinates. Referenced XY values
-must be finite. Deletion renumbers element rows, and equivalence can renumber
-both nodes and elements, so obtain fresh selections after editing.
+Euclidean proximity groups whose complete diameter is at most `tolerance`
+(default `0.001`). The lexicographically smallest coordinate supplies the
+representative; an overlong proximity chain raises `ambiguous_geometry`.
+Adjacent-vertex Quad4 collapses can become padded Tri3, but loss of a cell raises
+`feature_below_resolution` before mutation. Unreferenced nodes are removed;
+winding, concavity, and pre-existing duplicate elements are retained. Tolerance
+must be finite and strictly positive. Deletion renumbers element rows, and
+explicit equivalence can renumber nodes; obtain fresh selections after editing.
 
 Outlines include exterior, hole, and disconnected-component loops with implicit
 closure (the first node is not repeated). Winding is preserved; loops start at
@@ -192,9 +210,10 @@ assert len(hole_node_ids) % 2 == 0
 
 The result contains clockwise `outer_outline`, counterclockwise
 `hole_outlines` in input order, and diagnostics for parity repairs and mesh
-quality. Input coordinates and retained pattern endpoints remain exact;
-`coordinate_tolerance` rejects ambiguous geometric contacts rather than
-merging coordinates. Close mandatory features can still create thin cells.
+quality. A shared `tolerance` (default `GeometryTolerance(0.001)`) canonicalizes
+compatible supports before visibility and cuts are computed. Every movement
+is bounded by its Euclidean distance, and ambiguous chains or collapsed required
+features fail with provenance. Source mesh and fixed target nodes remain exact.
 If no representable local parity-repair cut exists, a global grid fallback keeps
 the boundary constraints and may produce more cells; diagnostics report which
 strategy was used. `max_elements` defaults to one million and must be a positive
@@ -255,11 +274,12 @@ near-axis constraints. The global outer outline and finite patterns must be
 axis aligned. Patterns also retain the single-layer restrictions below.
 Touching or overlapping regions, boundary crossings, premature hole collapse,
 and infeasible fixed interfaces raise `QuadLayerError`; no sizes or layer
-counts are silently adjusted. The existing global coordinate tolerance of
-`coordinate_tolerance=1e-3` and each underlying call's one-million-element limit
-apply independently. Supply a smaller `coordinate_tolerance` when distinct
-features require finer geometric resolution; this tolerance validates boundary
-separation and global completion without snapping source coordinates.
+counts are silently adjusted. One `tolerance` policy (default absolute `0.001`)
+passes through planning, support canonicalization, global meshing, and final
+interface validation. Each underlying call retains its one-million-element
+limit. Use an explicit positive `GeometryTolerance` when changing model units;
+KOZ width or mesh size never silently reduces the policy. Source coordinates and
+IDs remain fixed, and incompatible near-coincident fixed constraints fail.
 
 `FullAdaptiveMeshResult.layer_outlines` is indexed by layer, original boundary,
 then node ID. Each boundary is a complete flat loop with implicit closure. Boundary order follows the initial
@@ -329,8 +349,9 @@ when `d <= effective_expansion_size * expand_ratio`; otherwise the expansion is
 continues to control mesh target sizes independently of layer thickness.
 An explicit `expand_size` must be finite, positive, and meet the same geometric
 resolution requirements as `element_size`.
-`axis_tolerance` (default `1e-3`) limits transverse deviation relative to each
-logical edge's length. The new front is axis aligned; old coordinates never move.
+`tolerance` limits transverse deviation as an absolute distance, independent
+of logical edge length. The new front is axis aligned; source coordinates never
+move. Angular controls such as `dense_mapping_angle` retain their own units.
 
 Both entry points accept `outline_o=None`. Supply a one-dimensional integer
 node-ID loop referencing `mesh.nodes` to set the complete target boundary.

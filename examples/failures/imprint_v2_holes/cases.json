@@ -13,16 +13,12 @@
     ],
     "parameter_source": "src/mesher/mesh25d/plan2d.py",
     "parameter_ratios": {
-      "projection_tolerance": 0.2,
-      "merge_tolerance": 0.002,
-      "minimum_area": 0.0004,
-      "guide_tolerance": 0.001
+      "projection_distance": 0.2,
+      "minimum_area": 0.0
     },
     "minimum_area_effective": 1.0,
     "supersedes": "All previous small-radius cases were removed; case_01 through case_10 now refer to the full-circle process_flow-scale corpus.",
-    "parameter_minimums": {
-      "guide_tolerance": 1.0
-    }
+    "tolerance": 0.001
   },
   "cases": [
     {
@@ -68,11 +64,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -84,7 +76,9 @@
               -211908.7048
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -142,11 +136,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -168,7 +158,9 @@
               209829.50626
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -226,11 +218,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -242,7 +230,9 @@
               234132.03436
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -300,11 +290,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -326,7 +312,9 @@
               125141.92282
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -384,11 +372,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -400,7 +384,9 @@
               -190132.03436
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -458,11 +444,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -484,7 +466,9 @@
               212947.9176
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -542,11 +526,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -568,7 +548,9 @@
               -211907.98325
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -626,11 +608,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -642,7 +620,9 @@
               211127.38101
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -700,11 +680,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -726,7 +702,9 @@
               211902.06161
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -784,11 +762,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -800,7 +774,9 @@
               211157.53405
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -858,11 +834,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -914,7 +886,9 @@
               137175.69597
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -979,11 +953,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -1015,7 +985,9 @@
               293657.47317
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -1083,11 +1055,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -1149,7 +1117,9 @@
               21435.651
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -1215,11 +1185,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -1301,7 +1267,9 @@
               -208490.01176
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -1369,11 +1337,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -1455,7 +1419,9 @@
               143350.46866
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -1518,11 +1484,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -1594,7 +1556,9 @@
               14393.31305
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -1660,11 +1624,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -1696,7 +1656,9 @@
               155534.50151
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -1761,11 +1723,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -1807,7 +1765,9 @@
               300196.90388
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -1870,11 +1830,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -1946,7 +1902,9 @@
               67477.94377
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,
@@ -2016,11 +1974,7 @@
         ],
         "circle_radius": 300000.0,
         "target_edge_size": 5000.0,
-        "coordinate_tolerance": 0.001,
-        "projection_tolerance": 1000.0,
-        "guide_tolerance": 5.0,
-        "merge_tolerance": 10.0,
-        "minimum_area": 10000.0,
+        "minimum_area": 0.0,
         "guide_segments": [
           [
             [
@@ -2052,7 +2006,9 @@
               222244.83431
             ]
           ]
-        ]
+        ],
+        "projection_distance": 1000.0,
+        "tolerance": 0.001
       },
       "mesh_profile": {
         "radius_to_target_edge_size": 60.0,

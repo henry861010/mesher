@@ -62,6 +62,9 @@ class DenseSectionTests(unittest.TestCase):
                 result = generate_layer_adaptive_mesh(mesh, outline, 1000., small_element_size=10.,
                                                       max_transition_count=1000)
                 self.assert_built_partition(mesh, nodes, cells, result)
+                new_points = mesh.nodes[mesh.elements[len(cells):], :2]
+                self.assertGreater(np.linalg.norm(np.roll(new_points, -1, axis=1) - new_points,
+                                                 axis=2).min(), .001)
                 self.assertEqual(plan.diagnostics['dense_sections'], result.diagnostics['dense_sections'])
                 for record in plan.diagnostics['dense_sections']:
                     section = plan.sections[record['section_id']]
@@ -121,7 +124,7 @@ class DenseSectionTests(unittest.TestCase):
         for scale in (1e-5, 1., 1e5):
             mesh, outline = rectangle(scale=scale, shear=1e-5)
             plan = plan_quad_sections(mesh, outline, 1000. * scale,
-                                     small_element_size=10. * scale,
+                                     small_element_size=10. * scale, tolerance=.025 * scale,
                                      dense_mapping_angle=30.0)
             contacts = [plan.seams[r['seam_id']].points / scale
                         for r in plan.diagnostics['dense_seams']]
@@ -239,7 +242,7 @@ class DenseSectionTests(unittest.TestCase):
     def test_close_dense_endpoints_keep_distinct_projections(self):
         mesh, outline = rectangle([0, 100, 100.0001, 200], height=100.)
         nodes, cells = mesh.nodes.copy(), mesh.elements.copy()
-        result = generate_layer_adaptive_mesh(mesh, outline, 50., small_element_size=10.)
+        result = generate_layer_adaptive_mesh(mesh, outline, 50., small_element_size=10., tolerance=1e-6)
         self.assert_frozen(mesh, nodes, cells)
         records = [r for r in result.diagnostics['dense_mappings']
                    if mesh.nodes[r['source_node'], 1] == 100.]

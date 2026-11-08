@@ -262,7 +262,7 @@ def validate_patch(mesh, nodes, quads, outline, data):
     new_cell_index = BoxIndex(new_cells.min(axis=1), new_cells.max(axis=1), tol)
     if old_cell_index is None:
         old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
-    _check_overlaps(new_cells, old_cells, new_cell_index, old_cell_index, tol)
+    _check_overlaps(new_cells, old_cells, new_cell_index, old_cell_index, data["numeric_tol"])
     _check_patterns(data["pattern_records"], new_cells, old_cells, new_cell_index, old_cell_index,
                     new_edges, old_edges, new_edge_index, old_edge_index, tol)
 

@@ -77,52 +77,26 @@ class CaseSelectionTests(unittest.TestCase):
 
 
 class MeshReplayTests(unittest.TestCase):
-    def test_corpus_uses_large_circles_and_current_pipeline_tolerances(self):
-        from mesher.mesh25d.plan2d import (
-            _CIRCLE_GUIDE_TOLERANCE_MINIMUM,
-            _CIRCLE_GUIDE_TOLERANCE_RATIO,
-            _CIRCLE_MERGE_TOLERANCE_RATIO,
-            _CIRCLE_MINIMUM_AREA_RATIO,
-            _CIRCLE_PROJECTION_TOLERANCE_RATIO,
-        )
-
+    def test_corpus_uses_shared_identity_and_separate_projection_reach(self):
+        from mesher.mesh25d.plan2d import _CIRCLE_PROJECTION_TOLERANCE_RATIO
         context = json.loads(viewer.CASES_PATH.read_text())["context"]
-        ratios = {
-            "projection_tolerance": _CIRCLE_PROJECTION_TOLERANCE_RATIO,
-            "guide_tolerance": _CIRCLE_GUIDE_TOLERANCE_RATIO,
-            "merge_tolerance": _CIRCLE_MERGE_TOLERANCE_RATIO,
-            "minimum_area": _CIRCLE_MINIMUM_AREA_RATIO,
-        }
-        self.assertEqual(context["parameter_ratios"], ratios)
-        self.assertEqual(context["parameter_minimums"]["guide_tolerance"], _CIRCLE_GUIDE_TOLERANCE_MINIMUM)
+        self.assertEqual(context["tolerance"], .001)
         for case in viewer.load_cases():
-            with self.subTest(case=case["id"]):
-                p = case["parameters"]
-                self.assertEqual(p["circle_radius"], 300000)
-                self.assertEqual(p["target_edge_size"], 5000)
-                self.assertGreaterEqual(p["circle_radius"] / p["target_edge_size"], 60)
-                self.assertEqual(p["guide_tolerance"], max(
-                    _CIRCLE_GUIDE_TOLERANCE_RATIO * p["target_edge_size"],
-                    _CIRCLE_GUIDE_TOLERANCE_MINIMUM,
-                ))
-                for name, exponent in (("projection_tolerance", 1),
-                                       ("merge_tolerance", 1), ("minimum_area", 2)):
-                    ratio = ratios[name]
-                    self.assertEqual(p[name], ratio * p["target_edge_size"] ** exponent)
-                cx, cy = p["grid_circler_center_coordinate"]
-                self.assertLess(min(p["grid_x_list"]), cx - p["circle_radius"])
-                self.assertGreater(max(p["grid_x_list"]), cx + p["circle_radius"])
-                self.assertLess(min(p["y_list"]), cy - p["circle_radius"])
-                self.assertGreater(max(p["y_list"]), cy + p["circle_radius"])
+            p = case["parameters"]
+            self.assertEqual(p["tolerance"], .001)
+            self.assertEqual(p["minimum_area"], 0.)
+            self.assertEqual(p["projection_distance"], _CIRCLE_PROJECTION_TOLERANCE_RATIO * p["target_edge_size"])
+            self.assertEqual(p["circle_radius"], 300000)
+            self.assertGreaterEqual(p["circle_radius"] / p["target_edge_size"], 60)
 
-    def test_case_01_node_3696_moves_radially_with_current_guide_tolerance(self):
+    def test_case_01_node_3696_moves_radially_with_current_tolerance(self):
         from mesher.mesh2d.circular.imprint_v2.utils import _to_circle
         from mesher.mesh2d.generators import generate_rectilinear_mesh
 
         p = viewer.load_cases()[0]["parameters"]
         mesh = generate_rectilinear_mesh(
             p["target_edge_size"], p["grid_x_list"], p["y_list"],
-            coordinate_tolerance=p["coordinate_tolerance"],
+            tolerance=p["tolerance"],
         )
         source = mesh.nodes[3696, :2].copy()
         center = np.asarray(p["grid_circler_center_coordinate"])
@@ -130,8 +104,8 @@ class MeshReplayTests(unittest.TestCase):
         expected = center + p["circle_radius"] * offset / np.linalg.norm(offset)
 
         _to_circle(
-            mesh, center, p["circle_radius"], p["projection_tolerance"],
-            p["guide_tolerance"], p["guide_segments"],
+            mesh, center, p["circle_radius"], p["projection_distance"],
+            p["tolerance"], p["guide_segments"],
         )
 
         np.testing.assert_allclose(mesh.nodes[3696, :2], expected, rtol=0, atol=1e-8)
@@ -146,7 +120,7 @@ class MeshReplayTests(unittest.TestCase):
                 original = generate_rectilinear_mesh(
                     parameters["target_edge_size"], parameters["grid_x_list"],
                     parameters["y_list"],
-                    coordinate_tolerance=parameters["coordinate_tolerance"],
+                    tolerance=parameters["tolerance"],
                 )
                 with patch.object(imprint_v2, "imprint_circle", wraps=imprint_v2.imprint_circle) as imprint:
                     before, after = viewer.prepare_meshes(case)
@@ -154,7 +128,7 @@ class MeshReplayTests(unittest.TestCase):
                 self.assertIs(imprint.call_args.args[0], after)
                 self.assertEqual(imprint.call_args.kwargs["center"], parameters["grid_circler_center_coordinate"])
                 self.assertEqual(imprint.call_args.kwargs["radius"], parameters["circle_radius"])
-                for name in ("projection_tolerance", "guide_tolerance", "merge_tolerance",
+                for name in ("projection_distance", "tolerance",
                              "minimum_area", "guide_segments"):
                     self.assertEqual(imprint.call_args.kwargs[name], parameters[name])
                 np.testing.assert_array_equal(before.nodes, original.nodes)

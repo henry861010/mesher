@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from ..tolerance import canonicalize_points, resolve_tolerance, within_distance
+
 from .domain import (
     ModelDomain as _ModelDomain,
     SymmetryMode,
@@ -18,8 +20,6 @@ from .domain import (
 JsonObject = dict[str, Any]
 
 
-CIRCLE_CLEARANCE_TOLERANCE = 1e-6
-CIRCLE_CENTER_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True, order=True)
@@ -56,7 +56,9 @@ def _validate_circle_domain_topology(
     domain: _ModelDomain,
     *,
     band_width: float,
+    tolerance=None,
 ) -> None:
+    distance = resolve_tolerance(tolerance).absolute
     if domain.symmetry is SymmetryMode.FULL:
         return
 
@@ -74,8 +76,8 @@ def _validate_circle_domain_topology(
         for axis, circle_center, boundary in boundaries:
             offset = abs(circle_center - boundary)
             if (
-                CIRCLE_CENTER_TOLERANCE < offset
-                < selection_radius - CIRCLE_CENTER_TOLERANCE
+                distance < offset
+                < selection_radius - distance
             ):
                 raise ValueError(
                     "Open circle meshing requires each intersecting symmetry "
@@ -115,14 +117,16 @@ def _build_circle_meshing_plan(
     circle_patterns: list[_CirclePattern],
     *,
     band_width: float,
+    tolerance=None,
 ) -> _CircleMeshingPlan:
+    policy = resolve_tolerance(tolerance)
     imprint_only = _CircleMeshingPlan(tuple(circle_patterns), ())
     if base_face.get("type") != "CIRCLE" or len(circle_patterns) < 2:
         return imprint_only
 
     base_circle = _circle_pattern_from_face(base_face)
     if not all(
-        _face_is_contained_by_circle(face, base_circle)
+        _face_is_contained_by_circle(face, base_circle, tolerance=policy)
         for face in faces
     ):
         return imprint_only
@@ -131,8 +135,8 @@ def _build_circle_meshing_plan(
         (
             pattern
             for pattern in circle_patterns
-            if _same_circle_center(pattern, base_circle)
-            and pattern.radius <= base_circle.radius + CIRCLE_CENTER_TOLERANCE
+            if _same_circle_center(pattern, base_circle, tolerance=policy)
+            and pattern.radius <= base_circle.radius + policy.absolute
         ),
         key=lambda pattern: pattern.radius,
     )
@@ -151,6 +155,7 @@ def _build_circle_meshing_plan(
             center=candidate.center,
             inner_radius=candidate.radius,
             outer_radius=base_circle.radius,
+            tolerance=policy,
         ):
             continue
         if not all(
@@ -158,6 +163,7 @@ def _build_circle_meshing_plan(
                 pattern,
                 candidate,
                 band_width=band_width,
+                tolerance=policy,
             )
             for pattern in non_concentric
         ):
@@ -188,17 +194,17 @@ def _build_circle_meshing_plan(
 def _same_circle_center(
     left: _CirclePattern,
     right: _CirclePattern,
+    *, tolerance=None,
 ) -> bool:
-    return (
-        abs(left.center_x - right.center_x) <= CIRCLE_CENTER_TOLERANCE
-        and abs(left.center_y - right.center_y) <= CIRCLE_CENTER_TOLERANCE
-    )
+    return within_distance(left.center, right.center, tolerance)
 
 
 def _face_is_contained_by_circle(
     face: JsonObject,
     container: _CirclePattern,
+    *, tolerance=None,
 ) -> bool:
+    distance = resolve_tolerance(tolerance).absolute
     if face.get("type") == "CIRCLE":
         pattern = _circle_pattern_from_face(face)
         center_distance = math.hypot(
@@ -207,7 +213,7 @@ def _face_is_contained_by_circle(
         )
         return (
             center_distance + pattern.radius
-            <= container.radius + CIRCLE_CENTER_TOLERANCE
+            <= container.radius + distance
         )
 
     points = [point for segment in _face_boundary_segments(face) for point in segment]
@@ -216,7 +222,7 @@ def _face_is_contained_by_circle(
             point[0] - container.center_x,
             point[1] - container.center_y,
         )
-        <= container.radius + CIRCLE_CENTER_TOLERANCE
+        <= container.radius + distance
         for point in points
     )
 
@@ -227,6 +233,7 @@ def _line_pattern_crosses_annulus(
     center: tuple[float, float],
     inner_radius: float,
     outer_radius: float,
+    tolerance=None,
 ) -> bool:
     for face in faces:
         if face.get("type") == "CIRCLE":
@@ -238,6 +245,7 @@ def _line_pattern_crosses_annulus(
                 center=center,
                 inner_radius=inner_radius,
                 outer_radius=outer_radius,
+                tolerance=tolerance,
             ):
                 return True
     return False
@@ -245,6 +253,7 @@ def _line_pattern_crosses_annulus(
 
 def _collect_pattern_segments(
     faces: list[JsonObject],
+    *, tolerance=None,
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
     """Collect non-zero, axis-aligned boundaries for circular imprint guides.
 
@@ -256,7 +265,13 @@ def _collect_pattern_segments(
     for face in faces:
         if face.get("type") == "CIRCLE":
             continue
-        for start, end in _face_boundary_segments(face):
+        segments_for_face = _face_boundary_segments(face)
+        if not segments_for_face:
+            continue
+        normalized = canonicalize_points(np.asarray(segments_for_face), tolerance,
+                                         stage="circle_guides")
+        for start, end in normalized:
+            start, end = tuple(start), tuple(end)
             fixed_x = start[0] == end[0]
             fixed_y = start[1] == end[1]
             if fixed_x != fixed_y:
@@ -313,6 +328,7 @@ def _segment_intersects_annulus(
     center: tuple[float, float],
     inner_radius: float,
     outer_radius: float,
+    tolerance=None,
 ) -> bool:
     start_offset = np.asarray(start, dtype=np.float64) - np.asarray(
         center,
@@ -336,8 +352,8 @@ def _segment_intersects_annulus(
             float(np.linalg.norm(end_offset)),
         )
     return (
-        maximum_distance >= inner_radius - CIRCLE_CENTER_TOLERANCE
-        and minimum_distance <= outer_radius + CIRCLE_CENTER_TOLERANCE
+        maximum_distance >= inner_radius - resolve_tolerance(tolerance).absolute
+        and minimum_distance <= outer_radius + resolve_tolerance(tolerance).absolute
     )
 
 
@@ -346,6 +362,7 @@ def _circle_band_is_inside_circle(
     container: _CirclePattern,
     *,
     band_width: float,
+    tolerance=None,
 ) -> bool:
     center_distance = math.hypot(
         pattern.center_x - container.center_x,
@@ -353,7 +370,7 @@ def _circle_band_is_inside_circle(
     )
     return (
         center_distance + pattern.radius + band_width
-        < container.radius - CIRCLE_CLEARANCE_TOLERANCE
+        < container.radius - resolve_tolerance(tolerance).absolute
     )
 
 
@@ -397,9 +414,9 @@ def _validate_circle_clearances(
     circle_patterns: list[_CirclePattern],
     band_width: float,
     *,
-    tolerance: float = CIRCLE_CLEARANCE_TOLERANCE,
+    tolerance=None,
 ) -> None:
-    required_clearance = band_width + tolerance
+    required_clearance = band_width + resolve_tolerance(tolerance).absolute
     for left_index, left in enumerate(circle_patterns):
         for right in circle_patterns[left_index + 1 :]:
             clearance = _circle_clearance(left, right)

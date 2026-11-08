@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...model import Mesh2D, _validate_zero_z
+from ....tolerance import GeometryTolerance, resolve_tolerance, subdivision_count, circle_membership
 from ..utils.geometry import _minimum_scaled_jacobian
 from ..utils.topology import _clear_node, _get_boundary
 
@@ -18,6 +19,7 @@ class _CircularExtensionRequest:
     inner_radius: float
     outer_radius: float
     topology: str
+    tolerance: GeometryTolerance
 
     @classmethod
     def from_values(
@@ -28,6 +30,7 @@ class _CircularExtensionRequest:
         inner_radius,
         outer_radius,
         topology,
+        tolerance=None,
     ):
         """Convert and validate the public scalar inputs."""
         try:
@@ -73,6 +76,7 @@ class _CircularExtensionRequest:
             inner_radius=inner,
             outer_radius=outer,
             topology=topology,
+            tolerance=resolve_tolerance(tolerance),
         )
 
 
@@ -124,17 +128,8 @@ def _copy_and_validate_mesh(mesh):
 
 
 def _circle_tolerance(request):
-    """Return a scale-aware tolerance for radius classification."""
-    scale_values = [
-        1.0,
-        request.inner_radius,
-        *np.abs(request.center).tolist(),
-    ]
-    coordinate_scale = max(scale_values)
-    return max(
-        64.0 * np.finfo(np.float64).eps * coordinate_scale,
-        1.0e-9 * request.inner_radius,
-    )
+    """Return the shared absolute tolerance for radius classification."""
+    return request.tolerance.absolute
 
 
 def _retain_inner_mesh(mesh, request):
@@ -143,9 +138,8 @@ def _retain_inner_mesh(mesh, request):
     elements = np.asarray(mesh.elements)
     float_nodes = nodes.astype(np.float64, copy=False)
     tolerance = _circle_tolerance(request)
-    offsets = float_nodes[:, :2] - request.center
-    distances = np.hypot(offsets[:, 0], offsets[:, 1])
-    node_is_inside = distances <= request.inner_radius + tolerance
+    node_is_inside = circle_membership(float_nodes[:, :2], request.center,
+                                       request.inner_radius, tolerance)
     retained = np.all(node_is_inside[elements], axis=1)
     mesh.elements = elements[retained]
     _clear_node(mesh)
@@ -228,10 +222,9 @@ def _find_inner_boundary(mesh, request, tolerance):
     nodes = np.asarray(mesh.nodes).astype(np.float64, copy=False)
     candidates = []
     for loop in loops:
-        offsets = nodes[loop, :2] - request.center
-        distances = np.hypot(offsets[:, 0], offsets[:, 1])
-        node_is_on_circle = (
-            np.abs(distances - request.inner_radius) <= tolerance
+        node_is_on_circle = circle_membership(
+            nodes[loop, :2], request.center, request.inner_radius, tolerance,
+            boundary=True,
         )
         if np.all(node_is_on_circle):
             if loop.size >= 3:
@@ -271,7 +264,7 @@ def _layer_count(mesh, ring_size, request):
     """Return a safe, representable number of radial layers."""
     thickness = request.outer_radius - request.inner_radius
     with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-        count_value = np.ceil(thickness / request.element_size)
+        count_value = subdivision_count(thickness, request.element_size)
     if not np.isfinite(count_value) or count_value > np.iinfo(np.intp).max:
         raise ValueError("element_size requires too many circular layers")
 
@@ -299,12 +292,7 @@ def _layer_count(mesh, ring_size, request):
 
 def _generated_geometry_tolerance(request):
     """Return a floating-point tolerance for generated layer validation."""
-    coordinate_scale = max(
-        1.0,
-        request.outer_radius,
-        *np.abs(request.center).tolist(),
-    )
-    return 64.0 * np.finfo(np.float64).eps * coordinate_scale
+    return request.tolerance.absolute
 
 
 def _layer_radii(layer_count, request):
@@ -462,6 +450,7 @@ def extend_circular_mesh(
     inner_radius: float,
     outer_radius: float,
     topology: str = "auto",
+    tolerance=None,
 ) -> Mesh2D:
     """Extend an existing circular boundary outward through concentric layers.
 
@@ -507,7 +496,9 @@ def extend_circular_mesh(
         inner_radius,
         outer_radius,
         topology,
+        tolerance,
     )
+    request.tolerance.check_resolution(mesh.nodes[:, :2], stage="circular extension")
     working_mesh = _copy_and_validate_mesh(mesh)
     tolerance = _retain_inner_mesh(working_mesh, request)
     inner_boundary = _find_inner_boundary(

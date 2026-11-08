@@ -10,6 +10,8 @@ from .build_unit_1_1_1_x import (
     _polygon_area_twice,
     _validate_cyclic_boundary,
     _validate_quads,
+    _physical_boundary,
+    _physical_quads,
     build_unit_1_1_1_x,
 )
 from .build_unit_1_1_x_y import (
@@ -35,7 +37,7 @@ def _check_ccw_boundary(nodes: np.ndarray, edges: _Edges) -> None:
         raise ValueError("a cut must leave two counterclockwise patches")
 
 
-def _stage_template(nodes: np.ndarray, edges: _Edges) -> _Patch:
+def _stage_template(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
     """Try compatible existing templates, isolated from all previous attempts."""
     long = [index for index, edge in enumerate(edges) if len(edge) > 2]
     builders = ()
@@ -49,14 +51,14 @@ def _stage_template(nodes: np.ndarray, edges: _Edges) -> _Patch:
     for builder in builders:
         work = Mesh2D(nodes, np.empty((0, 4), dtype=np.int64))
         try:
-            builder(work, *edges)
+            builder(work, *edges, tolerance=tolerance)
             return _checked_patch(work.nodes, work.elements, edges)
         except ValueError as error:
             last_error = error
     raise ValueError("no existing template fills this patch") from last_error
 
 
-def _stage_layers(nodes: np.ndarray, edges: _Edges) -> _Patch:
+def _stage_layers(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
     """Peel both sides equally, reserving their last segments for the tail."""
     last_error = None
     for index, edge in enumerate(edges):
@@ -80,19 +82,19 @@ def _stage_layers(nodes: np.ndarray, edges: _Edges) -> _Patch:
         try:
             _validate_quads(nodes, quads)
             _check_ccw_boundary(nodes, remaining)
-            tail_nodes, tail_quads = _stage_template(nodes, remaining)
+            tail_nodes, tail_quads = _stage_template(nodes, remaining, tolerance)
             return _checked_patch(tail_nodes, np.vstack((quads, tail_quads)), edges)
         except ValueError as error:
             last_error = error
     raise ValueError("synchronous layers cannot fill this patch") from last_error
 
 
-def _stage_local_patch(nodes: np.ndarray, edges: _Edges) -> _Patch:
+def _stage_local_patch(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
     """A cap or tail always retains at least one one-segment side."""
     try:
-        return _stage_template(nodes, edges)
+        return _stage_template(nodes, edges, tolerance)
     except ValueError:
-        return _stage_layers(nodes, edges)
+        return _stage_layers(nodes, edges, tolerance)
 
 
 def _distance_to_segment_squared(point: np.ndarray, segment: np.ndarray) -> float:
@@ -102,7 +104,7 @@ def _distance_to_segment_squared(point: np.ndarray, segment: np.ndarray) -> floa
     return float(delta @ delta)
 
 
-def _stage_sweep(nodes: np.ndarray, edges: _Edges) -> _Patch:
+def _stage_sweep(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
     """Advance a primary node by one segment and match the nearest valid node."""
     frontier, left, opposite, back = edges
     right = back[::-1]
@@ -158,7 +160,7 @@ def _stage_sweep(nodes: np.ndarray, edges: _Edges) -> _Patch:
                     # connector stays inside the current boundary.
                     _check_ccw_boundary(candidate_nodes, cap)
                     _check_ccw_boundary(candidate_nodes, remaining)
-                    cap_nodes, cap_quads = _stage_local_patch(candidate_nodes, cap)
+                    cap_nodes, cap_quads = _stage_local_patch(candidate_nodes, cap, tolerance)
                 except ValueError as error:
                     last_error = error
                     continue
@@ -176,12 +178,12 @@ def _stage_sweep(nodes: np.ndarray, edges: _Edges) -> _Patch:
             raise ValueError("no valid primary-to-opposite cut") from last_error
 
     remaining = (frontier, left[i:], opposite, right[j:][::-1])
-    nodes, tail = _stage_local_patch(nodes, remaining)
+    nodes, tail = _stage_local_patch(nodes, remaining, tolerance)
     staged_quads.append(tail)
     return _checked_patch(nodes, np.concatenate(staged_quads), edges)
 
 
-def _stage_inner_ring(nodes: np.ndarray, edges: _Edges) -> _Patch:
+def _stage_inner_ring(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
     """Use radial convex quads when the visibility kernel has positive area.
 
     A strict kernel center sees consecutive vertices at angles in (0, pi).
@@ -237,29 +239,30 @@ def _stage_inner_ring(nodes: np.ndarray, edges: _Edges) -> _Patch:
     return _checked_patch(np.vstack((nodes, inner_nodes)), np.vstack((strips, fan)), edges)
 
 
-def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = None) -> _Patch:
+def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = None, tolerance=None) -> _Patch:
     def selected(patch: _Patch, method: str) -> _Patch:
+        _physical_quads(*patch, tolerance)
         if diagnostics is not None:
             diagnostics["method"] = method
         return patch
 
     try:
-        return selected(_stage_template(nodes, edges), "template")
+        return selected(_stage_template(nodes, edges, tolerance), "template")
     except ValueError:
         pass
     for index, edge in enumerate(edges):
         if len(edge) != 2:
             continue
         try:
-            return selected(_stage_sweep(nodes, edges[index:] + edges[:index]), "sweep")
+            return selected(_stage_sweep(nodes, edges[index:] + edges[:index], tolerance), "sweep")
         except ValueError:
             pass
     try:
-        return selected(_stage_layers(nodes, edges), "layers")
+        return selected(_stage_layers(nodes, edges, tolerance), "layers")
     except ValueError:
         pass
     try:
-        return selected(_stage_inner_ring(nodes, edges), "inner_ring")
+        return selected(_stage_inner_ring(nodes, edges, tolerance), "inner_ring")
     except ValueError as error:
         raise ValueError("the available strategies could not construct a valid Quad4 patch") from error
 
@@ -272,6 +275,7 @@ def build_unit_1_x_y_z(
     edge4: np.ndarray,
     *,
     _diagnostics: dict | None = None,
+    tolerance=None,
 ) -> Mesh2D:
     """Append convex Quad4 cells inside four cyclic boundary chains.
 
@@ -292,11 +296,15 @@ def build_unit_1_x_y_z(
     Some simple polygons cannot be handled by these strategies; they raise
     ValueError. All attempts are staged, so any failure leaves the original
     mesh unchanged. The patch interior is assumed to contain no elements.
+    ``tolerance`` is a policy or positive absolute distance (default 1e-3).
+    Strategies producing edges at or below this resolution are rejected
+    before trying the next strategy. Existing coordinates remain unchanged.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
     edges = (edge1, edge2, edge3, edge4)
     boundary = _validate_cyclic_boundary(mesh, edges, require_convex=False)
+    policy = _physical_boundary(mesh.nodes, boundary, tolerance)
     if not any(len(edge) == 2 for edge in edges):
         raise ValueError("at least one edge must contain exactly two nodes")
     if sum(len(edge) for edge in edges) % 2:
@@ -305,7 +313,7 @@ def build_unit_1_x_y_z(
         edges = tuple(edge[::-1] for edge in edges[::-1])
 
     staged_diagnostics: dict = {}
-    nodes, quads = _stage_patch(mesh.nodes, edges, staged_diagnostics)
+    nodes, quads = _stage_patch(mesh.nodes, edges, staged_diagnostics, policy)
     _checked_patch(nodes, quads, (edge1, edge2, edge3, edge4))
     mesh.replace_data(nodes=nodes, elements=np.vstack((mesh.elements, quads)))
     if _diagnostics is not None:

@@ -199,43 +199,43 @@ class FullAdaptiveMeshTests(unittest.TestCase):
         result = self.run_full(_cell_mesh(_block()), [0.5], _rectangle(-2, -2, 4, 4))
         self.assertEqual(len(result.diagnostics["global_regions"]), 1)
 
-    def test_small_coordinate_tolerance_allows_small_scale_geometry(self):
+    def test_small_tolerance_allows_small_scale_geometry(self):
         outer = _rectangle(-2e-4, -2e-4, 4e-4, 4e-4)
         mesh = _cell_mesh(_block(), spacing=5e-5)
         snapshot = self._snapshot(mesh)
-        with self.assertRaisesRegex(QuadLayerError, "coordinate_tolerance") as caught:
+        with self.assertRaisesRegex(QuadLayerError, "tolerance") as caught:
             generate_full_adaptive_mesh(mesh, [5e-5], outer_outline=outer)
-        self.assertEqual(caught.exception.context["stage"], "input_validation")
+        self.assertEqual(caught.exception.context["stage"], "geometry_canonicalization")
         self.assert_unchanged(mesh, snapshot)
 
-        for tolerance in (1e-6, 0.0):
-            with self.subTest(coordinate_tolerance=tolerance):
+        for tolerance in (1e-6, 1e-9):
+            with self.subTest(tolerance=tolerance):
                 self.run_full(_cell_mesh(_block(), spacing=5e-5), [5e-5], outer,
-                              coordinate_tolerance=tolerance)
+                              tolerance=tolerance)
 
-    def test_coordinate_tolerance_checks_final_front_clearance_atomically(self):
+    def test_tolerance_checks_final_front_clearance_atomically(self):
         # The source is well separated, but its final front leaves a 1e-4 gap.
         # The same tolerance must govern source, front, and global geometry.
         outer = _rectangle(-0.5001, -0.5001, 2.5001, 2.5001)
         mesh = _cell_mesh(_block())
         snapshot = self._snapshot(mesh)
-        with self.assertRaisesRegex(QuadLayerError, "coordinate_tolerance") as caught:
+        with self.assertRaisesRegex(QuadLayerError, "tolerance") as caught:
             generate_full_adaptive_mesh(mesh, [0.5], outer_outline=outer,
-                                        coordinate_tolerance=2e-4)
+                                        tolerance=2e-4)
         self.assertEqual(caught.exception.code, "topology_change")
         self.assertEqual(caught.exception.context["stage"], "final_front_validation")
         self.assert_unchanged(mesh, snapshot)
-        self.run_full(mesh, [0.5], outer, coordinate_tolerance=1e-6)
+        self.run_full(mesh, [0.5], outer, tolerance=1e-6)
 
-    def test_invalid_coordinate_tolerance_fails_atomically(self):
-        for tolerance in (True, np.bool_(False), -1, np.nan, np.inf, -np.inf, None, "bad"):
-            with self.subTest(coordinate_tolerance=tolerance):
+    def test_invalid_tolerance_fails_atomically(self):
+        for tolerance in (True, np.bool_(False), -1, np.nan, np.inf, -np.inf, 0, "bad"):
+            with self.subTest(tolerance=tolerance):
                 mesh = _cell_mesh(_block())
                 snapshot = self._snapshot(mesh)
-                with self.assertRaisesRegex(QuadLayerError, "coordinate_tolerance") as caught:
+                with self.assertRaisesRegex(QuadLayerError, "tolerance") as caught:
                     generate_full_adaptive_mesh(
                         mesh, [0.5], outer_outline=_rectangle(-2, -2, 4, 4),
-                        coordinate_tolerance=tolerance)
+                        tolerance=tolerance)
                 self.assertEqual(caught.exception.code, "invalid_input")
                 self.assertEqual(caught.exception.context["stage"], "input_validation")
                 self.assert_unchanged(mesh, snapshot)

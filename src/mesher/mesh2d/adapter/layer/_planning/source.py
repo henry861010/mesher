@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+from mesher.tolerance import GeometryToleranceError, resolve_tolerance
 
 from ....model import Mesh2D, _validate_zero_z
 from .._geometry import BoxIndex, area, cross, intervals_cover, segment_contacts
@@ -126,7 +127,7 @@ def _source_chains(flat, xy, tol):
             for start, end in zip(corners, np.roll(corners, -1))]
 
 
-def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_tolerance,
+def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, tolerance,
              *, expand_size=None, _semantic_directions=None, _frame=None):
     if not isinstance(mesh, Mesh2D):
         _fail("mesh must be a Mesh2D")
@@ -138,7 +139,11 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
         _fail("layer extension requires at least one existing Quad4 element", "empty_mesh")
     h = _input_scalar(element_size, "element_size")
     ratio = _input_scalar(expand_ratio, "expand_ratio")
-    axis_tol = _input_scalar(axis_tolerance, "axis_tolerance")
+    try:
+        policy = resolve_tolerance(tolerance)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise QuadLayerError("tolerance must be finite and positive", code="invalid_input",
+                             stage="input_validation", parameter="tolerance") from error
     if not np.isfinite(h) or h <= 0:
         _fail("element_size must be finite and positive",
               stage="input_validation", parameter="element_size")
@@ -146,12 +151,15 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
     if not np.isfinite(expand_h) or expand_h <= 0:
         _fail("expand_size must be finite and positive",
               stage="input_validation", parameter="expand_size")
+    if h <= policy.absolute or expand_h <= policy.absolute:
+        _fail("element and expansion sizes must exceed the geometric tolerance",
+              code="feature_below_resolution", stage="input_validation",
+              source="layer", parameter="element_size" if h <= policy.absolute else "expand_size",
+              measured_distance=min(h, expand_h),
+              element_size=h, expand_size=expand_h, tolerance=policy.absolute)
     if not np.isfinite(ratio) or ratio < 1:
         _fail("expand_ratio must be finite and at least 1",
               stage="input_validation", parameter="expand_ratio")
-    if not np.isfinite(axis_tol) or not 0 <= axis_tol < 1:
-        _fail("axis_tolerance must be finite and in [0, 1)",
-              stage="input_validation", parameter="axis_tolerance")
     if not np.all(np.isfinite(mesh.nodes)):
         _fail("all mesh nodes must be finite")
     if len(mesh.elements) and (np.any(mesh.elements < 0) or np.any(mesh.elements >= len(mesh.nodes))):
@@ -178,6 +186,10 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
         if len(np.unique(flat)) != len(flat):
             _fail("prepared source repeats a node", stage="repair_outline")
     original = mesh.nodes[flat, :2]
+    try:
+        policy.check_resolution(mesh.nodes[:, :2], stage="input_validation", source="mesh")
+    except GeometryToleranceError as error:
+        raise QuadLayerError(str(error), code=error.code, **error.context) from error
     origin = original[0].copy() if _frame is None else _frame["origin"].copy()
     scale = float(np.max(np.ptp(original, axis=0))) if _frame is None else _frame["scale"]
     if not np.isfinite(scale) or scale <= 0:
@@ -190,13 +202,15 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
     if not np.isfinite(expand_h) or expand_h <= 0:
         _fail("geometry and expand_size have incompatible numeric scales",
               stage="input_validation", parameter="expand_size")
-    tol = max(128 * np.finfo(float).eps,
-              4 * abs(float(np.spacing(np.max(np.abs(original)))) / scale))
+    numeric_tol = max(128 * np.finfo(float).eps,
+                      4 * abs(float(np.spacing(np.max(np.abs(original)))) / scale))
+    tol = policy.normalized(scale)
     if _frame is not None:
         tol = max(tol, _frame["tol"])
-    if h <= 32 * tol:
+        numeric_tol = max(numeric_tol, _frame["numeric_tol"])
+    if h <= 32 * numeric_tol:
         raise UnmeshableDirectQuadLayout("element_size is below geometric resolution")
-    if expand_h <= 32 * tol:
+    if expand_h <= 32 * numeric_tol:
         raise UnmeshableDirectQuadLayout("expand_size is below geometric resolution",
                                         stage="input_validation", parameter="expand_size")
     if ids is None:
@@ -221,7 +235,7 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
         if _semantic_directions is not None:
             direction = semantic[i].copy()
         if length <= tol or (_semantic_directions is None
-                             and np.ptp(chain[:, 1 - axis]) > axis_tol * length + tol):
+                             and np.ptp(chain[:, 1 - axis]) > tol):
             _fail("outline_i edges must be near a global X or Y axis",
                   parameter="outline_i", edge_index=i)
         if np.any(np.diff(chain @ direction) <= tol):
@@ -232,7 +246,7 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
     if np.any(np.sum(directions * np.roll(directions, -1, axis=0), axis=1) != 0):
         _fail("adjacent logical edges must be perpendicular; combine collinear chains")
     _simple_loop(source, tol, "source")
-    if abs(area(source)) <= tol:
+    if abs(area(source)) <= numeric_tol:
         _fail("source boundary has zero area")
     normals = np.column_stack((-directions[:, 1], directions[:, 0]))
     frozen = np.vstack([np.column_stack((edge[:-1], edge[1:])) for edge in ids])
@@ -240,7 +254,7 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
     if len(cells):
         edges = np.roll(cells, -1, axis=1) - cells
         turns = cross(edges, np.roll(edges, -1, axis=1))
-        threshold = tol * np.maximum(np.linalg.norm(edges, axis=2),
+        threshold = numeric_tol * np.maximum(np.linalg.norm(edges, axis=2),
                                     np.linalg.norm(np.roll(edges, -1, axis=1), axis=2))
         if np.any(~(np.all(turns > threshold, axis=1) | np.all(turns < -threshold, axis=1))):
             _fail("existing Quad4 elements must be nondegenerate and strictly convex")
@@ -250,7 +264,8 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, axis_to
     return dict(xy=xy, ids=ids, source=source, chains=chains, normals=normals,
                 directions=directions, frozen=frozen, patterns=patterns,
                 pattern_records=pattern_records,
-                h=h, expand_h=expand_h, ratio=ratio, tol=tol, origin=origin, scale=scale)
+                h=h, expand_h=expand_h, ratio=ratio, tol=tol, numeric_tol=numeric_tol,
+                tolerance=policy, origin=origin, scale=scale)
 
 
 def _validate_old_patterns(mesh, data):

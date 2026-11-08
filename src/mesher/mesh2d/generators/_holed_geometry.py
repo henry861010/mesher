@@ -13,6 +13,8 @@ from fractions import Fraction
 import math
 
 import numpy as np
+from mesher.tolerance import GeometryTolerance, canonicalize_points, resolve_tolerance
+from ._canonical import canonical_geometry
 
 
 @dataclass(frozen=True)
@@ -214,11 +216,11 @@ def _validate_boundaries(corner_loops, tolerance, stats):
                 name = "outer_outline" if owner == 0 else f"holes[{owner - 1}]"
                 raise ValueError(
                     f"{name} self-intersects, touches itself, or has nonadjacent "
-                    "edges within coordinate_tolerance"
+                    "edges within tolerance"
                 )
             raise ValueError(
                 f"boundaries {owner} and {other_owner} intersect, touch, "
-                "or lie within coordinate_tolerance"
+                "or lie within tolerance"
             )
 
 
@@ -313,20 +315,16 @@ class OrthogonalDomain:
     exclude all boundary points, including isolated tangential contacts.
     """
 
-    def __init__(self, outer_outline, holes=(), coordinate_tolerance: float = 1e-9):
-        if isinstance(coordinate_tolerance, (bool, np.bool_)):
-            raise ValueError("coordinate_tolerance must be finite and non-negative")
-        try:
-            tolerance = float(coordinate_tolerance)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("coordinate_tolerance must be finite and non-negative") from exc
-        if not math.isfinite(tolerance) or tolerance < 0:
-            raise ValueError("coordinate_tolerance must be finite and non-negative")
-        self.coordinate_tolerance = tolerance
+    def __init__(self, outer_outline, holes=(), tolerance: GeometryTolerance | float | None = None):
+        self.policy = resolve_tolerance(tolerance)
+        tolerance = self.policy.absolute
+        self.tolerance = tolerance
         try:
             hole_inputs = list(holes)
         except TypeError as exc:
             raise ValueError("holes must be a sequence of orthogonal outlines") from exc
+        outer_outline, hole_inputs, _ = canonical_geometry(
+            outer_outline, hole_inputs, tolerance=self.policy)
         names = ["outer_outline", *(f"holes[{i}]" for i in range(len(hole_inputs)))]
         parsed = [_parse_loop(value, name)
                   for value, name in zip([outer_outline, *hole_inputs], names)]
@@ -485,12 +483,19 @@ class OrthogonalDomain:
         return answer
 
 
-def normalize_patterns(pattern_lines) -> tuple[np.ndarray, ...]:
+def normalize_patterns(pattern_lines, tolerance=None) -> tuple[np.ndarray, ...]:
     """Return exact, canonical nonzero axis-aligned finite pattern segments."""
     try:
         entries = list(pattern_lines)
     except TypeError as exc:
         raise ValueError("pattern_lines must be a sequence of endpoint pairs") from exc
+    policy = resolve_tolerance(tolerance)
+    if entries:
+        raw = np.asarray(entries, dtype=float)
+        if raw.ndim != 3 or raw.shape[1:] != (2, 2):
+            raise ValueError("pattern_lines must have shape (n, 2, 2)")
+        entries = canonicalize_points(raw.reshape(-1, 2), policy,
+                                     stage="pattern_normalization").reshape(-1, 2, 2)
     unique = {}
     for index, value in enumerate(entries):
         try:

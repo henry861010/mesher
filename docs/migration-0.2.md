@@ -1,5 +1,7 @@
 # Migrating to mesher 0.2
 
+> 本文件記錄 0.2 的模型／import 遷移。後續統一幾何容差已移除 `relative`；目前 API 請參考 [容差遷移說明](tolerance-migration.md)。
+
 Version 0.2 is intentionally breaking. It does not provide compatibility
 modules for the old flat package layout or the former `process_flow_mesher`
 package.

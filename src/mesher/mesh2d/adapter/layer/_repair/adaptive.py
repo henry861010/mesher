@@ -8,6 +8,7 @@ from __future__ import annotations
 from math import ceil
 
 import numpy as np
+from mesher.tolerance import subdivision_count
 
 from ...unit.build_unit_1_1_x_y import _validate_patch
 from .._geometry import area, cross
@@ -54,7 +55,8 @@ def _offset(sides, tol):
         velocities.append(np.linalg.solve(matrix, np.ones(2)))
     velocities = np.asarray(velocities)
     slope = np.sum((np.roll(velocities, -1, axis=0) - velocities) * tangent, axis=1)
-    events = -lengths[slope < -tol] / slope[slope < -tol]
+    contracting = slope < -64 * np.finfo(float).eps
+    events = -lengths[contracting] / slope[contracting]
     if not len(events):
         raise ValueError("adaptive face has no finite inset limit")
     return corners, velocities, float(events.min())
@@ -68,7 +70,7 @@ def _inner_counts(corners, target):
         raise ValueError("adaptive sampling count is not representable")
     # Python integers keep preflight arithmetic exact even when a requested
     # array would exceed NumPy's platform-sized index range.
-    counts = [max(1, ceil(float(value))) for value in ratios]
+    counts = [subdivision_count(float(length), target) for length in lengths]
     if sum(counts) % 2:
         # A closed Quad4 core needs an even boundary. Add one segment where
         # its normalized size-error penalty is smallest; never move a corner.

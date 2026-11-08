@@ -52,16 +52,20 @@ class QuadLayerInputErrorTests(unittest.TestCase):
 
     def test_huge_integer_scalars_are_typed_for_both_apis(self):
         for api in _APIS:
-            for parameter in ("element_size", "expand_ratio", "axis_tolerance"):
+            for parameter in ("element_size", "expand_ratio", "tolerance"):
                 with self.subTest(api=api.__name__, parameter=parameter):
                     error = self.call_failure(api, parameters={parameter: 10 ** 1000})
                     self.assert_input_context(error, parameter)
-                    self.assertIsInstance(error.__cause__, OverflowError)
+                    if parameter == "tolerance":
+                        self.assertIsInstance(error.__cause__, ValueError)
+                        self.assertIsInstance(error.__cause__.__cause__, OverflowError)
+                    else:
+                        self.assertIsInstance(error.__cause__, OverflowError)
 
     def test_scalar_type_and_value_conversion_errors_are_typed(self):
         for api in _APIS:
-            for parameter in ("element_size", "expand_ratio", "axis_tolerance"):
-                for value in (None, "not-a-number", [1, 2]):
+            for parameter in ("element_size", "expand_ratio", "tolerance"):
+                for value in (("not-a-number", [1, 2]) if parameter == "tolerance" else (None, "not-a-number", [1, 2])):
                     with self.subTest(api=api.__name__, parameter=parameter, value=value):
                         error = self.call_failure(api, parameters={parameter: value})
                         self.assert_input_context(error, parameter)
@@ -71,7 +75,7 @@ class QuadLayerInputErrorTests(unittest.TestCase):
         cases = (
             ("element_size", 0, "element_size must be finite and positive"),
             ("expand_ratio", .5, "expand_ratio must be finite and at least 1"),
-            ("axis_tolerance", 1, "axis_tolerance must be finite and in [0, 1)"),
+            ("tolerance", 0, "tolerance must be finite and positive"),
         )
         for api in _APIS:
             for parameter, invalid, message in cases:
@@ -80,7 +84,7 @@ class QuadLayerInputErrorTests(unittest.TestCase):
                         error = self.call_failure(api, parameters={parameter: value})
                         self.assert_input_context(error, parameter)
                         self.assertEqual(str(error), message)
-                        self.assertIsNone(error.__cause__)
+                        self.assertIsNone(error.__cause__) if parameter != "tolerance" else self.assertIsInstance(error.__cause__, ValueError)
 
     def test_malformed_flat_loops_are_typed_and_atomic(self):
         invalid = ([], [0, 3, 2], [0., 3., 2., 1.], [True] * 4,

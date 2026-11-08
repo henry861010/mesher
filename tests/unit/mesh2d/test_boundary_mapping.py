@@ -95,7 +95,7 @@ class BoundaryMappingTests(unittest.TestCase):
                     supplied = np.roll(target[::-1] if reverse else target, 3)
                     source = np.roll(outline, 2)
                     plan = plan_quad_sections(mesh, source, 50 * scale, outline_o=supplied,
-                                              fixed_outer_boundary=True, small_element_size=10 * scale)
+                                              fixed_outer_boundary=True, small_element_size=10 * scale, tolerance=.001 * scale)
                     actual = {r['source_node']: r['target_node'] for r in plan.diagnostics['dense_seams']}
                     if reference is None:
                         reference = actual
@@ -147,7 +147,7 @@ class BoundaryMappingTests(unittest.TestCase):
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] * scale + [.137, -1.13]
                 for shift in (0, 3, 7):
                     plan = plan_quad_sections(mesh, np.roll(outline, shift), 2 * scale,
-                                              outline_o=np.roll(target, shift), fixed_outer_boundary=True)
+                                              outline_o=np.roll(target, shift), fixed_outer_boundary=True, tolerance=.001 * scale)
                     actual = {(r['source_node'], r['side']): r['target_node']
                               for r in plan.diagnostics['corner_mappings']}
                     if reference is None:

@@ -53,19 +53,19 @@ def _geometry_to_z(geometry, isStart=True):
         z = geometry["bottom_left"][2] 
         if not isStart:
             z += geometry["thk"]
-        return round(z,3)
+        return float(z)
 
     if geometry["type"] == "PolygonGeometry":
         z = geometry["polys"][0][0][2]
         if not isStart:
             z += geometry["thk"]
-        return round(z,3)
+        return float(z)
     
     if geometry["type"] == "CylinderGeometry":
         z = geometry["center"][2]
         if not isStart:
             z += geometry["thk"]
-        return round(z,3)
+        return float(z)
     
     if geometry["type"] == "ConeGeometry":
         raise ValueError("ConeGeometry is not supported by mesh25d")

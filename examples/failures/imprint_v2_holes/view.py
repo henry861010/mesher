@@ -89,14 +89,14 @@ def prepare_meshes(case):
             parameters["target_edge_size"],
             parameters["grid_x_list"],
             parameters["y_list"],
-            coordinate_tolerance=parameters["coordinate_tolerance"],
+            tolerance=parameters["tolerance"],
         )
         after = Mesh2D(nodes=before.nodes, elements=before.elements)
         arguments = {
             "center": parameters["grid_circler_center_coordinate"],
             "radius": parameters["circle_radius"],
             **{name: parameters[name] for name in (
-                "projection_tolerance", "guide_tolerance", "merge_tolerance",
+                "projection_distance", "tolerance",
                 "minimum_area", "guide_segments",
             )},
         }
@@ -235,7 +235,7 @@ def main(argv=None):
         cases = load_cases()
         if args.list_cases:
             for case in cases:
-                print(f"{case['id']}: guide_tolerance={case['parameters']['guide_tolerance']:g}")
+                print(f"{case['id']}: tolerance={case['parameters']['tolerance']:g}")
             return 0
         case = select_case(cases, args.case)
         before, after = prepare_meshes(case)

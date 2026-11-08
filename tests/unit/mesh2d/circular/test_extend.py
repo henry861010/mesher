@@ -578,7 +578,7 @@ class ExtendCircularMeshTests(unittest.TestCase):
         mesh = _fan_mesh()
         snapshot = self._snapshot(mesh)
 
-        with self.assertRaisesRegex(ValueError, "too many"):
+        with self.assertRaisesRegex(ValueError, "numeric_resolution_exceeded"):
             extend_circular_mesh(
                 mesh,
                 element_size=np.nextafter(0.0, 1.0),
@@ -645,6 +645,7 @@ class ExtendCircularMeshPerformanceTests(unittest.TestCase):
             center_y=0.0,
             inner_radius=1.0,
             outer_radius=2.0,
+            tolerance=1e-6,
         )
         elapsed = time.perf_counter() - started
 

@@ -334,8 +334,8 @@ Dragger to build `Mesh3D`.
 `_get_assignments` was moved verbatim into geometry extraction.
 
 The syntax-only input contract accepts optional top-level `regionMeshing`
-(`grid` by default, or experimental `adapter`), retaining its existing schema
-version and three-value settings result. `region_adapter.py` owns the optional
+(`grid` by default, or experimental `adapter`) and schema `1.1.0`
+`geometryTolerance` (default `0.001`). Schema `1.0.0` remains readable. `region_adapter.py` owns the optional
 XY strategy: normalize interior orthogonal regions with even/odd loop nesting,
 generate seeds through the public holed rectilinear API, grow each region's
 intermediate layers with fivefold target sizes, and merge them for one full
@@ -346,8 +346,9 @@ automatic grid fallback. Inactive regions keep the existing grid path.
 
 Physical/KOZ segments and circular support cuts constrain seed generation,
 intermediate layers, and final completion. The full adapter's optional
-`coordinate_tolerance` defaults to `1e-3`; Mesh25D passes its pattern tolerance
-so narrow KOZ features stay distinct. The meshing envelope remains the existing
+`tolerance` receives the same immutable `GeometryTolerance` as Mesh25D. KOZ
+width never shrinks it; a required feature below resolution raises an explicit
+conflict. All generated final fronts share canonical supports before global cuts. The meshing envelope remains the existing
 symmetry-restricted grid envelope, including circular support margins. Circular
 imprint/extension run after adaptive construction, followed by the unchanged
 Z plan, winding conversion, material allocation, and extrusion. Shapely geometry

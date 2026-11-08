@@ -34,8 +34,8 @@ def boundary_edges(elements):
 
 def imprint(mesh, **kwargs):
     return imprint_circle(
-        mesh, center=[0., 0.], radius=1., projection_tolerance=0.,
-        guide_tolerance=0., merge_tolerance=0., minimum_area=0., **kwargs,
+        mesh, center=[0., 0.], radius=1., projection_distance=0.,
+         tolerance=1e-12, minimum_area=0., **kwargs,
     )
 
 
@@ -117,7 +117,7 @@ class ImprintFinalTriangulationTests(unittest.TestCase):
     def test_public_call_triangulates_generated_quad_and_preserves_footprint(self):
         mesh = self.mesh()
         split_only = self.mesh()
-        _imprint_circle(split_only, [0., 0.], 1., 0.)
+        _imprint_circle(split_only, [0., 0.], 1., 1e-12)
         self.assertEqual(split_only.element_count, 2)
         self.assertEqual(np.count_nonzero(split_only.element_types == 4), 1)
 
@@ -198,8 +198,8 @@ class ImprintFinalTriangulationTests(unittest.TestCase):
             metadata[stage] = provenance
 
         _run_local_imprint(
-            mesh, center=[0., 0.], radius=1., projection_tolerance=0.,
-            guide_tolerance=0., merge_tolerance=0., minimum_area=0.,
+            mesh, center=[0., 0.], radius=1., projection_distance=0.,
+             tolerance=1e-12, minimum_area=0.,
             observer=capture, stats=stats,
         )
         np.testing.assert_array_equal(metadata["split"]["split_sources"], [0, 0, 0])

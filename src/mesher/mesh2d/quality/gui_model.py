@@ -81,7 +81,7 @@ def preset_nodes(element_type: ElementType | str) -> FloatArray:
     return preset.copy()
 
 
-def evaluate_element(nodes: ArrayLike) -> ElementQuality:
+def evaluate_element(nodes: ArrayLike, *, tolerance=None) -> ElementQuality:
     """Calculate all public quality metrics for one three- or four-node element."""
 
     node_array = np.asarray(nodes, dtype=np.float64)
@@ -95,7 +95,7 @@ def evaluate_element(nodes: ArrayLike) -> ElementQuality:
         element = np.array([[0, 1, 2, 3]], dtype=np.int64)
         element_type = ElementType.QUAD4
 
-    checker = MeshQualityChecker(Mesh2D(node_array, element))
+    checker = MeshQualityChecker(Mesh2D(node_array, element), tolerance=tolerance)
     jacobian = checker.calculate_jacobian()
     scaled = checker.calculate_scaled_jacobian()
     aspect = checker.calculate_aspect_ratio()

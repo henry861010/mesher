@@ -224,9 +224,9 @@ class ExpandSizeTests(unittest.TestCase):
     def test_unresolvable_expand_size_fails_atomically(self):
         for api in _APIS:
             with self.subTest(api=api.__name__, case="below_resolution"):
-                self.assert_atomic_error(api, 1e-14, code="unmeshable_direct_quad_layout")
+                self.assert_atomic_error(api, 1e-14, code="feature_below_resolution")
             with self.subTest(api=api.__name__, case="normalization_underflow"):
-                self.assert_atomic_error(api, np.nextafter(0., 1.))
+                self.assert_atomic_error(api, np.nextafter(0., 1.), code="feature_below_resolution")
 
     def test_expand_size_and_diagnostics_use_world_coordinate_units(self):
         cases = ((1e-7, np.zeros(2), np.eye(2)),
@@ -239,11 +239,11 @@ class ExpandSizeTests(unittest.TestCase):
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] @ rotation.T * scale + shift
                 patterns = np.array([[[1., 3.6], [2., 3.6]]]) @ rotation.T * scale + shift
                 plan = plan_quad_sections(mesh, outline, .5 * scale,
-                                          expand_size=.8 * scale, pattern_lines=patterns)
+                                          expand_size=.8 * scale, pattern_lines=patterns, tolerance=.001 * scale)
                 np.testing.assert_allclose((plan.front - shift) @ rotation / scale,
                                            expected, rtol=0, atol=1e-8)
                 result = generate_layer_adaptive_mesh(mesh, outline, .5 * scale,
-                                                      expand_size=.8 * scale, pattern_lines=patterns)
+                                                      expand_size=.8 * scale, pattern_lines=patterns, tolerance=.001 * scale)
                 np.testing.assert_allclose(result.diagnostics["edge_expansion"],
                                            plan.edge_expansion, rtol=1e-8, atol=scale * 1e-8)
                 front = (mesh.nodes[result.outline, :2] - shift) @ rotation / scale

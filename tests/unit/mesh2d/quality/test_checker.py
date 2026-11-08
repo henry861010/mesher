@@ -357,7 +357,7 @@ class MixedMeshAndReportTests(unittest.TestCase):
             self.assertEqual(report.failed_indices.size, 0)
 
     def test_small_jacobian_can_fail_absolute_quality_threshold(self):
-        tolerance = GeometryTolerance(absolute=0.0, relative=0.0)
+        tolerance = GeometryTolerance(absolute=1e-18)
         checker = _checker(
             np.array([[0.0, 0.0], [1.0e-8, 0.0], [0.0, 1.0e-8]]),
             np.array([[0, 1, 2, 2]], dtype=np.int64),
@@ -519,7 +519,7 @@ class InvalidMeshTests(unittest.TestCase):
 
     def test_exact_xy_plane_is_independent_of_quality_tolerance(self):
         mesh = Mesh2D([[0., 0.], [1., 0.], [0., 1.]], [[0, 1, 2, 2]])
-        tolerance = GeometryTolerance(absolute=0., relative=0.)
+        tolerance = GeometryTolerance(absolute=1e-12)
         result = MeshQualityChecker(mesh, tolerance=tolerance).calculate_jacobian()
         self.assertAlmostEqual(result.values[0], 1.)
         mesh.nodes[1, 2] = 1e-30

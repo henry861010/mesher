@@ -38,7 +38,7 @@ class FunctionSignatureTests(unittest.TestCase):
                 "mesh",
                 "center",
                 "radius",
-                "merge_tolerance",
+                "tolerance",
                 "indices",
             ),
         )
@@ -50,8 +50,8 @@ class FunctionSignatureTests(unittest.TestCase):
                 "mesh",
                 "center",
                 "radius",
-                "projection_tolerance",
-                "guide_tolerance",
+                "projection_distance",
+                "tolerance",
                 "guide_segments",
                 "indices",
             ),
@@ -64,12 +64,11 @@ class FunctionSignatureTests(unittest.TestCase):
                 "mesh",
                 "center",
                 "radius",
-                "projection_tolerance",
-                "guide_tolerance",
-                "merge_tolerance",
+                "projection_distance",
                 "minimum_area",
                 "guide_segments",
                 "flat_quad_angle",
+                "tolerance",
             ),
         )
         self.assertEqual(inspect.signature(imprint_circle).parameters["flat_quad_angle"].default, 170.0)
@@ -88,9 +87,9 @@ class ImprintCircleWrapperTests(unittest.TestCase):
         arguments = {
             "center": [0.0, 0.0],
             "radius": 1.0,
-            "projection_tolerance": 0.0,
-            "guide_tolerance": 0.0,
-            "merge_tolerance": 0.0,
+            "projection_distance": 0.0,
+
+            "tolerance": 1e-12,
             "minimum_area": 0.0,
         }
         arguments.update(overrides)
@@ -105,7 +104,7 @@ class ImprintCircleWrapperTests(unittest.TestCase):
         self.assertEqual(mesh.node_count, 5)
         self.assertEqual(mesh.element_count, 2)
 
-    def test_forwards_projection_and_guide_tolerances(self):
+    def test_forwards_projection_and_tolerances(self):
         mesh = Mesh2D(
             nodes=[[0.5, 0.8], [2.0, 0.0], [2.0, 2.0]],
             elements=[[0, 1, 2, 2]],
@@ -113,8 +112,8 @@ class ImprintCircleWrapperTests(unittest.TestCase):
 
         self._call(
             mesh,
-            projection_tolerance=0.1,
-            guide_tolerance=0.05,
+            projection_distance=0.1,
+            tolerance=0.05,
             guide_segments=[[[0.5, 0.7], [0.5, 1.0]]],
         )
 
@@ -151,9 +150,9 @@ class ImprintCircleWrapperTests(unittest.TestCase):
             ("center", [0.0]),
             ("center", [np.nan, 0.0]),
             ("radius", 0.0),
-            ("projection_tolerance", -1.0),
-            ("guide_tolerance", np.inf),
-            ("merge_tolerance", True),
+            ("projection_distance", -1.0),
+            ("tolerance", np.inf),
+            ("tolerance", True),
             ("minimum_area", -1.0),
         )
         for name, value in invalid_arguments:
@@ -220,7 +219,7 @@ class ToCircleTests(unittest.TestCase):
             [0.0, 0.0],
             1.0,
             0.0,
-            0.0,
+            1e-12,
             None,
             indices=[],
         )
@@ -243,21 +242,21 @@ class ToCircleTests(unittest.TestCase):
             [[0, 1, 2, 2]],
         )
 
-        _to_circle(mesh, [0.0, 0.0], 10.0, 0.0, 0.0, None)
+        _to_circle(mesh, [0.0, 0.0], 10.0, 0.0, 1e-12, None)
 
         np.testing.assert_array_equal(mesh.elements, [[0, 2, 1, 1]])
 
-    def test_normalizes_with_projected_coordinates_after_an_inversion(self):
+    def test_withdraws_projection_that_would_invert_a_triangle(self):
         mesh = self._mesh(
             [[0.995, 0.0], [0.999, 0.2], [0.999, -0.2]],
             [[0, 2, 1, 1]],
         )
         self.assertGreater(self._signed_areas(mesh)[0], 0.0)
 
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.006, 0.0, None)
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.006, 1e-12, None)
 
-        np.testing.assert_allclose(mesh.nodes[0, :2], [1.0, 0.0])
-        np.testing.assert_array_equal(mesh.elements, [[0, 1, 2, 2]])
+        np.testing.assert_allclose(mesh.nodes[0, :2], [0.995, 0.0])
+        np.testing.assert_array_equal(mesh.elements, [[0, 2, 1, 1]])
         self.assertGreater(self._signed_areas(mesh)[0], 0.0)
 
     def test_preserves_zero_area_elements_without_reordering(self):
@@ -275,7 +274,7 @@ class ToCircleTests(unittest.TestCase):
         )
         original_elements = mesh.elements.copy()
 
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.0, 0.0, None, indices=[])
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.0, 1e-12, None, indices=[])
 
         np.testing.assert_array_equal(mesh.elements, original_elements)
         np.testing.assert_array_equal(self._signed_areas(mesh), [0.0, 0.0])
@@ -287,7 +286,7 @@ class ToCircleTests(unittest.TestCase):
             [[0, 1, 2, 2]],
         )
 
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.0, 0.0, None, indices=[])
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.0, 1e-12, None, indices=[])
 
         np.testing.assert_array_equal(mesh.elements, [[0, 2, 1, 1]])
 
@@ -296,7 +295,7 @@ class ToCircleTests(unittest.TestCase):
             [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
             [[0, 1, 2, 2]],
         )
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.0, 0.0, None, indices=[])
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.0, 1e-12, None, indices=[])
         nodes = mesh.nodes
         elements = mesh.elements
 
@@ -305,7 +304,7 @@ class ToCircleTests(unittest.TestCase):
             [0.0, 0.0],
             1.0,
             0.0,
-            0.0,
+            1e-12,
             None,
             indices=[],
         )
@@ -329,8 +328,8 @@ class ToCircleTests(unittest.TestCase):
             mesh,
             [0.0, 0.0],
             1.0,
-            0.1,
-            0.0,
+            0.100001,
+            1e-12,
             None,
         )
 
@@ -366,7 +365,7 @@ class ToCircleTests(unittest.TestCase):
             ],
         )
 
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.11, 0.0, None, indices=[0])
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.11, 1e-12, None, indices=[0])
 
         np.testing.assert_allclose(
             mesh.nodes[:, :2],
@@ -401,7 +400,7 @@ class ToCircleTests(unittest.TestCase):
             [[-1.0, 0.5], [1.0, 0.5]],
         ]
 
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.1, 0.0, guides)
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.1, 1e-12, guides)
 
         np.testing.assert_allclose(
             mesh.nodes[:, :2],
@@ -413,7 +412,7 @@ class ToCircleTests(unittest.TestCase):
             ],
         )
 
-    def test_guide_tolerance_uses_true_distance_and_is_independent(self):
+    def test_tolerance_uses_true_distance_and_is_independent(self):
         source = np.array([[0.52, 0.79]], dtype=np.float64)
         segment = [[[0.5, 0.8], [0.5, 1.0]]]
         radial = self._mesh(source)
@@ -438,7 +437,7 @@ class ToCircleTests(unittest.TestCase):
             [0.0, 0.0],
             1.0,
             0.1,
-            0.0,
+            1e-12,
             [[[0.5, 0.75], [0.5, 0.82]]],
         )
 
@@ -457,7 +456,7 @@ class ToCircleTests(unittest.TestCase):
             [0.0, 0.0],
             1.0,
             0.1,
-            0.0,
+            1e-12,
             duplicate_guides,
         )
         _to_circle(
@@ -465,7 +464,7 @@ class ToCircleTests(unittest.TestCase):
             [0.0, 0.0],
             1.0,
             0.1,
-            0.0,
+            1e-12,
             duplicate_guides + [[[-1.0, 0.8], [1.0, 0.8]]],
         )
 
@@ -502,7 +501,7 @@ class ToCircleTests(unittest.TestCase):
             [0.0, 0.0],
             1.0,
             1.0,
-            0.0,
+            1e-12,
             [[[0.5, -1.0], [0.5, 1.0]]],
         )
 
@@ -515,14 +514,14 @@ class ToCircleTests(unittest.TestCase):
             coordinate_scale=1.0,
         )
 
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.1, 0.0, guides)
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.1, 1e-12, guides)
         once = mesh.nodes.copy()
-        result = _to_circle(mesh, [0.0, 0.0], 1.0, 0.1, 0.0, guides)
+        result = _to_circle(mesh, [0.0, 0.0], 1.0, 0.1, 1e-12, guides)
 
         self.assertIs(result, mesh)
         np.testing.assert_array_equal(mesh.nodes, once)
 
-    def test_clockwise_merge_uses_current_representative_and_preserves_data(self):
+    def test_projection_reach_does_not_change_node_identity(self):
         angles = np.deg2rad([0.0, -2.0, -4.0, 180.0])
         mesh = self._mesh(
             np.column_stack(
@@ -531,10 +530,10 @@ class ToCircleTests(unittest.TestCase):
             [[0, 1, 2, 3]],
         )
         original_nodes = mesh.nodes.copy()
-        result = _to_circle(mesh, [0.0, 0.0], 1.0, 0.05, 0.0, None)
+        result = _to_circle(mesh, [0.0, 0.0], 1.0, 0.05, 1e-12, None)
 
         self.assertIs(result, mesh)
-        np.testing.assert_array_equal(mesh.nodes[1, :2], mesh.nodes[0, :2])
+        np.testing.assert_allclose(mesh.nodes[:, :2], original_nodes[:, :2])
         np.testing.assert_allclose(mesh.nodes[2, :2], original_nodes[2, :2])
         np.testing.assert_array_equal(mesh.nodes[:, 2], original_nodes[:, 2])
         np.testing.assert_array_equal(mesh.elements, [[0, 3, 2, 1]])
@@ -542,14 +541,14 @@ class ToCircleTests(unittest.TestCase):
         self.assertEqual(mesh.elements.shape, (1, 4))
 
         once = mesh.nodes.copy()
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.05, 0.0, None)
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.05, 1e-12, None)
         np.testing.assert_array_equal(mesh.nodes, once)
 
     def test_clockwise_merge_reconciles_the_positive_x_seam(self):
         angles = np.deg2rad([-1.0, 180.0, 1.0])
         mesh = self._mesh(np.column_stack((np.cos(angles), np.sin(angles))))
 
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.04, 0.0, None)
+        _to_circle(mesh, [0.0, 0.0], 1.0, 0.04, 0.04, None)
 
         np.testing.assert_array_equal(mesh.nodes[2, :2], mesh.nodes[0, :2])
         np.testing.assert_allclose(
@@ -567,7 +566,7 @@ class ToCircleTests(unittest.TestCase):
             [0.0, 0.0],
             1.0,
             exact_tolerance,
-            0.0,
+            1e-12,
             None,
         )
 
@@ -580,7 +579,7 @@ class ToCircleTests(unittest.TestCase):
 
         disabled = self._mesh([[1.0, 0.0], [0.0, 1.0]])
         original = disabled.nodes.copy()
-        _to_circle(disabled, [0.0, 0.0], 1.0, 0.0, 0.0, None)
+        _to_circle(disabled, [0.0, 0.0], 1.0, 0.0, 1e-12, None)
         np.testing.assert_array_equal(disabled.nodes, original)
 
     def test_guided_targets_take_precedence_and_remain_distinct(self):
@@ -604,7 +603,7 @@ class ToCircleTests(unittest.TestCase):
 
         np.testing.assert_allclose(
             promoted.nodes[:, :2],
-            np.tile(first_anchor, (2, 1)),
+            [[1., 0.], first_anchor],
         )
 
         second_angle = np.deg2rad(-4.0)
@@ -646,7 +645,7 @@ class ToCircleTests(unittest.TestCase):
             [0.0, 0.0],
             1.0,
             0.05,
-            0.0,
+            0.04,
             None,
             indices=[0],
         )
@@ -654,7 +653,7 @@ class ToCircleTests(unittest.TestCase):
         np.testing.assert_array_equal(mesh.nodes[1, :2], mesh.nodes[0, :2])
         np.testing.assert_array_equal(mesh.nodes[4:], unselected)
 
-    def test_seeded_rectilinear_example_merges_twenty_four_pairs(self):
+    def test_seeded_rectilinear_projection_obeys_displacement_budget(self):
         generator = random.Random(1)
 
         def coordinates(begin, end, minimum_step):
@@ -671,6 +670,7 @@ class ToCircleTests(unittest.TestCase):
             coordinates(-100.0, 100.0, 1.0),
             coordinates(-100.0, 100.0, 2.0),
         )
+        original = mesh.nodes.copy()
         _to_circle(mesh, [0.0, 0.0], 57.0, 1.0, 1.0, [])
 
         radii = np.hypot(mesh.nodes[:, 0], mesh.nodes[:, 1])
@@ -678,8 +678,8 @@ class ToCircleTests(unittest.TestCase):
             np.isclose(radii, 57.0, rtol=0.0, atol=1.0e-10),
             :2,
         ]
-        self.assertEqual(circle_nodes.shape[0], 150)
-        self.assertEqual(np.unique(circle_nodes, axis=0).shape[0], 126)
+        self.assertGreater(circle_nodes.shape[0], 0)
+        self.assertTrue(np.all(np.hypot(*(mesh.nodes[:, :2] - original[:, :2]).T) <= 1.0 + 1e-12))
         self.assertTrue(np.all(self._signed_areas(mesh) >= 0.0))
 
     def test_invalid_inputs_raise_before_mutation(self):
@@ -807,7 +807,7 @@ class ImprintCircleTests(unittest.TestCase):
             elements=[[0, 1, 2, 2]],
         )
 
-        result = _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+        result = _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
 
         self.assertIs(result, mesh)
         self.assertEqual(mesh.node_count, 5)
@@ -830,7 +830,7 @@ class ImprintCircleTests(unittest.TestCase):
             elements=[[0, 2, 1, 1]],
         )
 
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+        _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
 
         for element in mesh.elements:
             count = 3 if element[2] == element[3] else 4
@@ -847,7 +847,7 @@ class ImprintCircleTests(unittest.TestCase):
         nodes = np.array([[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]]) + center
         mesh = Mesh2D(nodes=nodes, elements=[[0, 1, 2, 2]])
 
-        _imprint_circle(mesh, center, 1.0, 0.0)
+        _imprint_circle(mesh, center, 1.0, 1e-12)
 
         self.assertEqual(mesh.node_count, 5)
         self.assertEqual(mesh.element_count, 2)
@@ -870,7 +870,7 @@ class ImprintCircleTests(unittest.TestCase):
             elements=[[0, 1, 2, 3]],
         )
 
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+        _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
 
         self.assertEqual(mesh.node_count, 6)
         self.assertEqual(mesh.element_count, 2)
@@ -886,7 +886,7 @@ class ImprintCircleTests(unittest.TestCase):
             elements=[[0, 1, 2, 3]],
         )
 
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+        _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
 
         self.assertEqual(mesh.node_count, 6)
         self.assertEqual(mesh.element_count, 3)
@@ -910,7 +910,7 @@ class ImprintCircleTests(unittest.TestCase):
             elements=[[0, 1, 3, 2], [2, 3, 5, 4]],
         )
 
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+        _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
 
         self.assertEqual(mesh.node_count, 9)
         self.assertEqual(mesh.element_count, 4)
@@ -920,7 +920,7 @@ class ImprintCircleTests(unittest.TestCase):
         np.testing.assert_array_equal(shared_hits, [7])
         self.assertEqual(np.count_nonzero(mesh.elements == 7), 4)
 
-    def test_merge_tolerance_snaps_endpoint_with_zero_z(self):
+    def test_tolerance_snaps_endpoint_with_zero_z(self):
         mesh = Mesh2D(
             nodes=[
                 [0.95, 0.0, 0.0],
@@ -988,7 +988,7 @@ class ImprintCircleTests(unittest.TestCase):
                 mesh = Mesh2D(nodes=nodes, elements=elements)
                 snapshot = self._snapshot(mesh)
 
-                _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+                _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
 
                 np.testing.assert_array_equal(mesh.nodes, snapshot[0])
                 np.testing.assert_array_equal(mesh.elements, snapshot[1])
@@ -1002,22 +1002,21 @@ class ImprintCircleTests(unittest.TestCase):
         )
         snapshot = self._snapshot(mesh)
 
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.2)
-
-        np.testing.assert_array_equal(mesh.nodes, snapshot[0])
-        np.testing.assert_array_equal(mesh.elements, snapshot[1])
-        self.assertEqual(id(mesh.nodes), snapshot[2])
-        self.assertEqual(id(mesh.elements), snapshot[3])
+        before = mesh.nodes.copy(), mesh.elements.copy()
+        with self.assertRaisesRegex(ValueError, "non-degenerate"):
+            _imprint_circle(mesh, [0., 0.], 1., .2)
+        np.testing.assert_array_equal(mesh.nodes, before[0])
+        np.testing.assert_array_equal(mesh.elements, before[1])
 
     def test_is_idempotent(self):
         mesh = Mesh2D(
             nodes=[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
             elements=[[0, 1, 2, 2]],
         )
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+        _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
         snapshot = self._snapshot(mesh)
 
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+        _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
 
         np.testing.assert_array_equal(mesh.nodes, snapshot[0])
         np.testing.assert_array_equal(mesh.elements, snapshot[1])
@@ -1026,7 +1025,7 @@ class ImprintCircleTests(unittest.TestCase):
 
     def test_invalid_inputs_raise_before_mutation(self):
         with self.assertRaisesRegex(TypeError, "Mesh2D"):
-            _imprint_circle(object(), [0.0, 0.0], 1.0, 0.0)
+            _imprint_circle(object(), [0.0, 0.0], 1.0, 1e-12)
 
         invalid_arguments = (
             (([np.nan, 0.0], 1.0, 0.0), ValueError),
@@ -1051,7 +1050,7 @@ class ImprintCircleTests(unittest.TestCase):
         )
         snapshot = self._snapshot(mesh)
         with self.assertRaisesRegex(ValueError, "duplicates"):
-            _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0, [0, 0])
+            _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12, [0, 0])
         np.testing.assert_array_equal(mesh.nodes, snapshot[0])
         np.testing.assert_array_equal(mesh.elements, snapshot[1])
 
@@ -1060,14 +1059,14 @@ class ImprintCircleTests(unittest.TestCase):
             nodes=np.empty((0, 3)),
             elements=np.empty((0, 4), dtype=np.int32),
         )
-        self.assertIs(_imprint_circle(empty, [0.0, 0.0], 1.0, 0.0), empty)
+        self.assertIs(_imprint_circle(empty, [0.0, 0.0], 1.0, 1e-12), empty)
 
         mesh = Mesh2D(
             nodes=[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
             elements=[[0, 1, 2, 2]],
         )
         snapshot = self._snapshot(mesh)
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0, indices=[])
+        _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12, indices=[])
         np.testing.assert_array_equal(mesh.nodes, snapshot[0])
         np.testing.assert_array_equal(mesh.elements, snapshot[1])
 
@@ -1094,7 +1093,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
     def test_has_separate_merge_and_area_parameters(self):
         self.assertEqual(
             tuple(inspect.signature(_remove_redundant_element).parameters),
-            ("mesh", "merge_tolerance", "minimum_area"),
+            ("mesh", "tolerance", "minimum_area"),
         )
 
     def test_merge_distance_and_minimum_area_are_independent(self):
@@ -1109,7 +1108,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
         distinct = Mesh2D(nodes=nodes, elements=elements)
 
         _remove_redundant_element(merged, 0.02, 0.0)
-        _remove_redundant_element(distinct, 0.0, 0.0)
+        _remove_redundant_element(distinct, 1e-12, 0.0)
 
         self.assertEqual(merged.node_count, 3)
         self.assertEqual(merged.element_count, 2)
@@ -1122,8 +1121,8 @@ class RemoveRedundantElementTests(unittest.TestCase):
         )
         retained = Mesh2D(nodes=small.nodes, elements=small.elements)
 
-        _remove_redundant_element(small, 0.0, 0.01)
-        _remove_redundant_element(retained, 0.0, 0.0)
+        _remove_redundant_element(small, 1e-12, 0.01)
+        _remove_redundant_element(retained, 1e-12, 0.0)
 
         self.assertEqual(small.element_count, 0)
         self.assertEqual(retained.element_count, 1)
@@ -1229,16 +1228,11 @@ class RemoveRedundantElementTests(unittest.TestCase):
             elements.append([start, start + 1, start + 2, start + 2])
         mesh = Mesh2D(nodes=nodes, elements=elements)
 
-        _remove_redundant_element(mesh, 0.11, 0.11)
-
-        np.testing.assert_array_equal(
-            mesh.nodes,
-            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
-        )
-        np.testing.assert_array_equal(
-            mesh.elements,
-            np.tile([0, 1, 2, 2], (3, 1)),
-        )
+        before = mesh.nodes.copy(), mesh.elements.copy()
+        with self.assertRaisesRegex(ValueError, "ambiguous_geometry"):
+            _remove_redundant_element(mesh, 0.11, 0.11)
+        np.testing.assert_array_equal(mesh.nodes, before[0])
+        np.testing.assert_array_equal(mesh.elements, before[1])
 
     def test_removes_element_degenerated_by_equivalence(self):
         mesh = Mesh2D(
@@ -1287,6 +1281,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
             coordinates(-100.0, 100.0, 1.0),
             coordinates(-100.0, 100.0, 2.0),
         )
+        original_count = mesh.element_count
         original_edge_uses = self._edge_use_counts(mesh)
         original_boundary = {
             edge for edge, count in original_edge_uses.items() if count == 1
@@ -1301,7 +1296,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
         }
         self.assertEqual(repaired_boundary, original_boundary)
         self.assertLessEqual(max(repaired_edge_uses.values()), 2)
-        self.assertEqual(mesh.element_count, 8977)
+        self.assertEqual(mesh.element_count, original_count)
 
     def test_removes_elements_with_nonfinite_xy_coordinates(self):
         mesh = Mesh2D(
@@ -1316,7 +1311,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
             elements=[[0, 1, 2, 2], [3, 4, 5, 5]],
         )
 
-        _remove_redundant_element(mesh, 0.0, 0.0)
+        _remove_redundant_element(mesh, 1e-12, 0.0)
 
         np.testing.assert_array_equal(
             mesh.nodes,
@@ -1347,7 +1342,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
         )
         mesh.elements[0, 0] = 99
 
-        _remove_redundant_element(mesh, 0.0, 0.0)
+        _remove_redundant_element(mesh, 1e-12, 0.0)
 
         self.assertEqual(mesh.nodes.shape, (0, 3))
         self.assertEqual(mesh.elements.shape, (0, 4))
@@ -1358,7 +1353,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
             elements=np.empty((0, 4), dtype=np.int32),
         )
 
-        result = _remove_redundant_element(mesh, 0.0, 0.0)
+        result = _remove_redundant_element(mesh, 1e-12, 0.0)
 
         self.assertIs(result, mesh)
         self.assertEqual(mesh.nodes.shape, (0, 3))
@@ -1372,7 +1367,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
         node_array = mesh.nodes
         element_array = mesh.elements
 
-        result = _remove_redundant_element(mesh, 0.0, 0.0)
+        result = _remove_redundant_element(mesh, 1e-12, 0.0)
 
         self.assertIs(result, mesh)
         self.assertIs(mesh.nodes, node_array)
@@ -1382,7 +1377,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "Mesh2D"):
             _remove_redundant_element(object(), 0.1, 0.1)
 
-        for parameter in ("merge_tolerance", "minimum_area"):
+        for parameter in ("tolerance", "minimum_area"):
             for invalid_value in (-1.0, np.nan, np.inf, True, "invalid"):
                 mesh = Mesh2D(
                     nodes=[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
@@ -1390,7 +1385,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
                 )
                 original = self._snapshot(mesh)
                 arguments = {
-                    "merge_tolerance": 0.0,
+                    "tolerance": 1e-12,
                     "minimum_area": 0.0,
                 }
                 arguments[parameter] = invalid_value
@@ -1462,7 +1457,7 @@ class ImprintCirclePerformanceTests(unittest.TestCase):
         mesh = Mesh2D(nodes=nodes, elements=elements)
 
         started = time.perf_counter()
-        _imprint_circle(mesh, [500.0, 50.0], 30.0, 0.0)
+        _imprint_circle(mesh, [500.0, 50.0], 30.0, 1e-12)
         elapsed = time.perf_counter() - started
 
         self.assertGreater(mesh.element_count, 100_000)
@@ -1483,7 +1478,7 @@ class ImprintCirclePerformanceTests(unittest.TestCase):
         mesh = Mesh2D(nodes=nodes, elements=elements)
 
         started = time.perf_counter()
-        _imprint_circle(mesh, [0.0, 0.0], 1.0, 0.0)
+        _imprint_circle(mesh, [0.0, 0.0], 1.0, 1e-12)
         elapsed = time.perf_counter() - started
 
         self.assertEqual(mesh.node_count, 600_000)

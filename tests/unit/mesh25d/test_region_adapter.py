@@ -22,7 +22,7 @@ def _plan(controls=(), *, size=2, bounds=(-12, -12, 12, 12),
           strategy="adapter", faces=(), tolerance=1e-6):
     pattern = Pattern2D(
         {"type": "BOX", "dim": list(bounds)}, list(faces), {}, {},
-        tolerance, tolerance,
+        tolerance,
     )
     return plan_2d(
         pattern,

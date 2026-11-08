@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from time import perf_counter
 from typing import Any
 
 import numpy as np
+from mesher.tolerance import GeometryTolerance, GeometryToleranceError, resolve_tolerance
 from numpy.typing import NDArray
 
 from ..generators import generate_rectilinear_mesh_optimal
 from ..generators._holed_geometry import normalize_patterns
+from ..generators._canonical import canonical_geometry
 from ..model import Mesh2D
 from ._full_geometry import (complement_domains, discover_boundaries,
                              section_outline_points, validate_fronts)
@@ -38,6 +40,7 @@ class FullAdaptiveMeshResult:
     outer_outline: NDArray[np.int64]
     layer_outlines: list[list[list[int]]]
     diagnostics: dict[str, Any]
+    tolerance: GeometryTolerance = field(default_factory=resolve_tolerance)
 
 
 def _call(operation, *, stage, **context):
@@ -49,6 +52,10 @@ def _call(operation, *, stage, **context):
         for key, value in context.items():
             error.context.setdefault(key, value)
         raise
+    except GeometryToleranceError as error:
+        details = {**error.context, **context}
+        details.setdefault("stage", stage)
+        raise QuadLayerError(str(error), code=error.code, **details) from error
     except (ValueError, TypeError, OverflowError) as error:
         code = ("invalid_input" if stage == "input_validation" else
                 "global_meshing_failed" if stage == "global_meshing" else
@@ -88,8 +95,8 @@ def _inputs(element_sizes, expand_ratio, pattern_lines):
         patterns = patterns.reshape(0, 2, 2)
     if patterns.ndim != 3 or patterns.shape[1:] != (2, 2):
         raise ValueError("pattern_lines must have shape (n, 2, 2)")
-    # Validate global's stricter axis contract without reordering pattern IDs.
-    normalize_patterns(patterns)
+    if not np.all(np.isfinite(patterns)):
+        raise ValueError("pattern_lines must contain finite XY coordinates")
     return sizes, float(expand_ratio), patterns
 
 
@@ -205,7 +212,7 @@ def generate_full_adaptive_mesh(
     pattern_lines=(),
     max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
     min_size_ratio: float = 0.5,
-    coordinate_tolerance: float = 1e-3,
+    tolerance: GeometryTolerance | float | None = None,
     small_element_size: float | None = None,
     dense_mapping_angle: float = 30.0,
 ) -> FullAdaptiveMeshResult:
@@ -223,12 +230,13 @@ def generate_full_adaptive_mesh(
     Boundary contacts, collisions, hole collapse and unsupported fixed-boundary
     layouts fail without retrying with different sizes or extra layers.
 
-    Patterns retain the existing layer constraints and must also be exactly
-    horizontal or vertical for global generation. Each underlying call retains
+    Patterns retain the existing layer constraints and become horizontal or
+    vertical through shared coordinate canonicalization. Each underlying call retains
     its one-million-element budget; this API does not impose a cumulative limit.
-    ``coordinate_tolerance`` is the finite, non-negative absolute tolerance
-    for boundary separation and global geometry validation; it defaults to
-    1e-3. Coordinates are not snapped by this tolerance.
+    ``tolerance`` is a GeometryTolerance policy or positive absolute distance,
+    defaulting to 1e-3. All generated fronts and global constraints share one
+    canonical support identity within this distance. Ambiguous merges and
+    collapsed required edges fail; existing source coordinates stay exact.
 
     ``max_transition_count`` and ``min_size_ratio`` have the single-layer
     API's LINE constraints and defaults (20 and 0.5). They apply to ordinary
@@ -253,8 +261,11 @@ def generate_full_adaptive_mesh(
         small_element_size, dense_mapping_angle)
     sizes, ratio, patterns = _call(lambda: _inputs(element_sizes, expand_ratio, pattern_lines),
                                     stage="input_validation")
+    policy = _call(lambda: resolve_tolerance(tolerance), stage="input_validation")
+    outer_outline, _, patterns = _call(lambda: canonical_geometry(
+        outer_outline, pattern_lines=patterns, tolerance=policy), stage="input_validation")
     topology = _call(lambda: discover_boundaries(
-        mesh, outer_outline, coordinate_tolerance=coordinate_tolerance),
+        mesh, outer_outline, tolerance=policy),
         stage="input_validation")
     working = Mesh2D(mesh.nodes, mesh.elements)
     outlines = topology.outlines
@@ -265,6 +276,7 @@ def generate_full_adaptive_mesh(
         for boundary_index, outline in enumerate(outlines):
             result = _call(
                 lambda: generate_layer_adaptive_mesh(working, outline, size,
+                            tolerance=policy,
                             expand_ratio=ratio, pattern_lines=patterns,
                             max_transition_count=max_transition_count,
                             min_size_ratio=min_size_ratio, small_element_size=small_element_size,
@@ -282,6 +294,7 @@ def generate_full_adaptive_mesh(
     fronts, dense_targets = [], []
     for boundary_index, outline in enumerate(outlines):
         plan = _call(lambda: plan_quad_sections(working, outline, final_size,
+                         tolerance=policy,
                          expand_ratio=ratio, pattern_lines=patterns,
                          small_element_size=small_element_size,
                          dense_mapping_angle=dense_mapping_angle),
@@ -295,8 +308,16 @@ def generate_full_adaptive_mesh(
         for record in plan.diagnostics["dense_seams"]:
             point = plan.seams[record["seam_id"]].points[-1]
             nearest = int(np.argmin(np.linalg.norm(fronts[-1] - point, axis=1)))
-            contacts[record["source_edge"], record["source_index"]] = fronts[-1][nearest].copy()
+            contacts[record["source_edge"], record["source_index"]] = nearest
         dense_targets.append(contacts)
+    # Independent normalized frames can restore the same physical support as
+    # adjacent floats. Give every generated front and seam anchor one identity
+    # before any visibility cut adds points to a different boundary.
+    _, fronts, _ = _call(lambda: canonical_geometry(
+        topology.outer_outline, fronts, patterns, policy, fixed_constraints=True),
+        stage="front_canonicalization", layer_index=final_index)
+    dense_targets = [{key: front[index].copy() for key, index in contacts.items()}
+                     for front, contacts in zip(fronts, dense_targets)]
     validate_fronts(topology, fronts, stage="final_front_validation", layer_index=final_index)
 
     regions, global_diagnostics = [], []
@@ -304,7 +325,7 @@ def generate_full_adaptive_mesh(
     for region_index, domain in enumerate(complement_domains(topology, fronts)):
         result = _call(lambda: generate_rectilinear_mesh_optimal(
                             final_size, domain.outer_outline, holes=domain.holes,
-                            pattern_lines=patterns, coordinate_tolerance=topology.coordinate_tolerance),
+                            pattern_lines=patterns, tolerance=topology.tolerance),
                        stage="global_meshing", layer_index=final_index,
                        global_region_index=region_index)
         if domain.boundary_index is not None:
@@ -328,6 +349,7 @@ def generate_full_adaptive_mesh(
         working.nodes = np.vstack((working.nodes, np.column_stack((target, np.zeros(len(target))))))
         result = _call(lambda: _generate_layer_adaptive_mesh(
                             working, outline, final_size, expand_ratio=ratio,
+                            tolerance=policy,
                             pattern_lines=patterns, outline_o=target_ids, fixed_outer_boundary=True,
                             small_element_size=small_element_size,
                             dense_mapping_angle=dense_mapping_angle,
@@ -342,6 +364,7 @@ def generate_full_adaptive_mesh(
     _call(lambda: _validate_complete(completed, mesh, topology.outer_outline, outer_ids),
           stage="full_mesh_validation")
     diagnostics = {
+        "geometry_tolerance": policy.absolute,
         "element_sizes": sizes,
         "max_transition_count": max_transition_count,
         "min_size_ratio": min_size_ratio,
@@ -358,7 +381,7 @@ def generate_full_adaptive_mesh(
         "elapsed_seconds": perf_counter() - started,
     }
     mesh.replace_data(nodes=completed.nodes, elements=completed.elements)
-    return FullAdaptiveMeshResult(mesh, outer_ids, layer_outlines, diagnostics)
+    return FullAdaptiveMeshResult(mesh, outer_ids, layer_outlines, diagnostics, tolerance=policy)
 
 
 __all__ = ["generate_full_adaptive_mesh", "FullAdaptiveMeshResult"]

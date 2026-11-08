@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from heapq import heapify, heappop, heappush
-from math import ceil, floor
 
 import numpy as np
+from mesher.tolerance import subdivision_count
 
 from .._types import QuadLayerError
 from .._line_policy import DEFAULT_MAX_TRANSITION_COUNT
@@ -25,14 +25,15 @@ def _interval_bounds(lengths, h, tol, ratio):
         if not np.isfinite(length) or length <= tol:
             raise _infeasible("LINE anchor intervals must have positive length",
                               interval=index)
-        short = length < h_min - tol
-        low = 1 if short else max(1, ceil((float(length) - tol) / h))
+        arithmetic_margin = 32 * np.finfo(float).eps * max(float(length), h_min)
+        short = length < h_min - arithmetic_margin
+        low = 1 if short else max(1, subdivision_count(float(length), h))
         if short:
             high = 1
-        elif h_min == 0 or float(length) + tol >= max_count * h_min:
+        elif h_min == 0 or float(length) >= max_count * h_min:
             high = max_count
         else:
-            high = floor((float(length) + tol) / h_min)
+            high = subdivision_count(float(length), h_min, rounding="floor")
         if low > high:
             raise _infeasible("LINE anchor interval cannot satisfy the size band",
                               interval=index, length=float(length),
@@ -61,7 +62,7 @@ def _forward_sweep(raw, length, h_min, h):
     count = len(raw) - 1
     result = np.empty_like(raw)
     result[0], result[-1] = 0.0, length
-    # Count bounds allow endpoint roundoff within the geometric tolerance.
+    # Count bounds allow floating-point roundoff near exact integer ratios.
     # Relaxing only to the mean gap makes those almost-exact cases feasible.
     lower_gap = min(h_min, length / count)
     upper_gap = max(h, length / count)
@@ -157,12 +158,9 @@ class LineSampling:
                               minimum_count=self.lower_count, maximum_count=self.upper_count,
                               parity=parity)
         target = min(upper, max(lower, self.demand))
-        rounded = round(target)
-        if abs(target - rounded) <= self.tol / self.h + 32 * np.finfo(float).eps * max(1, target):
-            target = rounded
-        below = floor(target)
+        below = subdivision_count(target, 1., rounding="floor")
         below -= (below - parity) % 2
-        above = ceil(target)
+        above = subdivision_count(target, 1.)
         above += (parity - above) % 2
         return sorted({n for n in (below, above) if lower <= n <= upper})
 

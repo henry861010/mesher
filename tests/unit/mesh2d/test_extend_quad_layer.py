@@ -337,17 +337,19 @@ class ExtendQuadLayerTests(unittest.TestCase):
         self.assertEqual(len(_outline_nodes(outline)), 13)
         self.assertEqual(len(_outline_nodes(result.outline)) % 2, 1)
 
-    def test_near_tangent_pattern_has_typed_atomic_direct_layout_failure(self):
+    def test_near_tangent_pattern_is_matched_within_absolute_tolerance(self):
         mesh, outline = _rectangle()
         mesh.nodes[2:, 0] += 5e-4
-        # Strictly outside the sloping source edge, but inside its axis-aligned
-        # support. No positive straight collar can contain it as a boundary.
         pattern = [[4.0002, 0.5], [4.0002, 1.0]]
-        snapshot = self._snapshot(mesh)
-        with self.assertRaises(QuadLayerError) as caught:
-            generate_layer_adaptive_mesh(mesh, outline, 0.5, pattern_lines=[pattern])
-        self.assertEqual(caught.exception.code, "unsupported_pattern_layout")
-        self.assert_unchanged(mesh, snapshot)
+        before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
+        result = generate_layer_adaptive_mesh(mesh, outline, 0.5, pattern_lines=[pattern])
+        np.testing.assert_array_equal(result.mesh.nodes[:len(before_nodes)], before_nodes)
+        np.testing.assert_array_equal(result.mesh.elements[:len(before_elements)], before_elements)
+        self.assertGreater(result.mesh.element_count, len(before_elements))
+        strict, outline = _rectangle()
+        strict.nodes[2:, 0] += 5e-4
+        with self.assertRaises(QuadLayerError):
+            generate_layer_adaptive_mesh(strict, outline, 0.5, pattern_lines=[pattern], tolerance=1e-6)
 
     def test_translation_scaling_rotation_and_loop_start(self):
         for scale, shift, turns, start in (
@@ -359,13 +361,13 @@ class ExtendQuadLayerTests(unittest.TestCase):
                 rotation = np.array([[0, -1], [1, 0]]) if turns else np.eye(2)
                 mesh.nodes[:, :2] = (mesh.nodes[:, :2] @ rotation.T) * scale + shift
                 outline = np.roll(outline, -start)
-                self.run_layer(mesh, outline, h=0.5 * scale)
+                self.run_layer(mesh, outline, h=0.5 * scale, tolerance=.001 * scale)
 
     def test_invalid_scalars_and_patterns_are_atomic(self):
         invalid = (
             {"element_size": 0}, {"element_size": -1}, {"element_size": np.nan},
             {"element_size": np.inf}, {"expand_ratio": 0.9}, {"expand_ratio": np.inf},
-            {"axis_tolerance": -1}, {"axis_tolerance": np.nan},
+            {"tolerance": -1}, {"tolerance": np.nan},
             {"pattern_lines": [[[1, 4], [1, 4]]]},
             {"pattern_lines": [[[1, 4], [2, 5]]]},
             {"pattern_lines": [[[1, np.nan], [2, np.nan]]]},

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from mesher.tolerance import GeometryTolerance, resolve_tolerance
 
 from ..editor import EditorMesh2D
 from ..generators._holed_geometry import OrthogonalDomain
@@ -24,7 +25,7 @@ class BoundaryTopology:
     outlines: list[list[int]]
     parents: tuple[int | None, ...]
     signs: tuple[int, ...]
-    coordinate_tolerance: float
+    tolerance: GeometryTolerance
 
 
 @dataclass(frozen=True)
@@ -120,7 +121,7 @@ def _forest(outer, loops, tolerance):
     if (not np.isfinite(scale) or scale <= 0
             or any(not np.all(np.isfinite(points)) for points in normalized)):
         _fail("boundary coordinates have an incompatible numeric range")
-    separation = tolerance / scale
+    separation = resolve_tolerance(tolerance).absolute / scale
     for index, (original, points) in enumerate(zip((outer, *loops), normalized)):
         if np.any(np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1) == 0):
             _fail("boundary contains a zero-length segment", boundary_index=index - 1)
@@ -147,7 +148,7 @@ def _forest(outer, loops, tolerance):
             if second <= first or owners[first] == owners[second]:
                 continue
             if _distance(a, b, *segments[second]) <= separation:
-                _fail("boundaries intersect, touch, or lie within coordinate_tolerance",
+                _fail("boundaries intersect, touch, or lie within tolerance",
                       code="topology_change", boundary_indices=(int(owners[first]) - 1,
                                                                  int(owners[second]) - 1))
 
@@ -207,12 +208,14 @@ def _validate_mesh(mesh):
                   parameter="mesh")
 
 
-def discover_boundaries(mesh, outer_outline, *, coordinate_tolerance=1e-3) -> BoundaryTopology:
+def discover_boundaries(mesh, outer_outline, *, tolerance=None) -> BoundaryTopology:
     """Validate source data and record its directed boundary containment forest."""
     try:
+        policy = resolve_tolerance(tolerance)
         _validate_mesh(mesh)
+        policy.check_resolution(mesh.nodes[:, :2], stage="input_validation", source="mesh")
         try:
-            domain = OrthogonalDomain(outer_outline, coordinate_tolerance=coordinate_tolerance)
+            domain = OrthogonalDomain(outer_outline, tolerance=policy)
             raw = EditorMesh2D.outlines(mesh)
         except (TypeError, ValueError, IndexError) as error:
             raise QuadLayerError(str(error), code="invalid_input") from error
@@ -228,8 +231,8 @@ def discover_boundaries(mesh, outer_outline, *, coordinate_tolerance=1e-3) -> Bo
                       boundary_node_count=len(ids))
             loops.append(mesh.nodes[ids, :2].copy())
         outer = domain.loops[0].copy()
-        parents, signs = _forest(outer, loops, domain.coordinate_tolerance)
-        return BoundaryTopology(outer, outlines, parents, signs, domain.coordinate_tolerance)
+        parents, signs = _forest(outer, loops, policy)
+        return BoundaryTopology(outer, outlines, parents, signs, policy)
     except QuadLayerError as error:
         error.context.setdefault("stage", "input_validation")
         raise
@@ -273,7 +276,7 @@ def validate_fronts(topology, fronts, *, stage="topology_validation", layer_inde
         if len(fronts) != len(topology.parents):
             _fail("the number of adaptive boundaries changed", code="topology_change")
         loops = [_orthogonal_front(_points(front, index)) for index, front in enumerate(fronts)]
-        parents, signs = _forest(topology.outer_outline, loops, topology.coordinate_tolerance)
+        parents, signs = _forest(topology.outer_outline, loops, topology.tolerance)
         if parents != topology.parents or signs != topology.signs:
             _fail("adaptive growth changed the boundary containment forest", code="topology_change")
         # Validate material shells as well as complementary global domains.
@@ -281,7 +284,7 @@ def validate_fronts(topology, fronts, *, stage="topology_validation", layer_inde
             outer = topology.outer_outline if parent is None else loops[parent]
             holes = [loops[index] for index, owner in enumerate(parents) if owner == parent]
             try:
-                OrthogonalDomain(outer, holes, topology.coordinate_tolerance)
+                OrthogonalDomain(outer, holes, topology.tolerance)
             except ValueError as error:
                 raise QuadLayerError(str(error), code="topology_change", boundary_index=parent) from error
     except QuadLayerError as error:

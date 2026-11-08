@@ -64,8 +64,8 @@ class RepairNodeContactTests(unittest.TestCase):
                 self.assert_unchanged(mesh, before)
 
     def test_free_boundary_contacts_respect_geometric_tolerance(self):
-        # Both fixtures have an extent of 3 and use the machine-precision floor.
-        tolerance = 3 * 128 * np.finfo(float).eps
+        # Contact is defined by the configured absolute physical distance.
+        tolerance = .001
         for fixture, size, point, outward in (
             (_c_slot, .5, np.array([3., 1.5]), np.array([1., 0.])),
             (_step, 1., np.array([0., 2.]), np.array([-1., 0.])),
@@ -80,10 +80,10 @@ class RepairNodeContactTests(unittest.TestCase):
                         before = self._snapshot(mesh)
                         if factor < 1:
                             with self.assertRaises(QuadLayerError):
-                                operation(mesh, outline, size)
+                                operation(mesh, outline, size, tolerance=tolerance)
                             self.assert_unchanged(mesh, before)
                         else:
-                            operation(mesh, outline, size)
+                            operation(mesh, outline, size, tolerance=tolerance)
                             np.testing.assert_array_equal(mesh.nodes[:len(before[2])], before[2])
 
     def test_legal_source_endpoints_and_unrelated_remote_nodes_are_preserved(self):

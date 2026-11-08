@@ -11,6 +11,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from ..model import Mesh2D, _validate_zero_z
+from ...tolerance import GeometryTolerance, resolve_tolerance
 
 
 FloatArray = NDArray[np.float64]
@@ -48,35 +49,6 @@ _INVALID_REASONS = (
     | QualityReason.FOLDED
     | QualityReason.UNDEFINED_METRIC
 )
-
-
-@dataclass(frozen=True)
-class GeometryTolerance:
-    """Scale-aware tolerances used to classify element geometry.
-
-    ``absolute`` has units of length. The Jacobian tolerance is derived from
-    it as ``absolute**2 + relative*h**2``, where ``h`` is the longest edge in
-    an element. Mesh2D requires Z=0 independently of these XY tolerances.
-    """
-
-    absolute: float = 1.0e-12
-    relative: float = 1.0e-12
-
-    def __post_init__(self) -> None:
-        for name in ("absolute", "relative"):
-            value = getattr(self, name)
-            if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-                raise ValueError(f"{name} tolerance must be a real number")
-            if not np.isfinite(value) or value < 0.0:
-                raise ValueError(f"{name} tolerance must be finite and non-negative")
-
-    @property
-    def absolute_length(self) -> float:
-        return self.absolute
-
-    @property
-    def relative_length(self) -> float:
-        return self.relative
 
 
 @dataclass(frozen=True)
@@ -295,9 +267,7 @@ class MeshQualityChecker:
     ) -> None:
         if not isinstance(mesh, Mesh2D):
             raise ValueError("mesh must be a Mesh2D instance")
-        self.tolerance = tolerance if tolerance is not None else GeometryTolerance()
-        if not isinstance(self.tolerance, GeometryTolerance):
-            raise ValueError("tolerance must be a GeometryTolerance instance")
+        self.tolerance = resolve_tolerance(tolerance)
 
         node_array = np.asarray(mesh.nodes)
         if node_array.ndim != 2 or node_array.shape[1] not in (2, 3):
@@ -558,11 +528,10 @@ class MeshQualityChecker:
 
         calculable = finite_coordinates
         length_tolerance = (
-            self.tolerance.absolute + self.tolerance.relative * element_scale
+            np.full_like(element_scale, self.tolerance.absolute)
         )
         jacobian_tolerance = (
-            self.tolerance.absolute**2
-            + self.tolerance.relative * element_scale**2
+            self.tolerance.absolute * element_scale
         )
 
         calculable_triangles = np.flatnonzero(calculable & is_triangle)
@@ -587,7 +556,7 @@ class MeshQualityChecker:
                 coordinates,
                 edge_lengths,
                 length_tolerance,
-                jacobian_tolerance,
+                jacobian_tolerance / 4.0,
                 reasons,
                 jacobian_minimum,
                 jacobian_maximum,

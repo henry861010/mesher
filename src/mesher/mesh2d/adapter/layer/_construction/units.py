@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from itertools import product
 
 import numpy as np
 
 from ....model import Mesh2D, _validate_zero_z
 from ...unit import build_unit_1_1_1_x, build_unit_1_1_x_y, build_unit_1_x_y_z
 from ...unit.build_unit_1_1_x_y import _validate_patch
+from .._registry import _BoundedCoordinates
 
 
 @dataclass
@@ -116,7 +116,7 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
     for builder in templates:
         attempt = Mesh2D(mesh.nodes, np.empty((0, 4), dtype=np.int64))
         try:
-            builder(attempt, *ids)
+            builder(attempt, *ids, tolerance=tol / scale)
             # 11xy already performs the complete patch checks. The smaller
             # 111x public builder checks convexity only, so complete that here.
             if builder is build_unit_1_1_1_x:
@@ -127,7 +127,7 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
         diagnostics["method"] = "template"
         break
     else:
-        build_unit_1_x_y_z(mesh, *ids, _diagnostics=diagnostics)
+        build_unit_1_x_y_z(mesh, *ids, tolerance=tol / scale, _diagnostics=diagnostics)
     if _cache is not None:
         # Store the actual normalized builder output, before restoring world
         # coordinates. Keys are byte-exact: no rounding or fuzzy geometry
@@ -149,25 +149,16 @@ class CoordinatePool:
     def __init__(self, tol: float):
         self.tol = tol
         self.points: list[np.ndarray] = []
-        self.buckets: dict[tuple[int, int], list[int]] = {}
-
-    def _key(self, point: np.ndarray) -> tuple[int, int]:
-        return tuple(int(np.floor(float(value) / self.tol)) for value in point[:2])
+        self.coordinates = _BoundedCoordinates(tol, stage="unit_assembly")
 
     def intern(self, point: np.ndarray) -> int:
-        key = self._key(point)
-        found = []
-        for delta in product((-1, 0, 1), repeat=2):
-            nearby = tuple(a + b for a, b in zip(key, delta))
-            for index in self.buckets.get(nearby, ()):
-                distance = float(np.linalg.norm(self.points[index][:2] - point[:2]))
-                if distance <= self.tol:
-                    found.append((distance, index))
-        if found:
-            return min(found)[1]
+        found = self.coordinates.match(point)
+        if found is not None:
+            self.coordinates.register(point, found)
+            return found
         index = len(self.points)
         self.points.append(np.array([point[0], point[1], 0.0], dtype=float))
-        self.buckets.setdefault(key, []).append(index)
+        self.coordinates.register(point, index)
         return index
 
     def chain(self, points: np.ndarray) -> np.ndarray:

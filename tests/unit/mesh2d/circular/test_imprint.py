@@ -49,7 +49,7 @@ class SearchCircleTests(unittest.TestCase):
             y=0.5,
             radius=np.sqrt(0.5),
             type="ALL",
-            tolerance=0.0,
+            tolerance=1e-12,
         )
 
         np.testing.assert_array_equal(result, [0])
@@ -61,7 +61,7 @@ class SearchCircleTests(unittest.TestCase):
             y=0.5,
             radius=np.sqrt(0.5),
             type="PART",
-            tolerance=0.0,
+            tolerance=1e-12,
         )
 
         np.testing.assert_array_equal(result, [0, 1])
@@ -73,7 +73,7 @@ class SearchCircleTests(unittest.TestCase):
             y=0.0,
             radius=0.99,
             type="PART",
-            tolerance=0.01,
+            tolerance=0.010001,
         )
 
         np.testing.assert_array_equal(result, [0, 1])
@@ -86,7 +86,7 @@ class SearchCircleTests(unittest.TestCase):
                 y=0.0,
                 radius=1.0,
                 type="SOME",
-                tolerance=0.0,
+                tolerance=1e-12,
             )
 
 

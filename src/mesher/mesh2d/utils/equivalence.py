@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+from fractions import Fraction
+
+from ...tolerance import GeometryToleranceError, resolve_tolerance, within_distance
 
 
 _BATCH_SIZE = 65_536
@@ -14,6 +17,84 @@ _NEIGHBOR_OFFSETS = tuple(
     for y in range(-3, 4)
     if x > 0 or y > 0
 )
+
+
+def _turn(first, second, third):
+    """Reliable orientation for the small ambiguity-only convex hull path."""
+    a, b = second - first, third - first
+    value = a[0] * b[1] - a[1] * b[0]
+    error = 16 * np.finfo(float).eps * (abs(a[0] * b[1]) + abs(a[1] * b[0]))
+    if abs(value) > error:
+        return value
+    ax, ay = (Fraction(float(second[i])) - Fraction(float(first[i])) for i in (0, 1))
+    bx, by = (Fraction(float(third[i])) - Fraction(float(first[i])) for i in (0, 1))
+    return ax * by - ay * bx
+
+
+def _component_diameter_exceeds(points, tolerance):
+    """Check diameter by convex hull + rotating calipers, without N² storage."""
+    ordered = np.unique(points, axis=0)
+    if len(ordered) < 2:
+        return False
+    lower, upper = [], []
+    for indices, chain in ((range(len(ordered)), lower), (range(len(ordered) - 1, -1, -1), upper)):
+        for index in indices:
+            while len(chain) >= 2 and _turn(ordered[chain[-2]], ordered[chain[-1]], ordered[index]) <= 0:
+                chain.pop()
+            chain.append(index)
+    hull = ordered[lower[:-1] + upper[:-1]]
+    if len(hull) == 2:
+        return not within_distance(hull[0], hull[1], tolerance)
+    opposite = 1
+    count = len(hull)
+    for index in range(count):
+        following = (index + 1) % count
+        for _ in range(count):
+            next_opposite = (opposite + 1) % count
+            current_area = abs(_turn(hull[index], hull[following], hull[opposite]))
+            next_area = abs(_turn(hull[index], hull[following], hull[next_opposite]))
+            if next_area <= current_area:
+                break
+            opposite = next_opposite
+        for candidate in (opposite, (opposite + 1) % count):
+            if (not within_distance(hull[index], hull[candidate], tolerance)
+                    or not within_distance(hull[following], hull[candidate], tolerance)):
+                return True
+    return False
+
+
+def _bounded_equivalent_node_mapping(nodes, referenced_nodes, tolerance):
+    """Euclidean components with diameter ≤ T and stable coordinate owners.
+
+    Reject an ambiguous transitive chain before the caller mutates its mesh.
+    Lowest lexicographic XY wins; equal XY ties retain the lowest original ID.
+    """
+    policy = resolve_tolerance(tolerance)
+    referenced = np.asarray(referenced_nodes, dtype=np.int64)
+    mapping = _equivalent_node_mapping(nodes, referenced, policy.absolute)
+    if len(referenced) < 2:
+        return mapping
+    roots, inverse, counts = np.unique(mapping[referenced], return_inverse=True, return_counts=True)
+    order = np.argsort(inverse, kind="stable")
+    starts = np.cumsum(counts) - counts
+    xy = nodes[referenced, :2]
+    minimum = np.minimum.reduceat(xy[order], starts)
+    maximum = np.maximum.reduceat(xy[order], starts)
+    bounded_boxes = within_distance(minimum, maximum, policy)
+    for group in np.flatnonzero((counts > 1) & ~bounded_boxes):
+        ids = referenced[order[starts[group]:starts[group] + counts[group]]]
+        points = nodes[ids, :2]
+        if _component_diameter_exceeds(points, policy):
+            raise GeometryToleranceError(
+                "near-node chain exceeds the geometric equivalence diameter",
+                code="ambiguous_geometry", stage="node_equivalence",
+                node_indices=ids[:16].tolist(), node_count=len(ids),
+                bounds=[minimum[group].tolist(), maximum[group].tolist()],
+                tolerance=policy.absolute)
+    lexicographic = np.lexsort((referenced, xy[:, 1], xy[:, 0], inverse))
+    owners = referenced[lexicographic[starts]]
+    mapping[referenced] = owners[inverse]
+    return mapping
 
 
 def _connected_components(count, left, right):
@@ -98,7 +179,14 @@ def _equivalent_node_mapping(
                     np.maximum(minimum[source] - maximum[target],
                                minimum[target] - maximum[source]), 0.0
                 )
-                possible = np.hypot(separation[:, 0], separation[:, 1]) <= tolerance
+                # Broad-phase subtraction can round at T. Keep uncertain
+                # pairs for the exact boundary check below.
+                scale = np.maximum.reduce((np.max(np.abs(minimum[source]), axis=1),
+                                           np.max(np.abs(maximum[source]), axis=1),
+                                           np.max(np.abs(minimum[target]), axis=1),
+                                           np.max(np.abs(maximum[target]), axis=1)))
+                possible = np.hypot(separation[:, 0], separation[:, 1]) <= (
+                    tolerance + 16 * np.finfo(float).eps * np.maximum(scale, tolerance))
             source, target = source[possible], target[possible]
             if not len(source):
                 continue
@@ -108,7 +196,8 @@ def _equivalent_node_mapping(
                     np.abs(minimum[source] - maximum[target]),
                     np.abs(maximum[source] - minimum[target]),
                 )
-                touching = np.hypot(span[:, 0], span[:, 1]) <= tolerance
+                touching = np.hypot(span[:, 0], span[:, 1]) < (
+                    tolerance - 16 * np.finfo(float).eps * np.maximum(scale[possible], tolerance))
             # Python iteration is restricted to ambiguous cell pairs; regular
             # grids, duplicate seams, and tightly clustered cells stay batched.
             for position in np.flatnonzero(~touching):
@@ -249,7 +338,9 @@ def _coordinate_bin(value: float, width: float) -> int:
     """Floor a finite float ratio without overflowing at extreme scales."""
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         quotient = np.float64(value) / np.float64(width)
-    if np.isfinite(quotient) and abs(quotient) <= 2.0**52:
+    # Above this range, a rounded quotient can enlarge a half-T cell enough
+    # that its diagonal is no longer guaranteed below T.
+    if np.isfinite(quotient) and abs(quotient) <= 2.0**50:
         return int(np.floor(quotient))
 
     value_numerator, value_denominator = value.as_integer_ratio()
@@ -280,7 +371,8 @@ def _node_groups_touch(
             ),
             0.0,
         )
-    if np.hypot(axis_separation[0], axis_separation[1]) > tolerance:
+    scale = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))), tolerance)
+    if np.hypot(axis_separation[0], axis_separation[1]) > tolerance + 16 * np.finfo(float).eps * scale:
         return False
 
     block_size = 512
@@ -288,13 +380,7 @@ def _node_groups_touch(
         left_block = left[left_start : left_start + block_size]
         for right_start in range(0, right.shape[0], block_size):
             right_block = right[right_start : right_start + block_size]
-            with np.errstate(over="ignore", invalid="ignore"):
-                difference = left_block[:, None, :] - right_block[None, :, :]
-                distances = np.hypot(
-                    difference[..., 0],
-                    difference[..., 1],
-                )
-            if np.any(distances <= tolerance):
+            if np.any(within_distance(left_block[:, None, :], right_block[None, :, :], tolerance)):
                 return True
     return False
 
@@ -312,10 +398,7 @@ def _union_close_node_groups(
     for left_position, left_index in enumerate(left_indices):
         right_start = left_position + 1 if same_group else 0
         for right_index in right_indices[right_start:]:
-            with np.errstate(over="ignore", invalid="ignore"):
-                difference = xy[left_index] - xy[right_index]
-                distance = np.hypot(difference[0], difference[1])
-            if distance <= tolerance:
+            if within_distance(xy[left_index], xy[right_index], tolerance):
                 union(left_index, right_index)
 
 

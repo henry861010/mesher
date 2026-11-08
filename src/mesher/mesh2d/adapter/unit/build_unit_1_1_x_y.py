@@ -15,6 +15,8 @@ from .build_unit_1_1_1_x import (
     _validate_boundary,
     _validate_cyclic_boundary,
     _validate_quads,
+    _physical_boundary,
+    _physical_quads,
 )
 
 
@@ -245,17 +247,21 @@ def build_unit_1_1_x_y(
     edge2: np.ndarray,
     edge3: np.ndarray,
     edge4: np.ndarray,
+    *, tolerance=None,
 ) -> Mesh2D:
     """Append Quad4 cells between two adjacent subdivided edges.
 
     The other two edges have one segment each. Mildly concave boundary chains
     are accepted when the resulting cells are all convex and nonoverlapping.
     Existing elements are preserved; the bounded patch is assumed to be empty.
+    ``tolerance`` is a policy or positive absolute distance (default 1e-3).
+    Fixed and generated edges must exceed this physical resolution.
     """
     if not isinstance(mesh, Mesh2D):
         raise TypeError("mesh must be a Mesh2D instance")
     edges = (edge1, edge2, edge3, edge4)
     boundary = _validate_cyclic_boundary(mesh, edges, require_convex=False)
+    policy = _physical_boundary(mesh.nodes, boundary, tolerance)
     if sum(len(edge) for edge in edges) % 2:
         raise ValueError("the total number of edge nodes must be even")
     long_edges = [index for index, edge in enumerate(edges) if len(edge) > 2]
@@ -285,6 +291,7 @@ def build_unit_1_1_x_y(
     staged_quads.append(tail_quads)
     quads = np.concatenate(staged_quads, axis=0)
     _validate_patch(nodes, quads, (edge1, edge2, edge3, edge4))
+    _physical_quads(nodes, quads, policy)
     mesh.replace_data(nodes=nodes, elements=np.concatenate((mesh.elements, quads), axis=0))
     return mesh
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from mesher.tolerance import GeometryTolerance, resolve_tolerance
 
 from ...model import Mesh2D
 
@@ -33,6 +34,7 @@ class QuadLayerResult:
     mesh: Mesh2D
     outline: list[int]
     diagnostics: dict[str, Any]
+    tolerance: GeometryTolerance = field(default_factory=resolve_tolerance)
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ class PreparedLayerSource:
     outline: tuple[int, ...]
     original_node_count: int
     original_element_count: int
+    tolerance: GeometryTolerance = field(default_factory=resolve_tolerance)
 
     def __post_init__(self):
         for name in ("nodes", "elements"):
@@ -91,6 +94,7 @@ class PreparedLayerSource:
             values = np.frombuffer(source.tobytes(), dtype=source.dtype).reshape(source.shape)
             object.__setattr__(self, name, values)
         object.__setattr__(self, "outline", tuple(map(int, self.outline)))
+        object.__setattr__(self, "tolerance", resolve_tolerance(self.tolerance))
 
 
 @dataclass(frozen=True)
@@ -107,3 +111,7 @@ class QuadSectionPlan:
     edge_expansion: tuple[float, ...]
     diagnostics: dict[str, Any]
     prepared_source: PreparedLayerSource | None = None
+    tolerance: GeometryTolerance = field(default_factory=resolve_tolerance)
+
+    def __post_init__(self):
+        object.__setattr__(self, "tolerance", resolve_tolerance(self.tolerance))

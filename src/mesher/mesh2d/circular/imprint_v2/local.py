@@ -11,21 +11,33 @@ from time import perf_counter
 import numpy as np
 
 from ...model import Mesh2D, _validate_zero_z
+from ...quality import MeshQualityChecker
+from ....tolerance import GeometryToleranceError, resolve_tolerance
 from ..utils.pattern_segments import _coerce_pattern_guides
 from .triangulation import _triangulate_flat_quads
+from ...utils.equivalence import _coordinate_bin, _node_groups_touch
 from .utils import (
     _cleanup_data,
-    _coordinate_bin,
+    _candidate_element_mask,
+    _signed_xy_area,
     _counter_clockwise_elements,
-    _node_groups_touch,
     _normalize_circle,
     _normalize_nonnegative,
     _project_circle,
     _split_circle,
-    _warn_invalid_removals,
 )
 
 _BATCH_SIZE = 65_536
+
+
+def _global_geometry_error(error, *, node_ids=None, element_ids=None, source):
+    """Translate compact patch diagnostics back to original mesh row IDs."""
+    context = dict(error.context)
+    for key, mapping in (("node_indices", node_ids), ("element_indices", element_ids)):
+        if key in context and mapping is not None:
+            context[key] = np.asarray(mapping)[context[key]].tolist()
+    context["source"] = source
+    return GeometryToleranceError(error.message, code=error.code, **context)
 
 
 def _circle_patch_rows(nodes, elements, center, radius, width):
@@ -163,8 +175,8 @@ def _assemble(nodes, elements, rows, local_nodes, local_elements, origins, sourc
 
 
 def _run_local_imprint(
-    mesh, *, center, radius, projection_tolerance, guide_tolerance,
-    merge_tolerance, minimum_area, guide_segments=None, flat_quad_angle=170.0,
+    mesh, *, center, radius, projection_distance, minimum_area,
+    tolerance=None, guide_segments=None, flat_quad_angle=170.0,
     observer=None, stats=None,
 ):
     """Run one circle atomically; observer/stats are private diagnostic hooks.
@@ -178,12 +190,12 @@ def _run_local_imprint(
         raise TypeError("mesh must be a Mesh2D instance")
     _validate_zero_z(mesh.nodes)
     center, radius = _normalize_circle(center, radius)
-    projection_tolerance = _normalize_nonnegative(
-        projection_tolerance, "projection_tolerance",
+    projection_distance = _normalize_nonnegative(
+        projection_distance, "projection_distance",
     )
-    guide_tolerance = _normalize_nonnegative(guide_tolerance, "guide_tolerance")
-    merge_tolerance = _normalize_nonnegative(merge_tolerance, "merge_tolerance")
-    minimum_area = min(1.0, _normalize_nonnegative(minimum_area, "minimum_area"))
+    policy = resolve_tolerance(tolerance)
+    tolerance = policy.absolute
+    minimum_area = _normalize_nonnegative(minimum_area, "minimum_area")
     flat_quad_angle = _normalize_nonnegative(flat_quad_angle, "flat_quad_angle")
     if not 0.0 < flat_quad_angle <= 180.0:
         raise ValueError("flat_quad_angle must be greater than 0 and at most 180 degrees")
@@ -192,14 +204,15 @@ def _run_local_imprint(
         raise ValueError("nodes must contain finite coordinates")
     if elements.size and (elements.min() < 0 or elements.max() >= len(nodes)):
         raise ValueError("elements contain an out-of-range node index")
+    policy.check_resolution(np.asarray([center - radius, center + radius]), stage="circular imprint")
     scale = max(1.0, float(np.max(np.abs(center))), radius)
     epsilon = 1024 * np.finfo(float).eps * scale
     guides = _coerce_pattern_guides(
         guide_segments, coordinate_scale=scale,
-        minimum_tolerance=128 * np.finfo(float).eps * scale,
+        tolerance=policy,
     )
     with np.errstate(over="ignore", invalid="ignore"):
-        width = projection_tolerance + merge_tolerance + epsilon
+        width = projection_distance + tolerance + epsilon
         bounds = np.r_[center - radius - width, center + radius + width]
     if not np.all(np.isfinite(bounds)):
         raise ValueError("circle bounds exceed the float64 range")
@@ -226,15 +239,19 @@ def _run_local_imprint(
     local = Mesh2D(nodes[node_ids], inverse.reshape(-1, 4))
     data["extraction_seconds"] = perf_counter() - extraction_started
     projection_started = perf_counter()
-    _project_circle(
-        local, center, radius, projection_tolerance, guide_tolerance, guides,
-        constraint_nodes=nodes,
-    )
+    try:
+        _project_circle(
+            local, center, radius, projection_distance, tolerance, guides,
+            constraint_nodes=nodes,
+        )
+    except GeometryToleranceError as error:
+        raise _global_geometry_error(error, node_ids=node_ids,
+                                     element_ids=rows, source="circle projection") from error
     working_nodes = nodes.copy()
     working_nodes[node_ids] = local.nodes
     data["projection_seconds"] = perf_counter() - projection_started
     closure_started = perf_counter()
-    closure = _MergeClosure(working_nodes, adjacency.referenced, merge_tolerance)
+    closure = _MergeClosure(working_nodes, adjacency.referenced, tolerance)
     data["merge_index_seconds"] = perf_counter() - closure_started
     selected = np.zeros(len(elements), dtype=np.bool_)
     selected[rows] = True
@@ -259,17 +276,37 @@ def _run_local_imprint(
         )
         cleanup_started = perf_counter()
         discarded = []
-        cleanup = _cleanup_data(
-            working_nodes[node_ids], projected_elements, merge_tolerance, minimum_area,
-            discarded=discarded,
-        )
+        try:
+            cleanup = _cleanup_data(
+                working_nodes[node_ids], projected_elements, tolerance, minimum_area,
+                discarded=discarded,
+            )
+        except GeometryToleranceError as error:
+            raise _global_geometry_error(error, node_ids=node_ids,
+                                         element_ids=rows, source="circle cleanup") from error
         clean_nodes, clean_elements, surviving, representatives, cleanup_sources = cleanup
+        missing_sources = np.setdiff1d(np.arange(len(projected_elements)), cleanup_sources)
+        if len(missing_sources):
+            source_areas = [_signed_xy_area(working_nodes[node_ids], projected_elements[row])
+                            for row in missing_sources]
+            area_conflict = minimum_area > 0.0 and any(0.0 < area <= minimum_area for area in source_areas)
+            raise GeometryToleranceError(
+                "circular imprint cannot remove source cells without losing coverage; repair the input explicitly",
+                code="minimum_area_conflict" if area_conflict else "invalid_input_geometry",
+                stage="circular cleanup", element_indices=rows[missing_sources].tolist(),
+                source_areas=source_areas, tolerance=tolerance, minimum_area=minimum_area,
+            )
         cleanup_seconds += perf_counter() - cleanup_started
         local = Mesh2D(clean_nodes, clean_elements)
         split_started = perf_counter()
-        local, split_sources, new_edges = _split_circle(
-            local, center, radius, merge_tolerance,
-        )
+        try:
+            local, split_sources, new_edges = _split_circle(
+                local, center, radius, tolerance,
+            )
+        except GeometryToleranceError as error:
+            raise _global_geometry_error(error, node_ids=node_ids[surviving],
+                                         element_ids=rows[cleanup_sources],
+                                         source="circle splitting") from error
         split_seconds += perf_counter() - split_started
         iterations += 1
         clean_origins = node_ids[surviving]
@@ -301,6 +338,25 @@ def _run_local_imprint(
     data["triangulation_seconds"] = perf_counter() - triangulation_started
     data["triangulated_quads"] = len(triangulated) - len(split_sources)
     sources = cleanup_sources[split_sources[triangulation_sources]]
+    retained = _candidate_element_mask(local.nodes, local.elements, minimum_area)
+    if not np.all(retained):
+        raise GeometryToleranceError(
+            "circular imprint cannot preserve coverage and the requested minimum_area",
+            code="minimum_area_conflict", stage="circular final validation",
+            minimum_area=minimum_area, tolerance=tolerance,
+            element_indices=rows[sources[~retained]].tolist(),
+            child_areas=[_signed_xy_area(local.nodes, element)
+                         for element in local.elements[~retained]],
+        )
+    quality = MeshQualityChecker(local, tolerance=policy).calculate_jacobian()
+    if quality.summary.invalid_count:
+        raise GeometryToleranceError(
+            "circular imprint produced geometry unresolved at the requested tolerance",
+            code="ambiguous_geometry", stage="circular final validation",
+            tolerance=tolerance, invalid_count=quality.summary.invalid_count,
+            element_indices=rows[sources[np.asarray(quality.reason_flags, dtype=np.uint32) != 0]].tolist(),
+            jacobians=np.asarray(quality.values).tolist(),
+        )
     data.update(
         patch_elements=len(rows), patch_nodes=len(node_ids),
         closure_iterations=iterations, cleanup_seconds=cleanup_seconds,
@@ -332,7 +388,6 @@ def _run_local_imprint(
     if observer is not None:
         observer("split", result, metadata)
     commit_started = perf_counter()
-    _warn_invalid_removals(discarded, element_rows=rows, stacklevel=4)
     if not (np.array_equal(result.nodes, nodes) and np.array_equal(result.elements, elements)):
         mesh.replace_data(nodes=result.nodes, elements=result.elements)
     data["commit_seconds"] = perf_counter() - commit_started

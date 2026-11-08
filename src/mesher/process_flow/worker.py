@@ -14,6 +14,8 @@ from typing import Any, Callable
 from ..mesh3d import Mesh3D
 from .exporters import write_cdb_text
 from ..mesh25d import build_mesh
+from ..contracts.process_flow_2_5d import mesh_control_tolerance
+from ..tolerance import GeometryToleranceError
 
 PROGRESS_PREFIX = "PROCESS_FLOW_PROGRESS "
 
@@ -61,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
             Path(output_path),
             mesh=mesh,
             progress=_emit_progress,
+            tolerance=mesh_control_tolerance(mesh_control),
+            unit_system=mesh_control["unitSystem"],
         )
         output_bytes = Path(output_path).stat().st_size
         _complete_stage(
@@ -76,7 +80,11 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
         print(json.dumps(metadata, separators=(",", ":")), flush=True)
-    except Exception:
+    except Exception as error:
+        if isinstance(error, GeometryToleranceError) or (hasattr(error, "code") and hasattr(error, "context")):
+            _emit_progress({"event": "error", "stage": error.context.get("stage"),
+                            "message": getattr(error, "message", str(error)),
+                            "data": {"code": error.code, **error.context}})
         print(traceback.format_exc(), file=sys.stderr)
         return 1
     return 0
@@ -87,6 +95,8 @@ def _write_cdb_atomically(
     *,
     mesh: Mesh3D,
     progress: Callable[[dict[str, Any]], None] | None,
+    tolerance=None,
+    unit_system: str = "um",
 ) -> dict[str, object]:
     """Write beside the destination and publish only a complete CDB file."""
 
@@ -104,6 +114,8 @@ def _write_cdb_atomically(
             temporary_path,
             mesh=mesh,
             progress=progress,
+            tolerance=tolerance,
+            unit_system=unit_system,
         )
         os.replace(temporary_path, output_path)
         temporary_path = None

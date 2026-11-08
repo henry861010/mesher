@@ -2,6 +2,8 @@
 
 import numpy as np
 
+from ....tolerance import resolve_tolerance, circle_membership
+
 from ...model import Mesh2D
 from ...utils.topology import (
     _build_boundary_half_edges,
@@ -20,7 +22,7 @@ def _search_circle(
     y: float,
     radius: float,
     type: str = "ALL",
-    tolerance: float = 0.01,
+    tolerance=None,
 ) -> np.ndarray:
     """Return elements selected by a circle in the XY plane.
 
@@ -33,7 +35,7 @@ def _search_circle(
         y: Y coordinate of the selection center.
         radius: Non-negative circle radius.
         type: Selection mode, either ALL or PART.
-        tolerance: Non-negative radial inclusion tolerance.
+        tolerance: Positive shared geometric inclusion tolerance.
 
     Returns:
         Selected element-row indices as an int64 array.
@@ -66,7 +68,7 @@ def _search_circle(
     center_x = float(x)
     center_y = float(y)
     radius = float(radius)
-    tolerance = float(tolerance)
+    tolerance = resolve_tolerance(tolerance).absolute
     if not np.all(np.isfinite([center_x, center_y, radius, tolerance])):
         raise ValueError("x, y, radius, and tolerance must be finite")
     if radius < 0.0:
@@ -79,10 +81,7 @@ def _search_circle(
         raise ValueError("elements contain an out-of-range node index")
 
     xy = nodes[:, :2].astype(np.float64, copy=False)
-    offset = xy - np.array([center_x, center_y], dtype=np.float64)
-    distances = np.hypot(offset[:, 0], offset[:, 1])
-    effective_radius = radius + tolerance
-    node_inside = distances <= effective_radius
+    node_inside = circle_membership(xy, [center_x, center_y], radius, tolerance)
     element_nodes_inside = node_inside[elements]
 
     if type == "ALL":

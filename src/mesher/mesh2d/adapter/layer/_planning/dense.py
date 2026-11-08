@@ -37,7 +37,8 @@ class DenseLinePartition:
         else:
             points = data["xy"][ids[start:stop + 1]]
             size /= data["scale"]
-        short = np.linalg.norm(np.diff(points, axis=0), axis=1) < size
+        margin = data["tol"] * data["scale"] if "_source_mesh" in data else data["tol"]
+        short = np.linalg.norm(np.diff(points, axis=0), axis=1) < size - margin
         changes = np.diff(np.r_[False, short, False].astype(np.int8))
         runs = list(zip((np.flatnonzero(changes == 1) + start).tolist(),
                         (np.flatnonzero(changes == -1) + start).tolist()))

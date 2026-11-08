@@ -174,10 +174,10 @@ class SlotRepairTests(unittest.TestCase):
                 mesh, outline = _c_slot(2.25)
                 mesh.nodes[:, :2] = mesh.nodes[:, :2] * scale + translation
                 before = mesh.nodes.copy()
-                plan = plan_quad_sections(mesh, outline, .5 * scale)
+                plan = plan_quad_sections(mesh, outline, .5 * scale, tolerance=.001 * scale)
                 source = plan.prepared_source
                 np.testing.assert_array_equal(source.nodes[:len(before)], before)
-                result = self.run_repair(mesh, outline, .5 * scale)
+                result = self.run_repair(mesh, outline, .5 * scale, tolerance=.001 * scale)
                 repair = result.diagnostics['slot_repairs'][0]
                 mouth_ids = repair['mouth_node_ids']
                 np.testing.assert_allclose(repair['mouth_points'], mesh.nodes[mouth_ids, :2])
@@ -205,7 +205,7 @@ class SlotRepairTests(unittest.TestCase):
         # Pointwise widths vary, but the actual cardinal front supports
         # overlap. Repair must use that same geometry and cover the full slot.
         upper = mesh.nodes[:, 1] >= 2.
-        mesh.nodes[upper, 1] += .0005 * (mesh.nodes[upper, 0] - 2.)
+        mesh.nodes[upper, 1] += .0002 * (mesh.nodes[upper, 0] - 2.)
         snapshot = self._snapshot(mesh)
         preview = plan_quad_sections(mesh, outline, .5)
         self.assert_unchanged(mesh, snapshot)

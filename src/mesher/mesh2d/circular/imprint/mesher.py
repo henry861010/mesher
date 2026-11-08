@@ -12,6 +12,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ...model import Mesh2D
+from ....tolerance import GeometryTolerance, resolve_tolerance
 
 # Private helper re-exports keep the implementation-focused test surface small.
 from ..utils.geometry import (
@@ -59,6 +60,7 @@ class _CircularImprintRequest:
     target_edge_size: float
     minimum_quad_scaled_jacobian: float
     topology: str
+    tolerance: GeometryTolerance
 
     @classmethod
     def from_values(
@@ -69,6 +71,7 @@ class _CircularImprintRequest:
         target_edge_size,
         min_quad_scaled_jacobian,
         topology,
+        tolerance=None,
     ):
         """Validate user values and build a shallow-frozen request.
 
@@ -143,6 +146,7 @@ class _CircularImprintRequest:
             target_edge_size=pattern_element_size,
             minimum_quad_scaled_jacobian=minimum_quad_scaled_jacobian,
             topology=topology,
+            tolerance=resolve_tolerance(tolerance),
         )
 
     @property
@@ -376,10 +380,7 @@ def _select_open_circular_band(
         float(np.max(np.abs(request.center))),
         request.outer_radius,
     )
-    radial_tolerance = max(
-        1.0e-9 * request.outer_radius,
-        256.0 * np.finfo(np.float64).eps * coordinate_scale,
-    )
+    radial_tolerance = request.tolerance.absolute
     for cut_chain in cut_chains:
         _radial_cut_direction(
             nodes,
@@ -482,6 +483,7 @@ def _select_circular_band(mesh, request):
         center_y,
         request.inner_radius - inner_search_margin,
         type="ALL",
+        tolerance=request.tolerance,
     )
     outer_elements = _search_circle(
         mesh,
@@ -489,6 +491,7 @@ def _select_circular_band(mesh, request):
         center_y,
         request.outer_radius + request.band_width / 10.0,
         type="PART",
+        tolerance=request.tolerance,
     )
     band_elements = outer_elements[
         ~np.isin(outer_elements, inner_elements)
@@ -601,6 +604,7 @@ def _append_projected_boundary(
         source_nodes,
         guide_segments=guide_segments,
         closed=closed,
+        tolerance=request.tolerance,
     )
     end = np.asarray(mesh.nodes).shape[0]
     if end - start != source_nodes.size:
@@ -702,6 +706,7 @@ def _append_pattern_ring(mesh, request, guide_segments, arc_endpoints):
         _effective_pattern_size(request),
         guide_segments=guide_segments,
         arc_endpoints=arc_endpoints,
+        tolerance=request.tolerance,
     )
     start = np.asarray(mesh.nodes).shape[0]
     combined_nodes = np.concatenate(
@@ -719,6 +724,7 @@ def _mesh_pattern_strips(
     guide_segments,
     min_quad_scaled_jacobian,
     closed,
+    tolerance=None,
 ):
     """Fill the inner and outer halves of the rebuilt circular band.
 
@@ -741,6 +747,7 @@ def _mesh_pattern_strips(
             guide_segments=guide_segments,
             closed=closed,
             min_quad_scaled_jacobian=min_quad_scaled_jacobian,
+            tolerance=tolerance,
         )
 
 
@@ -754,6 +761,7 @@ def imprint_circle(
     target_edge_size: float | None = None,
     min_quad_scaled_jacobian: float = 0.3,
     topology: str = "auto",
+    tolerance=None,
 ) -> Mesh2D:
     """Imprint a conforming circular feature into a planar mesh.
 
@@ -808,19 +816,16 @@ def imprint_circle(
         target_edge_size,
         min_quad_scaled_jacobian,
         topology,
+        tolerance,
     )
     coordinate_scale = max(
         abs(request.radius),
         *np.abs(request.center).tolist(),
     )
-    guide_tolerance = max(
-        64.0 * np.finfo(np.float64).eps * coordinate_scale,
-        256.0 * np.finfo(np.float64).eps * request.radius,
-    )
+    request.tolerance.check_resolution(mesh.nodes[:, :2], stage="circular imprint")
     pattern_guides = _coerce_pattern_guides(
-        guide_segments,
-        coordinate_scale=coordinate_scale,
-        minimum_tolerance=guide_tolerance,
+        guide_segments, coordinate_scale=coordinate_scale,
+        tolerance=request.tolerance,
     ).intersecting_circle(request.center, request.radius)
     working_mesh = _copy_mesh(mesh)
 
@@ -854,6 +859,7 @@ def imprint_circle(
         pattern_guides,
         request.minimum_quad_scaled_jacobian,
         selected_band.closed,
+        request.tolerance,
     )
     mesh.replace_data(nodes=working_mesh.nodes, elements=working_mesh.elements)
     return mesh

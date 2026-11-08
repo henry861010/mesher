@@ -15,16 +15,14 @@
 
 | 參數 | 目前計算方式 | 本案例傳入值 |
 | --- | --- | ---: |
-| `projection_tolerance` | `0.2 * h` | 1000 |
-| `guide_tolerance` | `max(0.001 * h, 1)` | 5 |
-| `merge_tolerance` | `0.002 * h` | 10 |
-| `minimum_area` | `0.0004 * h²` | 10000 |
-| `coordinate_tolerance` | 本案例的座標容差 | 0.001 |
+| `projection_distance` | `0.2 * h`，獨立操作距離 | 1000 |
+| `tolerance` | 共用絕對幾何容差 | 0.001 |
+| `minimum_area` | 最終面積下限；主流程預設停用額外面積限制 | 0 |
 
-`guide_tolerance` 的目的是「判斷 node 是否在 guide segment 上面；而非用來找 segment 附近 node」。
-其單位與模型座標相同。
-目前 [`imprint_v2/mesher.py`](../../../src/mesher/mesh2d/circular/imprint_v2/mesher.py)
-仍執行 `minimum_area = min(1, minimum_area)`，實際清理面積門檻因此是 **1**；報告同時記錄傳入與生效值。
+`tolerance` 統一 guide 歸屬、節點等價、近退化判定與最後品質檢查。
+`projection_distance` 只控制候選投影範圍、最大位移與路徑障礙延伸量，不會擴大節點合併容差。
+顯式指定的 `minimum_area` 不再被截斷為 1；任何最終子元素未達門檻時，整次操作失敗並保持輸入不變。
+公共 API 不會靠刪除來源元素讓清理成功。原本有效的相鄰元素若因候選投影失效，該投影會撤回。
 
 這些是 imprint API 層級的檢查案例，並非完整 geometry → 3D pipeline 的端到端案例。
 `source_seed` 僅供探索來源追溯，完整座標已列在 [`cases.json`](cases.json)，執行不使用亂數。
@@ -32,13 +30,13 @@
 ## 圓周局部處理與固定節點
 
 公開 `imprint_circle` 會分批用元素 AABB 的徑向距離區間，選出與
-`R ± (projection_tolerance + merge_tolerance + 數值容差)` 相交的元素，
+`R ± (projection_distance + tolerance + 數值容差)` 相交的元素，
 再加入共享節點的相鄰元素。不是取整個圓內，也不是只檢查頂點是否靠近圓周；
 大元素的邊穿過圓周時仍會納入。
 
 節點到元素的 CSR 索引與合併分桶每次操作各建立一次。局部區域沿實際等價群組、
 共享節點及切割邊的所有 owner 擴張，直到回填不會影響區域外的連接關係。
-等價群組保留最低原始全域 node ID 的 XYZ。三個幾何階段使用緊密的局部編號，
+等價群組的直徑不得超過共用容差，使用穩定的 XY 字典順序代表；固定 guide 交點優先，互斥固定點會回報錯誤。三個幾何階段使用緊密的局部編號，
 最後依明確的節點映射與元素來源回填並壓縮一次；不以座標猜測原始 ID。
 因此圈外幾何與拓撲保留，但最終 ID 可能因壓縮改變。沒有候選元素時直接返回。
 操作失敗不會修改輸入 mesh。
@@ -47,18 +45,22 @@
 投影目標之間有水平、垂直 guide 共同鎖定且依現有約束無法移動的節點，
 該候選保留原座標並退出圓周目標合併。允許抵達圓上的固定點。
 guide 路徑可能超出初始環帶；這些路徑使用原始全域座標查詢唯讀約束節點，
-不會順帶清理整條 guide 附近的網格。主流程使用 `max(0.001 * h, 1)`，
-本案例 `h=5000`，因此傳入的絕對距離容差為 5。
+不會順帶清理整條 guide 附近的網格。主流程與本案例均使用絕對幾何容差 0.001。
 
 自由節點的徑向投影也會在目標合併前檢查：原座標至徑向圓周交點的開放路徑，
-先將 guide segment 的兩端各延長 `projection_tolerance`，再檢查途中是否與其相交
+先將 guide segment 的兩端各延長 `projection_distance`，再檢查途中是否與其相交
 （包含碰到延長後的 guide 端點與共線重疊）。若相交，
 該節點保留原 XYZ 並退出此次目標合併。不要求交點存在 mesh node，也不要求 guide 與圓相交。
-交點是否落在延長後的有限 guide 上使用 `max(guide_tolerance, guide 數值容差)`；
-本案例每端延長 1000，端點容差 5 另計。延長量只用於原始徑向路徑檢查，
+交點是否落在延長後的有限 guide 上使用 共用 `tolerance`；
+本案例每端延長 1000，端點容差 0.001 另計。延長量只用於原始徑向路徑檢查，
 不修改共享 guide 資料；節點所屬 guide、guide 與圓的投影交點及沿 guide 移動仍依原始有限 segment。
 路徑起終點只以數值容差排除，因此允許目標剛好抵達 guide。平行且不相交的路徑不受影響。
 此檢查只針對原始徑向路徑，合併後的路徑不重新檢查。
+
+## 先前局部修正紀錄（歷史）
+
+以下案例數字、舊容差 5／10、節點位移及中間結果記錄統一容差政策實作前的調查，不代表目前重播結果。
+目前參數以本頁上表與 `cases.json` 為準，`results/` 保留歷史快照。
 
 case_12 的 **17751** 原本從 `[65574.67161, 293757.47317]` 徑向移往
 `[65359.52425331458, 292793.6689707965]`，途中穿過 `y=293657.47317` 的水平 guide。
@@ -182,7 +184,7 @@ PYTHONPATH=src venv/bin/python examples/failures/imprint_v2_holes/diagnose.py \
 `results/case_XX/` 保存：
 
 - `original.npz`、`projection.npz`、`cleanup.npz`、`split.npz`：四階段完整 `nodes`／`elements`。
-- `report.json`：目前 pass／fail 狀態、參數、各階段缺失／重疊面積、無效元素、移動節點與清理結果。
+- `report.json`：產生該快照時的 pass／fail 狀態、參數、各階段缺失／重疊面積、無效元素、移動節點與清理結果。
 - `missing.geojson`：最終缺失區域的實際幾何。
 - `stages.png`：逐階段局部圖，紫色數字為無效元素列號。
 
@@ -212,7 +214,7 @@ venv/bin/python examples/failures/imprint_v2_holes/benchmark.py --verify \
 回填及壓縮。暖身一次後取五次中位數，另用獨立程序量測操作期間的 traced peak
 allocations（含 NumPy；不是整個程序 RSS）。結果會比對與編號無關的元素幾何 digest。
 
-目前數據保存在 [`results/benchmark.json`](results/benchmark.json)。
+先前版本的量測數據保存在 [`results/benchmark.json`](results/benchmark.json)；尚未以統一容差版本重新產生，以下僅為歷史效能參考。
 
 在本機 Python 3.13.5／NumPy 2.5.2 的五次中位數：
 

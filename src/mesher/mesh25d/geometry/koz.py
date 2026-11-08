@@ -20,19 +20,6 @@ def koz_value(item: JsonObject) -> float:
     return value
 
 
-def koz_tolerance(container: JsonObject, default: float) -> float:
-    """Keep positive KOZ widths distinct from their original boundaries."""
-    tolerance = default
-    for field in FEATURE_FIELDS:
-        for item in container.get(field) or []:
-            value = koz_value(item)
-            if value > 0:
-                tolerance = min(tolerance, value / 100.0)
-    for child in container.get("children") or []:
-        tolerance = min(tolerance, koz_tolerance(child, default))
-    return tolerance
-
-
 def inset_face(face: JsonObject, distance: float) -> JsonObject | None:
     """Return the eligible region inside a KOZ, or None if it is empty.
 
