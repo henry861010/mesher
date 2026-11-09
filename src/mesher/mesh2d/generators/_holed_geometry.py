@@ -13,7 +13,7 @@ from fractions import Fraction
 import math
 
 import numpy as np
-from mesher.tolerance import GeometryTolerance, canonicalize_points, resolve_tolerance
+from ...tolerance import GeometryTolerance, canonicalize_points, resolve_tolerance
 from ._canonical import canonical_geometry
 
 

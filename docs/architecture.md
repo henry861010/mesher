@@ -41,6 +41,12 @@ retain their existing private helper imports. Editor and utility tests mirror
 these packages under `tests/unit/mesh2d/`, and editor performance checks live in
 `benchmarks/mesh2d/`.
 
+Within `mesh3d`, `editor/` exposes the stateless NumPy-only `EditorMesh3D` API
+from both `mesher.mesh3d` and `mesher.mesh3d.editor`. `set_boundary` selects the
+bottom center cross and symmetry faces, then replaces the `fix_x`, `fix_y`,
+and `fix_z` node sets only after validation. It depends on the mesh model and
+shared absolute tolerance policy, without importing orchestration or solvers.
+
 The single-layer implementation lives in `mesh2d.adapter`. Its files are grouped
 by responsibility, with explicit public exports in package `__init__.py` files:
 

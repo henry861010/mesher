@@ -153,6 +153,55 @@ def _append_polygon(structure, *, points, material):
 
 
 class BuilderIntegrationTests(unittest.TestCase):
+    def test_full_centerlines_stop_at_a_polygon_hole(self):
+        loops = (
+            ((-3, -3), (3, -3), (3, 3), (-3, 3)),
+            ((-1, -1), (-1, 1), (1, 1), (1, -1)),
+        )
+        structure = {"root": {"bodies": [{"geometry": {
+            "type": "PolygonGeometry", "thk": 1,
+            "polys": [[[x, y, 0] for x, y in loop] for loop in loops],
+        }, "material": "Si"}]}}
+        mesh = _build(structure, element_size=1)
+        self.assertEqual(mesh.element_count, 32)
+        centroids = mesh.nodes[mesh.elements[:, :4], :2].mean(axis=1)
+        self.assertFalse(np.any(np.all(np.abs(centroids) < 1, axis=1)))
+        faces = np.vstack((mesh.elements[:, :4], mesh.elements[:, 4:8]))
+        for z in (0, 1):
+            for axis in (0, 1):
+                segments = set()
+                for face in faces[np.all(mesh.nodes[faces, 2] == z, axis=1)]:
+                    for a, b in zip(face, np.roll(face, -1)):
+                        if a != b and np.all(mesh.nodes[[a, b], axis] == 0):
+                            segments.add(tuple(sorted(mesh.nodes[[a, b], 1 - axis])))
+                self.assertEqual(segments, {(-3, -2), (-2, -1), (1, 2), (2, 3)})
+
+    def test_full_center_edges_survive_on_every_extruded_layer(self):
+        structure = _offset_box_structure()
+        geometry = structure["root"]["bodies"][0]["geometry"]
+        geometry["top_right"] = [19.0, 29.0, 0.0]
+        geometry["thk"] = 7.0
+        mesh = _build(structure, element_size=3)
+        faces = np.vstack((mesh.elements[:, :4], mesh.elements[:, 4:8]))
+        for z in np.unique(mesh.nodes[:, 2]):
+            layer_faces = faces[np.all(mesh.nodes[faces, 2] == z, axis=1)]
+            for axis, center, lower, upper in ((0, 14.5, 20, 29), (1, 24.5, 10, 19)):
+                with self.subTest(z=z, axis=axis):
+                    adjacent = {}
+                    for cell in layer_faces:
+                        for a, b in zip(cell, np.roll(cell, -1)):
+                            if a != b and np.all(mesh.nodes[[a, b], axis] == center):
+                                adjacent.setdefault(int(a), set()).add(int(b))
+                                adjacent.setdefault(int(b), set()).add(int(a))
+                    pending = [i for i in adjacent if mesh.nodes[i, 1 - axis] == lower]
+                    self.assertTrue(pending)
+                    reached = set(pending)
+                    while pending:
+                        for other in adjacent[pending.pop()] - reached:
+                            reached.add(other)
+                            pending.append(other)
+                    self.assertTrue(any(mesh.nodes[i, 1 - axis] == upper for i in reached))
+
     def test_public_mesh_control_validator_owns_the_contract(self):
         validate_mesh_control(_mesh_control(1.0))
 
@@ -324,6 +373,8 @@ class BuilderIntegrationTests(unittest.TestCase):
                 ((115.0, -15.0), (115.0, 15.0)),
                 ((115.0, 15.0), (85.0, 15.0)),
                 ((85.0, 15.0), (85.0, -15.0)),
+                ((0.0, -120.0), (0.0, 120.0)),
+                ((-120.0, 0.0), (120.0, 0.0)),
             ],
         )
 
@@ -499,8 +550,8 @@ class BuilderIntegrationTests(unittest.TestCase):
                         "circlePatternCount": 0,
                         "imprintOperationCount": 0,
                         "extensionOperationCount": 0,
-                        "xGridLineCount": 2,
-                        "yGridLineCount": 2,
+                        "xGridLineCount": 3,
+                        "yGridLineCount": 3,
                         "layerBoundaryCount": 2,
                         "layerIntervalCount": 1,
                         "assignmentCount": 1,
@@ -1074,7 +1125,10 @@ class BuilderIntegrationTests(unittest.TestCase):
                         "projection_distance": 0.2 * size,
                         "tolerance": GeometryTolerance(),
                         "minimum_area": 0.0,
-                        "guide_segments": [],
+                        "guide_segments": [
+                            ((0.0, -7 * size), (0.0, 7 * size)),
+                            ((-7 * size, 0.0), (7 * size, 0.0)),
+                        ],
                     },
                 )
                 self.assertGreater(mesh.element_count, 0)

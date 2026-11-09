@@ -1,6 +1,6 @@
 import numpy as np
 from numpy.typing import ArrayLike
-from mesher.tolerance import (GeometryTolerance, GeometryToleranceError,
+from ...tolerance import (GeometryTolerance, GeometryToleranceError,
                              canonicalize_values, resolve_tolerance, subdivision_count)
 
 from ..model import Mesh2D

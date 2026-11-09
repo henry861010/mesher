@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from mesher.tolerance import GeometryTolerance, resolve_tolerance
+from ...tolerance import GeometryTolerance, resolve_tolerance
 
 from ..editor import EditorMesh2D
 from ..generators._holed_geometry import OrthogonalDomain

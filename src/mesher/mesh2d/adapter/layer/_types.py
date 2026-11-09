@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from mesher.tolerance import GeometryTolerance, resolve_tolerance
+from ....tolerance import GeometryTolerance, resolve_tolerance
 
 from ...model import Mesh2D
 

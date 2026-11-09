@@ -6,7 +6,7 @@ import math
 import operator
 
 import numpy as np
-from mesher.tolerance import subdivision_count
+from ...tolerance import subdivision_count
 
 
 _SIZE_RTOL = float(32 * np.finfo(float).eps)

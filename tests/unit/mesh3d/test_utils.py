@@ -3,7 +3,7 @@ from unittest import mock
 
 import numpy as np
 
-from mesher import Mesh3D
+from mesher import Mesh3D, MeshSet
 from mesher.mesh3d.utils import add_midside_node
 
 
@@ -56,6 +56,30 @@ def _mesh(
 
 
 class AddMidsideNodeTopologyTests(unittest.TestCase):
+    def test_preserves_explicit_sets_without_adding_new_nodes(self):
+        mesh = _mesh(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            [[0, 1, 2, 2, 3, 3, 3, 3]],
+        )
+        mesh.sets.update({
+            "corners": MeshSet(kind="node", indices=[0, 1, 2, 3]),
+            "solid": MeshSet(kind="element", indices=[0]),
+            "empty": MeshSet(kind="node", indices=[]),
+        })
+
+        self.assertIs(add_midside_node(mesh, []), mesh)
+        result = add_midside_node(mesh, [0])
+
+        self.assertGreater(result.node_count, mesh.node_count)
+        self.assertEqual(set(result.sets), set(mesh.sets))
+        for name, selection in mesh.sets.items():
+            self.assertEqual(result.sets[name].kind, selection.kind)
+            np.testing.assert_array_equal(result.sets[name].indices, selection.indices)
+            self.assertFalse(np.shares_memory(result.sets[name].indices, selection.indices))
+        self.assertIs(add_midside_node(result, [0]), result)
+        result.sets["corners"].indices[0] = 1
+        self.assertEqual(mesh.sets["corners"].indices[0], 0)
+
     def test_converts_all_supported_ansys_topologies(self):
         cases = [
             (

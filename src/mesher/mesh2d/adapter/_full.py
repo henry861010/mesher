@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Any
 
 import numpy as np
-from mesher.tolerance import GeometryTolerance, GeometryToleranceError, resolve_tolerance
+from ...tolerance import GeometryTolerance, GeometryToleranceError, resolve_tolerance
 from numpy.typing import NDArray
 
 from ..generators import generate_rectilinear_mesh_optimal

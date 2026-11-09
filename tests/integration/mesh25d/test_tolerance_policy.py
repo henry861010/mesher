@@ -61,7 +61,7 @@ class AbsoluteTolerancePipelineTests(unittest.TestCase):
             before = copy.deepcopy((model, config))
             mesh = build_mesh(model, config)
             np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [0, .5, 1])
-            self.assertEqual(mesh.element_count, 2)
+            self.assertEqual(mesh.element_count, 8)
             self.assertEqual((model, config), before)
 
     def test_point_control_snaps_to_material_boundary_instead_of_creating_sliver(self):
@@ -70,7 +70,7 @@ class AbsoluteTolerancePipelineTests(unittest.TestCase):
         config["controls"] = [point(.4996)]
         mesh = build_mesh(model, config)
         np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [0, .5, 1])
-        self.assertEqual(mesh.element_count, 2)
+        self.assertEqual(mesh.element_count, 8)
         self.assertEqual(set(mesh.element_comps), {mesh.comps["Si"], mesh.comps["Cu"]})
 
     def test_geometry_is_not_rounded_to_a_fixed_decimal_grid(self):

@@ -5,7 +5,7 @@ from collections import defaultdict
 from math import floor
 
 import numpy as np
-from mesher.tolerance import GeometryToleranceError, within_distance
+from ....tolerance import GeometryToleranceError, within_distance
 
 from ._types import QuadLayerError, UnmeshableDirectQuadLayout
 

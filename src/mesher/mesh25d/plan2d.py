@@ -24,7 +24,7 @@ from .circle_planning import (
 )
 from .controls import ResolvedControls
 from .domain import (
-    ModelDomain, face_bounds,
+    ModelDomain, SymmetryMode, face_bounds, model_domain,
     restrict_grid_lines_to_domain as _restrict_grid_lines_to_domain,
 )
 from .geometry.patterns import Pattern2D
@@ -49,6 +49,7 @@ class Plan2D:
     circle_source_refs: dict[_CirclePattern, list[str]]
     region_meshing: str = "grid"
     adaptive: AdapterPlan | None = None
+    center: tuple[float, float] | None = None
 
     @property
     def feature_total(self) -> int:
@@ -70,6 +71,12 @@ def plan_2d(
     if base_face is None:
         raise ValueError("Cannot plan a mesh without a geometry footprint.")
     all_faces = pattern.all_faces
+    # Internal callers may construct a FULL domain without explicit bounds.
+    # The public pipeline supplies the center derived from the root bodies.
+    if domain.symmetry is SymmetryMode.FULL and (
+        domain.center_x is None or domain.center_y is None
+    ):
+        domain = model_domain(SymmetryMode.FULL, all_faces)
     circle_patterns = _collect_circle_patterns(all_faces)
     circle_source_refs = {_CirclePattern(*key): refs for key, refs in pattern.circle_sources.items()}
     koz_circle_patterns = {_CirclePattern(*key) for key in pattern.koz_circle_sources}
@@ -92,6 +99,22 @@ def plan_2d(
         band_width=circle_band_width,
         tolerance=pattern.tolerance,
     )
+    if domain.symmetry is SymmetryMode.FULL and any(
+        any(
+            # A small offset also grows with radius during radial extension;
+            # only ignore floating-point roundoff, not geometric tolerance.
+            abs(coordinate - center) > 32 * np.finfo(float).eps * max(
+                abs(coordinate), abs(center), extension.outer.radius
+            )
+            and abs(coordinate - center) < extension.outer.radius
+            for coordinate, center in zip(
+                (domain.center_x, domain.center_y), extension.center
+            )
+        )
+        for extension in circle_plan.extensions
+    ):
+        # An off-center straight cut cannot follow radial extension edges.
+        circle_plan = _CircleMeshingPlan(tuple(circle_patterns), ())
     pattern_segments = _collect_pattern_segments(all_faces, tolerance=pattern.tolerance)
     circle_clearance_tolerance = pattern.tolerance
     _validate_circle_clearances(
@@ -116,6 +139,16 @@ def plan_2d(
         x_lines, y_lines, support_segments = _base_grid_lines(
             all_faces, circle_plan, circle_band_width, domain,
         )
+        center_segments = []
+        if domain.symmetry is SymmetryMode.FULL:
+            left, right = min(x_lines), max(x_lines)
+            bottom, top = min(y_lines), max(y_lines)
+            x_lines.append(domain.center_x)
+            y_lines.append(domain.center_y)
+            center_segments = [
+                ((domain.center_x, bottom), (domain.center_x, top)),
+                ((left, domain.center_y), (right, domain.center_y)),
+            ]
         adaptive = None
         if control_bounds is not None:
             left, bottom, right, top = control_bounds
@@ -134,7 +167,7 @@ def plan_2d(
                 adaptive = plan_region_adapter(
                     controls, faces=all_faces, control_bounds=control_bounds,
                     outer_bounds=(min(x_lines), min(y_lines), max(x_lines), max(y_lines)),
-                    pattern_lines=[*pattern_segments, *support_segments],
+                    pattern_lines=[*pattern_segments, *support_segments, *center_segments],
                     element_size=planar_element_size,
                     tolerance=pattern.tolerance,
                 )
@@ -150,9 +183,21 @@ def plan_2d(
             continue
         break
 
+    center = None
+    if domain.symmetry is SymmetryMode.FULL:
+        center = (domain.center_x, domain.center_y)
+        # Keep the center as the exact anchor when nearby cuts are merged.
+        x_lines, y_lines = [
+            canonicalize_values(
+                lines, pattern.tolerance, fixed=np.asarray(lines) == coordinate,
+                stage="centerline_planning", source="model_center",
+            ).tolist()
+            for lines, coordinate in zip((x_lines, y_lines), center)
+        ]
     return Plan2D(
         pattern, planar_element_size, circle_patterns, circle_plan,
-        pattern_segments, x_lines, y_lines, circle_source_refs, region_meshing, adaptive,
+        [*pattern_segments, *center_segments], x_lines, y_lines, circle_source_refs,
+        region_meshing, adaptive, center,
     )
 
 
@@ -203,7 +248,26 @@ def build_2d_mesh(plan: Plan2D, *, progress: ProgressCallback | None = None) -> 
         total_operations=plan.feature_total, source_refs=plan.circle_source_refs,
         tolerance=plan.pattern.tolerance,
     )
+    if plan.center is not None:
+        _validate_centerlines(mesh, plan.center, plan.pattern.tolerance)
     return mesh
+
+
+def _validate_centerlines(mesh: Mesh2D, center, tolerance) -> None:
+    """A conforming cell partition must not straddle either mandatory cut."""
+    distance = resolve_tolerance(tolerance).absolute
+    for start in range(0, len(mesh.elements), 65536):
+        points = mesh.nodes[mesh.elements[start:start + 65536], :2]
+        crossing = ((points.min(axis=1) < np.asarray(center) - distance)
+                    & (points.max(axis=1) > np.asarray(center) + distance))
+        if np.any(crossing):
+            cell, axis = np.argwhere(crossing)[0]
+            raise GeometryToleranceError(
+                "final mesh does not preserve the model centerline",
+                code="fixed_constraint_conflict", stage="centerline_validation",
+                source="model_center", element_index=start + int(cell),
+                axis="xy"[axis], coordinate=center[axis], tolerance=distance,
+            )
 
 
 def _add_xy_control_lines(

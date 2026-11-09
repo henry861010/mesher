@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 import numpy as np
-from mesher.tolerance import within_distance
+from ....tolerance import within_distance
 
 
 def cross(a, b):

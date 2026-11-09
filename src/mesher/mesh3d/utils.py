@@ -39,6 +39,9 @@ def add_midside_node(mesh: Mesh3D, element_indices) -> Mesh3D:
     references the same unordered corner-node pair, and by pre-existing
     20-node elements elsewhere in the mesh.
 
+    Named sets retain their explicit membership. Newly generated nodes are
+    not automatically added to node sets.
+
     Args:
         mesh: Source mesh. It is never modified.
         element_indices: One-dimensional integer element-row selection.
@@ -167,6 +170,7 @@ def add_midside_node(mesh: Mesh3D, element_indices) -> Mesh3D:
         element_sections=mesh.element_sections,
         sections=mesh.sections,
         element_node_num=new_element_node_num,
+        sets=mesh.sets,
     )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from heapq import heapify, heappop, heappush
 
 import numpy as np
-from mesher.tolerance import subdivision_count
+from .....tolerance import subdivision_count
 
 from .._types import QuadLayerError
 from .._line_policy import DEFAULT_MAX_TRANSITION_COUNT

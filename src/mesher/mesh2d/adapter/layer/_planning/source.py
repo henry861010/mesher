@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from mesher.tolerance import GeometryToleranceError, resolve_tolerance
+from .....tolerance import GeometryToleranceError, resolve_tolerance
 
 from ....model import Mesh2D, _validate_zero_z
 from .._geometry import BoxIndex, area, cross, intervals_cover, segment_contacts

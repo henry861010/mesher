@@ -145,18 +145,19 @@ class WorkerIntegrationTests(unittest.TestCase):
                 json.loads(result.stdout),
                 {
                     "outputPath": str(output_path),
-                    "nodeCount": 8,
-                    "elementCount": 1,
+                    "nodeCount": 18,
+                    "elementCount": 4,
                     "componentCount": 2,
                     "typeCount": 1,
                     "realCount": 0,
                     "sectionCount": 0,
+                    "setCount": 0,
                     "geometryTolerance": 0.001,
                     "unitSystem": "um",
                     "tolerancePolicyVersion": "1",
                 },
             )
-            self.assertIn("node_count=8", output_path.read_text(encoding="utf-8"))
+            self.assertIn("node_count=18", output_path.read_text(encoding="utf-8"))
 
     def test_worker_exports_multiple_circles(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -299,7 +300,7 @@ class WorkerIntegrationTests(unittest.TestCase):
             metadata = json.loads(result.stdout)
             self.assertEqual(set(metadata), {
                 "outputPath", "nodeCount", "elementCount", "componentCount",
-                "typeCount", "realCount", "sectionCount",
+                "typeCount", "realCount", "sectionCount", "setCount",
                 "geometryTolerance", "unitSystem", "tolerancePolicyVersion",
             })
             self.assertEqual(metadata["outputPath"], str(output_path))

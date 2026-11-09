@@ -54,8 +54,6 @@ def normalize_symmetry(value: Any) -> SymmetryMode:
 
 
 def model_domain(symmetry: SymmetryMode, faces: list[JsonObject]) -> ModelDomain:
-    if symmetry is SymmetryMode.FULL:
-        return ModelDomain(symmetry=symmetry)
     bounds = [face_bounds(face) for face in faces]
     return ModelDomain(
         symmetry=symmetry,

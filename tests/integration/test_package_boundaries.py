@@ -5,7 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from mesher import ElementType2D, GeometryTolerance, GeometryToleranceError, Mesh2D, Mesh3D
+from mesher import ElementType2D, GeometryTolerance, GeometryToleranceError, Mesh2D, Mesh3D, MeshSet
 
 
 class PackageBoundaryTests(unittest.TestCase):
@@ -14,10 +14,11 @@ class PackageBoundaryTests(unittest.TestCase):
 
         self.assertEqual(
             set(mesher.__all__),
-            {"ElementType2D", "Mesh2D", "Mesh3D", "GeometryTolerance", "GeometryToleranceError"},
+            {"ElementType2D", "Mesh2D", "Mesh3D", "MeshSet", "GeometryTolerance", "GeometryToleranceError"},
         )
         self.assertIs(mesher.Mesh2D, Mesh2D)
         self.assertIs(mesher.Mesh3D, Mesh3D)
+        self.assertIs(mesher.MeshSet, MeshSet)
         self.assertIs(mesher.ElementType2D, ElementType2D)
         self.assertIs(mesher.GeometryTolerance, GeometryTolerance)
         self.assertIs(mesher.GeometryToleranceError, GeometryToleranceError)
@@ -25,6 +26,7 @@ class PackageBoundaryTests(unittest.TestCase):
 
         import mesher.mesh3d as mesh3d
 
+        self.assertIs(mesh3d.MeshSet, MeshSet)
         self.assertFalse(hasattr(mesh3d, "ElementType3D"))
 
     def test_removed_top_level_domain_modules_are_not_shimmed(self):

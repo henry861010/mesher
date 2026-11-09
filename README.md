@@ -43,7 +43,7 @@ or `process_flow_kernel`.
 The package root exports the central mesh models, planar topology enum, and geometry tolerance policy:
 
 ```python
-from mesher import ElementType2D, GeometryTolerance, GeometryToleranceError, Mesh2D, Mesh3D
+from mesher import ElementType2D, GeometryTolerance, GeometryToleranceError, Mesh2D, Mesh3D, MeshSet
 ```
 
 `Mesh2D` owns contiguous `float64` nodes with shape `(n, 3)` and `int32`
@@ -71,6 +71,37 @@ store component, element-type, real-constant, and section ids, while `comps`,
 `types`, `reals`, and `sections` hold their definition tables. The process-flow
 extruder currently emits SOLID185 connectivity with eight effective slots.
 
+`Mesh3D.sets` stores named node and element selections separately from components:
+
+```python
+from dataclasses import replace
+from mesher import MeshSet
+
+mesh = replace(mesh, sets={
+    "fixed_nodes": MeshSet(kind="node", indices=[0, 3, 7]),
+    "loaded_elements": MeshSet(kind="element", indices=[2, 5]),
+})
+fixed_coordinates = mesh.nodes[mesh.sets["fixed_nodes"].indices]
+```
+
+Set names are nonempty, case-sensitive strings in a shared namespace. Each set
+contains explicit **zero-based row indices** into `nodes` or `elements`; sets may
+overlap and may be empty. `MeshSet` copies, sorts, and deduplicates integer input
+into a contiguous `int32` array. Floats, booleans, negative values, and `int32`
+overflow are rejected; `Mesh3D` additionally checks bounds and copies all set
+data. Omitting `sets` creates an independent empty dictionary. Frozen fields do
+not make the dictionary or its arrays immutable.
+
+`add_midside_node` preserves set membership without automatically adding new
+nodes. The existing custom CDB text exporter revalidates and snapshots sets
+before opening the output. Nonempty `sets` adds `set_count` and a
+`*SETS,name_json,kind,indices_json` section, sorted by name, with one record per
+set. For example, `"fixed_nodes",node,[0,3,7]` encodes the name and indices as
+JSON; JSON escaping keeps names with quotes, commas, or newlines on one line.
+Empty sets are exported as `[]`. With no sets, file contents are unchanged.
+Export metadata always includes `setCount`, and progress counts one record per
+set. This remains the repository's custom text format.
+
 ## Geometry tolerance
 
 All geometry operations use an immutable `GeometryTolerance(absolute=0.001)` in
@@ -85,6 +116,41 @@ Process-flow mesh-control schema `1.1.0` accepts top-level `geometryTolerance`.
 Existing `1.0.0` input remains supported and defaults to `0.001`. See the
 [API migration guide](docs/tolerance-migration.md) for changed arguments,
 error codes, and test migration reasons.
+
+## 3D mesh editing
+
+`EditorMesh3D` is a stateless NumPy-only API. Boundary selection updates the
+input mesh and returns it:
+
+```python
+from mesher.mesh3d import EditorMesh3D
+
+EditorMesh3D.set_boundary(mesh3d=mesh, model_type="upper_right_quarter")
+fixed_x_nodes = mesh.sets["fix_x"].indices
+fixed_x_coordinates = mesh.nodes[fixed_x_nodes]
+```
+
+All three node sets, `fix_x`, `fix_y`, and `fix_z`, contain the bottom cross.
+Each retained arm contributes its nearest two nodes, plus one shared center.
+The bottom is the minimum-Z plane; left/right refer to -X/+X and down/up to
+-Y/+Y. Centers are inferred from the bottom nodes' XY bounds:
+
+| `model_type` | Bottom center | Retained arms | Cross nodes | Additional symmetry constraints |
+| --- | --- | --- | --- | --- |
+| `full` | midpoint X, midpoint Y | left, right, up, down | 9 | None |
+| `upper_half` | midpoint X, minimum Y | left, right, up | 7 | Entire `y=min` face in `fix_y` |
+| `right_half` | minimum X, midpoint Y | right, up, down | 7 | Entire `x=min` face in `fix_x` |
+| `upper_right_quarter` | minimum X, minimum Y | right, up | 5 | Entire `x=min` face in `fix_x`; entire `y=min` face in `fix_y` |
+
+Symmetry faces include every Z layer. Repeated calls replace the three boundary
+sets, preserving all other sets and mesh arrays. The sets hold zero-based node
+indices; applying solver constraints remains the caller's responsibility.
+
+Pass `tolerance=GeometryTolerance(absolute=...)` or a positive number to change
+the default absolute distance of `0.001`. The center must match exactly one
+existing node within tolerance, and every retained arm must have at least two
+aligned nodes. Missing or ambiguous centers and insufficient arms raise
+`GeometryToleranceError` before changing any sets. No nodes are created or moved.
 
 ## 2D mesh editing
 

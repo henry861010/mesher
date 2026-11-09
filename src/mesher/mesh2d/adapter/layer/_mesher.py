@@ -5,7 +5,7 @@ from dataclasses import replace
 from time import perf_counter
 
 import numpy as np
-from mesher.tolerance import GeometryTolerance, resolve_tolerance
+from ....tolerance import GeometryTolerance, resolve_tolerance
 from numpy.typing import ArrayLike
 
 from ...model import Mesh2D

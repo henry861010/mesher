@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...mesh3d import Mesh3D
+from ...mesh3d.model import _normalize_sets
 from ...tolerance import resolve_tolerance
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -22,6 +23,11 @@ def write_cdb_text(
 ) -> dict[str, object]:
     """Write a 3D mesh to a deterministic line-oriented CDB text artifact."""
     path = Path(output_path)
+    sets = _normalize_sets(
+        mesh.sets,
+        node_count=mesh.node_count,
+        element_count=mesh.element_count,
+    )
     policy = resolve_tolerance(tolerance)
     policy.check_resolution(mesh.nodes, stage="export")
     total_records = (
@@ -31,6 +37,7 @@ def write_cdb_text(
         + len(mesh.types)
         + len(mesh.reals)
         + len(mesh.sections)
+        + len(sets)
     )
     completed_records = 0
     report_interval = max(1, total_records // 100)
@@ -62,6 +69,8 @@ def write_cdb_text(
         handle.write(f"type_count={len(mesh.types)}\n")
         handle.write(f"real_count={len(mesh.reals)}\n")
         handle.write(f"section_count={len(mesh.sections)}\n")
+        if sets:
+            handle.write(f"set_count={len(sets)}\n")
 
         handle.write("\n*NODES,index,x,y,z\n")
         report("Writing CDB nodes.", force=True)
@@ -158,6 +167,19 @@ def write_cdb_text(
             completed_records += 1
             report("Writing CDB component table.")
 
+        if sets:
+            handle.write("\n*SETS,name_json,kind,indices_json\n")
+            report("Writing CDB sets.", force=True)
+            for name, selection in sorted(sets.items()):
+                encoded_name = json.dumps(name, ensure_ascii=False)
+                encoded_indices = json.dumps(
+                    selection.indices.tolist(),
+                    separators=(",", ":"),
+                )
+                handle.write(f"{encoded_name},{selection.kind},{encoded_indices}\n")
+                completed_records += 1
+                report("Writing CDB sets.")
+
     report("CDB output written.", force=True)
 
     return {
@@ -168,6 +190,7 @@ def write_cdb_text(
         "typeCount": len(mesh.types),
         "realCount": len(mesh.reals),
         "sectionCount": len(mesh.sections),
+        "setCount": len(sets),
         "geometryTolerance": policy.absolute,
         "unitSystem": unit_system,
         "tolerancePolicyVersion": "1",

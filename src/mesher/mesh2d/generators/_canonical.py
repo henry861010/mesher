@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from mesher.tolerance import (GeometryToleranceError, canonicalize_points,
+from ...tolerance import (GeometryToleranceError, canonicalize_points,
                              resolve_tolerance)
 
 

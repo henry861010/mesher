@@ -28,8 +28,8 @@ class XYGridPlanningTests(unittest.TestCase):
     def test_box_uses_section_avg_and_keeps_short_interval_endpoints(self):
         for size, expected in (
             (5, [0, 5, 10, 15, 20]),
-            (6, [0, 20 / 3, 40 / 3, 20]),
-            (25, [0, 20]),
+            (6, [0, 20 / 3, 10, 40 / 3, 20]),
+            (25, [0, 10, 20]),
         ):
             with self.subTest(size=size):
                 plan = box_plan([box_control([0, 0, 20, 20], size)])
@@ -46,12 +46,12 @@ class XYGridPlanningTests(unittest.TestCase):
         ]}, "element_size": 3}
         plan = box_plan([control], bounds=[0, 0, 12, 12])
         mesh = build_2d_mesh(plan)
-        np.testing.assert_allclose(np.unique(mesh.nodes[:, 0]), [0, 2, 5, 8.5, 12])
-        np.testing.assert_allclose(np.unique(mesh.nodes[:, 1]), [0, 1, 5, 8.5, 12])
+        np.testing.assert_allclose(np.unique(mesh.nodes[:, 0]), [0, 2, 5, 6, 8.5, 12])
+        np.testing.assert_allclose(np.unique(mesh.nodes[:, 1]), [0, 1, 5, 6, 8.5, 12])
 
     def test_overlapping_controls_union_independent_cuts_in_either_order(self):
         controls = [box_control([0, 0, 12, 12], 4), box_control([3, 3, 15, 15], 4)]
-        expected = [0, 3, 4, 7, 8, 11, 12, 15, 20]
+        expected = [0, 3, 4, 7, 8, 10, 11, 12, 15, 20]
         for entries in (controls, controls[::-1], controls + controls):
             with self.subTest(entries=entries):
                 mesh = build_2d_mesh(box_plan(entries))
@@ -78,7 +78,7 @@ class XYGridPlanningTests(unittest.TestCase):
         mesh = build_2d_mesh(box_plan(
             [box_control([-5, -5, 15, 15], 6)], bounds=[0, 0, 10, 10],
         ))
-        expected = [0, 5 / 3, 25 / 3, 10]
+        expected = [0, 5 / 3, 5, 25 / 3, 10]
         np.testing.assert_allclose(np.unique(mesh.nodes[:, 0]), expected)
         np.testing.assert_allclose(np.unique(mesh.nodes[:, 1]), expected)
 
@@ -86,8 +86,8 @@ class XYGridPlanningTests(unittest.TestCase):
         for bounds in ([30, 0, 40, 20], [0, 30, 20, 40], [-20, 0, -10, 20]):
             with self.subTest(bounds=bounds):
                 mesh = build_2d_mesh(box_plan([box_control(bounds, 1)]))
-                np.testing.assert_array_equal(np.unique(mesh.nodes[:, 0]), [0, 20])
-                np.testing.assert_array_equal(np.unique(mesh.nodes[:, 1]), [0, 20])
+                np.testing.assert_array_equal(np.unique(mesh.nodes[:, 0]), [0, 10, 20])
+                np.testing.assert_array_equal(np.unique(mesh.nodes[:, 1]), [0, 10, 20])
 
     def test_circle_support_halo_does_not_expand_control_clipping_bounds(self):
         pattern = Pattern2D(

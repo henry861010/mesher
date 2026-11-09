@@ -19,7 +19,7 @@ import math
 from typing import Any
 
 import numpy as np
-from mesher.tolerance import (GeometryTolerance, GeometryToleranceError, resolve_tolerance,
+from ...tolerance import (GeometryTolerance, GeometryToleranceError, resolve_tolerance,
                              subdivision_count, within_distance)
 from ._canonical import canonical_geometry
 from numpy.typing import ArrayLike, NDArray

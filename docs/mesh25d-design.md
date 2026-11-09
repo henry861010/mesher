@@ -130,6 +130,12 @@ Z constraints 保留 `start`、`end`、`element_size`、`method`，其中 `metho
 
 ## Geometry、symmetry 與保護範圍
 
+- `symmetry="full"` 也固定加入 `x=center_x` 與 `y=center_y` 兩條中心切線，
+  並在 grid、adapter、圓形處理與 Z 擠出後保留為網格邊線。中心取 root bodies
+  的 XY 外框中點；root 沒有 bodies 時改取全部 pattern 的外框中點，不一定是原點。
+  中心線不補孔洞或模型外部元素；其餘 symmetry 模式仍只加入原有的對稱邊界。
+  與中心線相交且無法保留直線的偏心 circular extension 改用 imprint-only。
+  最終 2D 網格若仍跨越中心切線，會回報 `fixed_constraint_conflict`。
 - 輸入先深拷貝；geometry extraction 不讀取 mesh control。
 - Reference 必須在原始模型存在；symmetry 排除的目標，其 control 不生效。
   保留 container 的相對座標依保留子樹的 bounds 計算；多個符合目標仍各自展開。

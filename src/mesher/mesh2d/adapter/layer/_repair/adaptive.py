@@ -8,7 +8,7 @@ from __future__ import annotations
 from math import ceil
 
 import numpy as np
-from mesher.tolerance import subdivision_count
+from .....tolerance import subdivision_count
 
 from ...unit.build_unit_1_1_x_y import _validate_patch
 from .._geometry import area, cross
