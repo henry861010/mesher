@@ -42,7 +42,7 @@ class ControlIntegrationTests(unittest.TestCase):
         self.assertEqual(caught.exception.context["control_index"], 0)
 
     def test_section_methods_produce_their_own_remainder_layers(self):
-        structure = _box_structure()
+        structure = _box_structure(side=40)
         structure["root"]["bodies"][0]["geometry"]["thk"] = 35
         before = copy.deepcopy(structure)
         for method, expected in (
@@ -60,7 +60,7 @@ class ControlIntegrationTests(unittest.TestCase):
                 self.assertEqual(control, snapshot)
 
     def test_point_adds_a_boundary_without_refining_other_intervals(self):
-        structure = _box_structure()
+        structure = _box_structure(side=4)
         control = {"method": "Z_POINT", "coordinateMode": "absolute", "label": "Cut", "z": 0.3}
         mesh = build_mesh(structure, _mesh_control(1, controls=[control]))
         np.testing.assert_allclose(np.unique(mesh.nodes[:, 2]), [0, 0.3, 1])
@@ -172,9 +172,9 @@ class ControlIntegrationTests(unittest.TestCase):
                   "region": {"type": "box",
                   "min": {axis: {"anchor": f"{axis}_min", "offset": 0} for axis in "xyz"},
                   "max": {axis: {"anchor": f"{axis}_max", "offset": 0} for axis in "xyz"}}}
-        mesh = build_mesh(structure, _mesh_control(10, "right_half", [region]))
-        np.testing.assert_array_equal(np.unique(mesh.nodes[:, 0]), [1, 2])
-        np.testing.assert_array_equal(np.unique(mesh.nodes[:, 1]), [0, 2])
+        mesh = build_mesh(structure, _mesh_control(0.5, "right_half", [region]))
+        np.testing.assert_array_equal(np.unique(mesh.nodes[:, 0]), [1, 1.5, 2])
+        np.testing.assert_array_equal(np.unique(mesh.nodes[:, 1]), [0, 0.5, 1, 1.5, 2])
 
     def test_assignment_extraction_respects_bump_stage(self):
         container = _box_structure()["root"]

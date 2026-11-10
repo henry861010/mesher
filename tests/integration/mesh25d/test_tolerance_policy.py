@@ -22,9 +22,9 @@ def settings(**values):
                 globalElementSize=1.0, symmetry="full", controls=[], **values)
 
 
-def body(*, x=0.0, z=0.0, thickness=1.0, material="Si"):
+def body(*, x=0.0, z=0.0, thickness=1.0, material="Si", width=1.0):
     return {"geometry": {"type": "BoxGeometry", "bottom_left": [x, 0, z],
-                         "top_right": [x + 1, 1, z], "thk": thickness},
+                         "top_right": [x + width, width, z], "thk": thickness},
             "material": material}
 
 
@@ -57,24 +57,24 @@ class AbsoluteTolerancePipelineTests(unittest.TestCase):
         for values in ((.5, .5004), (.5004, .5)):
             config = settings()
             config["controls"] = [point(z) for z in values]
-            model = structure(body())
+            model = structure(body(width=4))
             before = copy.deepcopy((model, config))
             mesh = build_mesh(model, config)
             np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [0, .5, 1])
-            self.assertEqual(mesh.element_count, 8)
+            self.assertEqual(mesh.element_count, 32)
             self.assertEqual((model, config), before)
 
     def test_point_control_snaps_to_material_boundary_instead_of_creating_sliver(self):
-        model = structure(body(thickness=.5), body(z=.5, thickness=.5, material="Cu"))
+        model = structure(body(thickness=.5, width=4), body(z=.5, thickness=.5, material="Cu", width=4))
         config = settings()
         config["controls"] = [point(.4996)]
         mesh = build_mesh(model, config)
         np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [0, .5, 1])
-        self.assertEqual(mesh.element_count, 8)
+        self.assertEqual(mesh.element_count, 32)
         self.assertEqual(set(mesh.element_comps), {mesh.comps["Si"], mesh.comps["Cu"]})
 
     def test_geometry_is_not_rounded_to_a_fixed_decimal_grid(self):
-        mesh = build_mesh(structure(body(z=1.000499, thickness=.5)), settings())
+        mesh = build_mesh(structure(body(z=1.000499, thickness=.5, width=4)), settings())
         np.testing.assert_array_equal(np.unique(mesh.nodes[:, 2]), [1.000499, 1.500499])
 
     def test_subresolution_material_or_koz_is_an_explicit_error(self):
@@ -221,7 +221,7 @@ class AbsoluteTolerancePipelineTests(unittest.TestCase):
             np.testing.assert_array_equal(dragger.element_2D_volume, [1.0])
 
     def test_export_roundtrips_float_coordinates_and_reports_policy(self):
-        model = structure(body(x=1e9 + .004))
+        model = structure(body(x=1e9 + .004, width=4))
         mesh = build_mesh(model, settings())
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "mesh.cdb"

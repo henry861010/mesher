@@ -8,6 +8,7 @@ from process_flow_kernel import validate_geometry_semantic_keys
 
 from ..contracts.process_flow_2_5d import mesh_control_settings, mesh_control_tolerance
 from ..mesh3d.model import Mesh3D
+from ..mesh3d.editor import EditorMesh3D
 from .controls import resolve_controls
 from .domain import normalize_symmetry
 from .geometry.assignments import extract_assignments
@@ -29,6 +30,9 @@ def build_mesh(
     all footprints when the root has no bodies. Control references follow the
     retained geometry. XY regions use grid cuts by default; regionMeshing=
     'adapter' opts into local Quad4 meshes with fivefold target-size transitions.
+    The completed mesh includes fix_x/fix_y/fix_z boundary node sets, selected
+    with the configured symmetry and tolerance. Missing or ambiguous bottom
+    centers and insufficient cross-arm nodes fail the build.
     """
     stage = _start_stage(progress, "validating", "Checking geometry input.")
     element_size, symmetry, _ = mesh_control_settings(mesh_control)
@@ -96,6 +100,7 @@ def build_mesh(
         current=0, total=max(0, len(layer_infos) - 1), unit="layers",
     )
     mesh = build_3d_mesh(mesh_2d, plan3d, progress=progress)
+    EditorMesh3D.set_boundary(mesh, normalized_symmetry.value, tolerance=tolerance)
     _complete_stage(
         progress, "building_3d_mesh", stage,
         data={

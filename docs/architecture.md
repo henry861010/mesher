@@ -337,6 +337,18 @@ source provenance, priorities, and material assignments. The 2D stage in
 and builds `Mesh2D`. The 3D stage in `plan3d.py` combines assignments and resolved
 Z constraints into `layer_infos`, converts 2D winding, and invokes the existing
 Dragger to build `Mesh3D`.
+The planar plan preserves full-model X/Y centerlines, or the missing interior
+centerline for each half model, through grid cuts, adapter patterns and circular
+guides. Center coordinates are fixed anchors; final planar cells are checked
+for crossing the mandatory cuts. Off-center radial extensions that would lose
+a cut are replanned as imprint-only, including in half models. Quarter models
+retain their existing symmetry boundaries.
+Before completing the 3D stage, the pipeline calls `EditorMesh3D.set_boundary`
+with its normalized symmetry and shared tolerance. A successful result always
+contains `fix_x`, `fix_y`, and `fix_z`. Boundary selection errors propagate before
+worker serialization, preserving any existing output file; no automatic node
+insertion or boundary-rule fallback occurs. Worker output progress includes
+the set records already supported by the CDB writer.
 `_get_assignments` was moved verbatim into geometry extraction.
 
 The syntax-only input contract accepts optional top-level `regionMeshing`

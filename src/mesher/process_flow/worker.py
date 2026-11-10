@@ -56,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                 + len(mesh.types)
                 + len(mesh.reals)
                 + len(mesh.sections)
+                + len(mesh.sets)
             ),
             unit="records",
         )

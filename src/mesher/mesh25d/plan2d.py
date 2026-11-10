@@ -77,6 +77,12 @@ def plan_2d(
         domain.center_x is None or domain.center_y is None
     ):
         domain = model_domain(SymmetryMode.FULL, all_faces)
+    # Restricted axes already have a symmetry boundary. The other axes need
+    # an interior centerline, anchored to the original full-model center.
+    center_axes = tuple(axis for axis, restricted in enumerate(
+        (domain.restrict_x, domain.restrict_y)
+    ) if not restricted)
+    model_center = (domain.center_x, domain.center_y)
     circle_patterns = _collect_circle_patterns(all_faces)
     circle_source_refs = {_CirclePattern(*key): refs for key, refs in pattern.circle_sources.items()}
     koz_circle_patterns = {_CirclePattern(*key) for key in pattern.koz_circle_sources}
@@ -99,17 +105,15 @@ def plan_2d(
         band_width=circle_band_width,
         tolerance=pattern.tolerance,
     )
-    if domain.symmetry is SymmetryMode.FULL and any(
+    if any(
         any(
             # A small offset also grows with radius during radial extension;
             # only ignore floating-point roundoff, not geometric tolerance.
-            abs(coordinate - center) > 32 * np.finfo(float).eps * max(
-                abs(coordinate), abs(center), extension.outer.radius
+            abs(model_center[axis] - extension.center[axis]) > 32 * np.finfo(float).eps * max(
+                abs(model_center[axis]), abs(extension.center[axis]), extension.outer.radius
             )
-            and abs(coordinate - center) < extension.outer.radius
-            for coordinate, center in zip(
-                (domain.center_x, domain.center_y), extension.center
-            )
+            and abs(model_center[axis] - extension.center[axis]) < extension.outer.radius
+            for axis in center_axes
         )
         for extension in circle_plan.extensions
     ):
@@ -140,15 +144,14 @@ def plan_2d(
             all_faces, circle_plan, circle_band_width, domain,
         )
         center_segments = []
-        if domain.symmetry is SymmetryMode.FULL:
-            left, right = min(x_lines), max(x_lines)
-            bottom, top = min(y_lines), max(y_lines)
+        left, right = min(x_lines), max(x_lines)
+        bottom, top = min(y_lines), max(y_lines)
+        if 0 in center_axes:
             x_lines.append(domain.center_x)
+            center_segments.append(((domain.center_x, bottom), (domain.center_x, top)))
+        if 1 in center_axes:
             y_lines.append(domain.center_y)
-            center_segments = [
-                ((domain.center_x, bottom), (domain.center_x, top)),
-                ((left, domain.center_y), (right, domain.center_y)),
-            ]
+            center_segments.append(((left, domain.center_y), (right, domain.center_y)))
         adaptive = None
         if control_bounds is not None:
             left, bottom, right, top = control_bounds
@@ -184,8 +187,8 @@ def plan_2d(
         break
 
     center = None
-    if domain.symmetry is SymmetryMode.FULL:
-        center = (domain.center_x, domain.center_y)
+    if center_axes:
+        center = model_center
         # Keep the center as the exact anchor when nearby cuts are merged.
         x_lines, y_lines = [
             canonicalize_values(

@@ -1,4 +1,4 @@
-"""Mandatory full-domain cuts survive every planar meshing stage."""
+"""Mandatory full- and half-domain cuts survive every planar meshing stage."""
 
 from collections import defaultdict
 from copy import deepcopy
@@ -36,12 +36,12 @@ def assert_chain(test, nodes, cells, axis, value, lower, upper):
 
 
 def _plan(*, bounds=(-10, -10, 10, 10), faces=(), controls=(), strategy="grid",
-          center=None, base=None, size=1):
+          center=None, base=None, size=1, mode=SymmetryMode.FULL):
     return plan_2d(
         Pattern2D(base or {"type": "BOX", "dim": list(bounds)}, list(faces), {}, {}, 0.001),
         ResolvedControls(list(controls), [], ["controls[0]"] if controls else []),
         element_size=size, region_meshing=strategy,
-        domain=ModelDomain(SymmetryMode.FULL, *(center or (None, None))),
+        domain=ModelDomain(mode, *(center or (None, None))),
     )
 
 
@@ -138,11 +138,11 @@ class FullCenterlineTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "fixed_constraint_conflict")
         self.assertEqual(caught.exception.context["stage"], "centerline_validation")
 
-    def test_reduced_domains_only_add_their_existing_symmetry_boundaries(self):
+    def test_half_domains_add_the_missing_center_cut_and_quarter_keeps_boundaries(self):
         pattern = Pattern2D({"type": "BOX", "dim": [-9, -9, 9, 9]}, [], {}, {}, 0.001)
         for mode, xs, ys in (
-            (SymmetryMode.UPPER_HALF, [-9, 9], [0, 9]),
-            (SymmetryMode.RIGHT_HALF, [0, 9], [-9, 9]),
+            (SymmetryMode.UPPER_HALF, [-9, 0, 9], [0, 9]),
+            (SymmetryMode.RIGHT_HALF, [0, 9], [-9, 0, 9]),
             (SymmetryMode.UPPER_RIGHT_QUARTER, [0, 9], [0, 9]),
         ):
             with self.subTest(mode=mode):
@@ -150,7 +150,63 @@ class FullCenterlineTests(unittest.TestCase):
                                domain=ModelDomain(mode, 0, 0))
                 self.assertEqual(sorted(set(plan.x_lines)), xs)
                 self.assertEqual(sorted(set(plan.y_lines)), ys)
-                self.assertIsNone(plan.center)
+                if mode is SymmetryMode.UPPER_RIGHT_QUARTER:
+                    self.assertIsNone(plan.center)
+                else:
+                    self.assertEqual(plan.center, (0, 0))
+                    expected = (((0, 0), (0, 9)) if mode is SymmetryMode.UPPER_HALF
+                                else ((0, 0), (9, 0)))
+                    self.assertIn(expected, plan.pattern_segments)
+
+    def test_half_centerlines_survive_grid_adapter_and_imprint(self):
+        for mode, axis in ((SymmetryMode.UPPER_HALF, 0), (SymmetryMode.RIGHT_HALF, 1)):
+            region = [-2.5, 8, 2.5, 10] if axis == 0 else [8, -2.5, 10, 2.5]
+            circle = [0.7, 5, 3] if axis == 0 else [5, 0.7, 3]
+            for kind in ("grid", "adapter", "imprint", "nearby_cut"):
+                with self.subTest(mode=mode, kind=kind):
+                    kwargs = dict(mode=mode, center=(0, 0), size=2,
+                                  bounds=(-20, -20, 20, 20))
+                    if kind == "adapter":
+                        kwargs.update(strategy="adapter", controls=[
+                            {"region": {"type": "BOX", "dim": region}, "element_size": 0.2}])
+                    elif kind == "imprint":
+                        kwargs["faces"] = [{"type": "CIRCLE", "dim": circle}]
+                    elif kind == "nearby_cut":
+                        dimensions = [-0.0005, 4, 2, 6] if axis == 0 else [4, -0.0005, 6, 2]
+                        kwargs["faces"] = [{"type": "BOX", "dim": dimensions}]
+                    mesh = build_2d_mesh(_plan(**kwargs))
+                    assert_chain(self, mesh.nodes, mesh.elements, axis, 0, 0, 20)
+                    self.assertEqual(len(np.unique(mesh.nodes, axis=0)), len(mesh.nodes))
+
+    def test_half_extensions_keep_centerline_or_replan_for_offset_center(self):
+        for mode, axis in ((SymmetryMode.UPPER_HALF, 0), (SymmetryMode.RIGHT_HALF, 1)):
+            for offset in (0, 1, 0.0005):
+                with self.subTest(mode=mode, offset=offset):
+                    center = (offset, 0) if axis == 0 else (0, offset)
+                    plan = _plan(mode=mode, center=center,
+                                 base={"type": "CIRCLE", "dim": [0, 0, 12]},
+                                 faces=[{"type": "CIRCLE", "dim": [0, 0, 3]}])
+                    self.assertEqual(len(plan.circle_plan.extensions), int(offset == 0))
+                    mesh = build_2d_mesh(plan)
+                    on_line = mesh.nodes[np.abs(mesh.nodes[:, axis] - offset) < 1e-9, 1 - axis]
+                    assert_chain(self, mesh.nodes, mesh.elements, axis, offset,
+                                 on_line.min(), on_line.max())
+
+    def test_half_centerline_uses_domain_center_and_is_validated(self):
+        for mode, axis in ((SymmetryMode.UPPER_HALF, 0), (SymmetryMode.RIGHT_HALF, 1)):
+            with self.subTest(mode=mode):
+                center = (2, 0) if axis == 0 else (0, 2)
+                plan = _plan(mode=mode, center=center)
+                mesh = build_2d_mesh(plan)
+                assert_chain(self, mesh.nodes, mesh.elements, axis, 2, 0, 10)
+                nodes = [[-10, 0], [10, 0], [10, 10], [-10, 10]]
+                if axis == 1:
+                    nodes = np.asarray(nodes)[:, ::-1]
+                broken = Mesh2D(nodes, [[0, 1, 2, 3]])
+                with patch("mesher.mesh25d.plan2d.generate_rectilinear_mesh", return_value=broken):
+                    with self.assertRaises(GeometryToleranceError) as caught:
+                        build_2d_mesh(plan)
+                self.assertEqual(caught.exception.context["stage"], "centerline_validation")
 
 
 if __name__ == "__main__":

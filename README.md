@@ -120,7 +120,9 @@ error codes, and test migration reasons.
 ## 3D mesh editing
 
 `EditorMesh3D` is a stateless NumPy-only API. Boundary selection updates the
-input mesh and returns it:
+input mesh and returns it. `mesh25d.build_mesh()` already applies this operation
+automatically; use the editor directly for meshes built through lower-level
+APIs or to replace an existing selection:
 
 ```python
 from mesher.mesh3d import EditorMesh3D
@@ -845,6 +847,27 @@ mesh = build_mesh(
 
 Supported symmetry values are `full`, `upper_half`, `right_half`, and
 `upper_right_quarter`.
+
+Full models preserve both original-model centerlines as mandatory pattern
+lines. Upper-half models additionally preserve the `x=center_x` centerline,
+and right-half models preserve `y=center_y`; their other centerline is the
+existing symmetry boundary. Quarter models retain both symmetry boundaries.
+The center comes from the original full-model root body bounds (or all
+footprints when there are no root bodies), rather than the reduced envelope's
+midpoint. Grid, adapter, and circular meshing preserve these cuts; circular
+extensions that cannot retain a centerline are replanned as imprint-only.
+
+Every successful build automatically populates `mesh.sets["fix_x"]`,
+`mesh.sets["fix_y"]`, and `mesh.sets["fix_z"]` using the selected symmetry and
+the same geometry tolerance as meshing. The worker exports these sets to CDB.
+Missing or ambiguous bottom centers, including centers inside holes or gaps,
+and fewer than two nodes on a retained cross arm raise an error instead of
+returning a mesh without boundary conditions. Mandatory centerlines do not
+automatically refine the mesh to supply those two nodes: reduce the element
+size when necessary. Boundary centers still follow the editor's bottom-node
+XY bounds rule described above. Solver constraints are applied by the caller
+from these named node sets. Lower-level `Dragger` and `Mesh3D` construction do
+not apply boundary selections automatically.
 
 For bumps, circuits, and vias, `koz` is an inward XY keep-out distance. Both
 the original footprint and the remaining eligible region contribute 2D mesh

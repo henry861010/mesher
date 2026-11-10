@@ -6,7 +6,8 @@ import numpy as np
 from shapely import contains_xy
 from shapely.geometry import Polygon
 from mesher import Mesh3D
-from mesher.tolerance import GeometryTolerance
+from mesher.tolerance import GeometryTolerance, GeometryToleranceError
+from mesher.mesh3d import EditorMesh3D
 from mesher.mesh2d.circular import extend_circular_mesh
 from mesher.mesh2d.circular.imprint_v2 import imprint_circle
 
@@ -39,7 +40,7 @@ def _build(
     )
 
 
-def _box_structure():
+def _box_structure(side=2.0):
     return {
         "root": {
             "bodies": [
@@ -47,7 +48,7 @@ def _box_structure():
                     "geometry": {
                         "type": "BoxGeometry",
                         "bottom_left": [0.0, 0.0, 0.0],
-                        "top_right": [2.0, 2.0, 0.0],
+                        "top_right": [side, side, 0.0],
                         "thk": 1.0,
                     },
                     "material": "Si",
@@ -153,7 +154,7 @@ def _append_polygon(structure, *, points, material):
 
 
 class BuilderIntegrationTests(unittest.TestCase):
-    def test_full_centerlines_stop_at_a_polygon_hole(self):
+    def test_full_centerlines_stop_at_a_polygon_hole_and_boundary_selection_fails(self):
         loops = (
             ((-3, -3), (3, -3), (3, 3), (-3, 3)),
             ((-1, -1), (-1, 1), (1, 1), (1, -1)),
@@ -162,7 +163,13 @@ class BuilderIntegrationTests(unittest.TestCase):
             "type": "PolygonGeometry", "thk": 1,
             "polys": [[[x, y, 0] for x, y in loop] for loop in loops],
         }, "material": "Si"}]}}
-        mesh = _build(structure, element_size=1)
+        with patch("mesher.mesh25d.pipeline.EditorMesh3D.set_boundary",
+                   wraps=EditorMesh3D.set_boundary) as boundary:
+            with self.assertRaises(GeometryToleranceError) as caught:
+                _build(structure, element_size=1)
+        self.assertEqual(caught.exception.context["stage"], "boundary_selection")
+        self.assertEqual(caught.exception.context["matching_nodes"], [])
+        mesh = boundary.call_args.args[0]
         self.assertEqual(mesh.element_count, 32)
         centroids = mesh.nodes[mesh.elements[:, :4], :2].mean(axis=1)
         self.assertFalse(np.any(np.all(np.abs(centroids) < 1, axis=1)))
@@ -253,7 +260,7 @@ class BuilderIntegrationTests(unittest.TestCase):
             "startZ": {"anchor": "z_min", "offset": 0},
             "endZ": {"anchor": "z_max", "offset": 0},
         }
-        structure = _box_structure()
+        structure = _box_structure(side=4)
         structure["root"]["key"] = "hbm"
         unlabeled = build_mesh(
             structure, _mesh_control(1.0, controls=[control])
@@ -267,7 +274,7 @@ class BuilderIntegrationTests(unittest.TestCase):
         )
 
     def test_public_builder_applies_mesh_controls(self):
-        structure = _box_structure()
+        structure = _box_structure(side=4)
         structure["root"]["key"] = "hbm"
         baseline = build_mesh(
             structure,
@@ -414,52 +421,33 @@ class BuilderIntegrationTests(unittest.TestCase):
                 self.assertTrue(np.all((centers[:, 2] > 1.0) & (centers[:, 2] < 2.0)))
 
     def test_public_builder_matches_known_mesh_contract(self):
-        mesh = _build(_box_structure(), element_size=1.0)
+        mesh = _build(_box_structure(side=4), element_size=1.0)
 
         self.assertIsInstance(mesh, Mesh3D)
-        self.assertEqual(mesh.node_count, 18)
-        self.assertEqual(mesh.element_count, 4)
+        self.assertEqual(mesh.node_count, 50)
+        self.assertEqual(mesh.element_count, 16)
         self.assertEqual(mesh.component_count, 2)
         self.assertEqual(mesh.comps, {"EMPTY": 0, "Si": 1})
-        np.testing.assert_array_equal(mesh.element_comps, [1, 1, 1, 1])
-        self.assertEqual(mesh.elements.shape, (4, 20))
-        np.testing.assert_array_equal(mesh.element_types, [1, 1, 1, 1])
+        np.testing.assert_array_equal(mesh.element_comps, np.ones(16))
+        self.assertEqual(mesh.elements.shape, (16, 20))
+        np.testing.assert_array_equal(mesh.element_types, np.ones(16))
         self.assertEqual(mesh.types, {1: 185})
-        np.testing.assert_array_equal(mesh.element_reals, [0, 0, 0, 0])
+        np.testing.assert_array_equal(mesh.element_reals, np.zeros(16))
         self.assertEqual(mesh.reals, {})
-        np.testing.assert_array_equal(mesh.element_sections, [0, 0, 0, 0])
+        np.testing.assert_array_equal(mesh.element_sections, np.zeros(16))
         self.assertEqual(mesh.sections, {})
-        np.testing.assert_array_equal(mesh.element_node_num, [8, 8, 8, 8])
+        np.testing.assert_array_equal(mesh.element_node_num, np.full(16, 8))
         np.testing.assert_array_equal(
             mesh.nodes,
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [2.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [1.0, 1.0, 0.0],
-                [2.0, 1.0, 0.0],
-                [0.0, 2.0, 0.0],
-                [1.0, 2.0, 0.0],
-                [2.0, 2.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [1.0, 0.0, 1.0],
-                [2.0, 0.0, 1.0],
-                [0.0, 1.0, 1.0],
-                [1.0, 1.0, 1.0],
-                [2.0, 1.0, 1.0],
-                [0.0, 2.0, 1.0],
-                [1.0, 2.0, 1.0],
-                [2.0, 2.0, 1.0],
-            ],
+            [[x, y, z] for z in (0, 1) for y in range(5) for x in range(5)],
         )
         np.testing.assert_array_equal(
-            mesh.elements[:, :8],
+            mesh.elements[[0, 1, 4, 15], :8],
             [
-                [0, 3, 4, 1, 9, 12, 13, 10],
-                [1, 4, 5, 2, 10, 13, 14, 11],
-                [3, 6, 7, 4, 12, 15, 16, 13],
-                [4, 7, 8, 5, 13, 16, 17, 14],
+                [0, 5, 6, 1, 25, 30, 31, 26],
+                [1, 6, 7, 2, 26, 31, 32, 27],
+                [5, 10, 11, 6, 30, 35, 36, 31],
+                [18, 23, 24, 19, 43, 48, 49, 44],
             ],
         )
         np.testing.assert_array_equal(
@@ -471,7 +459,7 @@ class BuilderIntegrationTests(unittest.TestCase):
         events = []
 
         mesh = _build(
-            _multi_circle_structure(),
+            _circle_structure((0, 0, 6, 0, 1, "Si"), (0, 0, 2, 0, 1, "Cu")),
             element_size=1.0,
             progress=events.append,
         )
@@ -507,7 +495,7 @@ class BuilderIntegrationTests(unittest.TestCase):
         events = []
 
         _build(
-            _box_structure(),
+            _box_structure(side=4),
             element_size=1.0,
             progress=events.append,
         )
@@ -576,8 +564,8 @@ class BuilderIntegrationTests(unittest.TestCase):
                     "stage": "building_2d_mesh",
                     "data": {
                         "featureOperationCount": 0,
-                        "node2DCount": 9,
-                        "element2DCount": 4,
+                        "node2DCount": 25,
+                        "element2DCount": 16,
                     },
                 },
                 {
@@ -609,7 +597,7 @@ class BuilderIntegrationTests(unittest.TestCase):
                         "featureType": "bodie",
                         "geometryType": "BoxGeometry",
                         "operation": "start",
-                        "selectedElementCount": 4,
+                        "selectedElementCount": 16,
                     },
                 },
                 {
@@ -619,8 +607,8 @@ class BuilderIntegrationTests(unittest.TestCase):
                         "itemType": "layer",
                         "layerIndex": 1,
                         "assignmentCount": 1,
-                        "nodesAdded": 18,
-                        "elementsAdded": 4,
+                        "nodesAdded": 50,
+                        "elementsAdded": 16,
                     },
                 },
                 {
@@ -635,8 +623,8 @@ class BuilderIntegrationTests(unittest.TestCase):
                     "event": "stage.completed",
                     "stage": "building_3d_mesh",
                     "data": {
-                        "nodeCount": 18,
-                        "elementCount": 4,
+                        "nodeCount": 50,
+                        "elementCount": 16,
                         "componentCount": 2,
                     },
                 },
@@ -1053,8 +1041,14 @@ class BuilderIntegrationTests(unittest.TestCase):
                 symmetry="Upper_Model",
             )
 
-    def test_builds_disjoint_cylinders_in_one_mesh(self):
-        mesh = _build(_multi_circle_structure(), element_size=1.0)
+    def test_disjoint_cylinders_build_but_fail_boundary_selection_in_the_gap(self):
+        with patch("mesher.mesh25d.pipeline.EditorMesh3D.set_boundary",
+                   wraps=EditorMesh3D.set_boundary) as boundary:
+            with self.assertRaises(GeometryToleranceError) as caught:
+                _build(_multi_circle_structure(), element_size=1.0)
+        self.assertEqual(caught.exception.context["stage"], "boundary_selection")
+        self.assertEqual(caught.exception.context["matching_nodes"], [])
+        mesh = boundary.call_args.args[0]
 
         # Absolute guide/merge precision can change the triangulation count;
         # both material disks must still be covered with valid finite volume.

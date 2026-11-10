@@ -14,7 +14,12 @@ def build_mesh(
     *,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> Mesh3D:
-    """Build a 2.5D mesh; load the optional meshing runtime only on use."""
+    """Build a 2.5D mesh with fix_x/fix_y/fix_z boundary node sets.
+
+    Boundary selection uses the mesh-control symmetry and geometry tolerance;
+    missing center or cross-arm nodes fail the build. The optional meshing
+    runtime is loaded only on use.
+    """
     try:
         from .pipeline import build_mesh as build
     except ModuleNotFoundError as error:

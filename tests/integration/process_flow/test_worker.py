@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 
-def _box_structure():
+def _box_structure(side=1.0):
     return {
         "root": {
             "bodies": [
@@ -15,7 +15,7 @@ def _box_structure():
                     "geometry": {
                         "type": "BoxGeometry",
                         "bottom_left": [0.0, 0.0, 0.0],
-                        "top_right": [1.0, 1.0, 0.0],
+                        "top_right": [side, side, 0.0],
                         "thk": 1.0,
                     },
                     "material": "Si",
@@ -136,7 +136,7 @@ class WorkerIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "geometry.json"
             output_path = Path(temp_dir) / "mesh.cdb"
-            input_path.write_text(json.dumps(_box_structure()), encoding="utf-8")
+            input_path.write_text(json.dumps(_box_structure(side=4)), encoding="utf-8")
 
             result = self._run_worker(input_path, output_path)
 
@@ -145,25 +145,44 @@ class WorkerIntegrationTests(unittest.TestCase):
                 json.loads(result.stdout),
                 {
                     "outputPath": str(output_path),
-                    "nodeCount": 18,
-                    "elementCount": 4,
+                    "nodeCount": 50,
+                    "elementCount": 16,
                     "componentCount": 2,
                     "typeCount": 1,
                     "realCount": 0,
                     "sectionCount": 0,
-                    "setCount": 0,
+                    "setCount": 3,
                     "geometryTolerance": 0.001,
                     "unitSystem": "um",
                     "tolerancePolicyVersion": "1",
                 },
             )
-            self.assertIn("node_count=18", output_path.read_text(encoding="utf-8"))
+            cdb = output_path.read_text(encoding="utf-8")
+            self.assertIn("node_count=50", cdb)
+            self.assertIn("set_count=3", cdb)
+            for name in ("fix_x", "fix_y", "fix_z"):
+                self.assertIn(f'"{name}",node,', cdb)
+            prefix = "PROCESS_FLOW_PROGRESS "
+            events = [json.loads(line[len(prefix):]) for line in result.stderr.splitlines()
+                      if line.startswith(prefix)]
+            started = next(event for event in events
+                           if event.get("stage") == "writing_output" and event["event"] == "stage.started")
+            self.assertEqual(started["total"], 152)
+            records = [event for event in events if event["event"] == "progress"
+                       and event.get("unit") == "records"]
+            self.assertEqual(records[-1]["current"], 152)
+            self.assertTrue(all(event["total"] == 152 for event in records))
 
     def test_worker_exports_multiple_circles(self):
+        # A supporting body supplies the required boundary center between disks.
+        structure = _multi_circle_structure()
+        support = _box_structure()["root"]["bodies"][0]
+        support["geometry"].update(bottom_left=[-6, -6, 0], top_right=[6, 6, 0])
+        structure["root"]["bodies"].insert(0, support)
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "geometry.json"
             output_path = Path(temp_dir) / "mesh.cdb"
-            input_path.write_text(json.dumps(_multi_circle_structure()), encoding="utf-8")
+            input_path.write_text(json.dumps(structure), encoding="utf-8")
 
             result = self._run_worker(input_path, output_path)
 
@@ -192,6 +211,7 @@ class WorkerIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             metadata = json.loads(result.stdout)
             self.assertEqual(metadata["elementCount"], 4)
+            self.assertEqual(metadata["setCount"], 3)
             node_lines = output_path.read_text(encoding="utf-8").split(
                 "\n*ELEMENTS",
                 maxsplit=1,
@@ -202,6 +222,32 @@ class WorkerIntegrationTests(unittest.TestCase):
                 if line
             ]
             self.assertTrue(all(x >= 12.0 and y >= 22.0 for x, y in coordinates))
+
+    def test_boundary_failure_does_not_publish_or_replace_worker_output(self):
+        for name, structure in (("insufficient_arms", _box_structure()),
+                                ("missing_center", _multi_circle_structure())):
+            for previous in (None, b"previous-complete-output"):
+                with self.subTest(case=name, existing=previous is not None), tempfile.TemporaryDirectory() as directory:
+                    input_path = Path(directory) / "geometry.json"
+                    output_path = Path(directory) / "mesh.cdb"
+                    input_path.write_text(json.dumps(structure), encoding="utf-8")
+                    if previous is not None:
+                        output_path.write_bytes(previous)
+                    result = self._run_worker(input_path, output_path)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, "")
+                    prefix = "PROCESS_FLOW_PROGRESS "
+                    events = [json.loads(line[len(prefix):]) for line in result.stderr.splitlines()
+                              if line.startswith(prefix)]
+                    error = next(event for event in events if event["event"] == "error")
+                    self.assertEqual(error["stage"], "boundary_selection")
+                    self.assertEqual(error["data"]["code"], "fixed_constraint_conflict")
+                    self.assertFalse(any(event.get("stage") == "writing_output" for event in events))
+                    if previous is None:
+                        self.assertFalse(output_path.exists())
+                    else:
+                        self.assertEqual(output_path.read_bytes(), previous)
+                    self.assertEqual(list(Path(directory).glob(".mesh.cdb.*.tmp")), [])
 
     def test_worker_rejects_an_unknown_symmetry_without_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -234,7 +280,7 @@ class WorkerIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "geometry.json"
             output_path = Path(temp_dir) / "mesh.cdb"
-            structure = _box_structure()
+            structure = _box_structure(side=4)
             structure["root"]["key"] = "hbm"
             input_path.write_text(json.dumps(structure), encoding="utf-8")
 
