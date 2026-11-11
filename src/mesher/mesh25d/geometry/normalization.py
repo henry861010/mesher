@@ -215,8 +215,28 @@ def _boundary_contact(left, right):
     return int(minimum <= radius * radius <= max(start_distance, end_distance))
 
 
+def _boundary_distance(left, right):
+    """Distance between analytic boundary entities before equivalencing."""
+    from shapely.geometry import LineString, Point
+
+    left_kind, a = left
+    right_kind, b = right
+    if left_kind == right_kind == "segment":
+        return float(LineString(a).distance(LineString(b)))
+    if left_kind == "segment":
+        return _boundary_distance(right, left)
+    x, y, radius = a
+    if right_kind == "circle":
+        xx, yy, other_radius = b
+        centers = float(np.hypot(x - xx, y - yy))
+        return max(0.0, centers - radius - other_radius, abs(radius - other_radius) - centers)
+    nearest = float(Point(x, y).distance(LineString(b)))
+    farthest = max(float(np.hypot(x - px, y - py)) for px, py in b)
+    return max(0.0, nearest - radius, radius - farthest)
+
+
 def _validate_material_boundary_contacts(features, originals, policy):
-    """Preserve partial rims, not merely whole coincident footprints.
+    """Allow near interfaces to meet without losing existing shared contacts.
 
     A spatial index covers both original and normalized entity bounds. Only
     changed boundaries and overlapping material Z intervals are compared.
@@ -257,9 +277,15 @@ def _validate_material_boundary_contacts(features, originals, policy):
                 continue
             before = _boundary_contact(left[5], right[5])
             after = _boundary_contact(left[6], right[6])
-            if before != after:
+            # Coordinate equivalence deliberately closes sub-tolerance gaps
+            # across materials. A new point/edge contact is valid when its
+            # original boundaries were within T; the whole-footprint check
+            # above still prevents two distinct materials becoming one volume.
+            aligned_contact = (after > before and within_distance(
+                _boundary_distance(left[5], right[5]), 0.0, policy))
+            if before != after and not aligned_contact:
                 raise GeometryToleranceError(
-                    "normalization would change contact between distinct material boundaries",
+                    "normalization would separate a shared material boundary or join boundaries beyond geometryTolerance",
                     code="feature_below_resolution", stage="geometry_normalization",
                     reason="material_boundary_conflict", source=[left[1], right[1]],
                     boundary_indices=[left[7], right[7]], original_contact=before,
@@ -268,7 +294,7 @@ def _validate_material_boundary_contacts(features, originals, policy):
 
 
 def normalize_geometry(container, tolerance=None):
-    """Normalize a private geometry tree; fail before changing any source input."""
+    """Normalize XY only on an owned tree; retain source Z and thickness."""
     policy = resolve_tolerance(tolerance)
     features = list(_features(container))
     points, records = [], []
@@ -286,9 +312,15 @@ def normalize_geometry(container, tolerance=None):
         # Extracting the face also validates finite XY and supported primitives.
         _geometry_to_face(geometry)
         thickness = float(geometry["thk"])
-        if not np.isfinite(thickness) or thickness <= policy.absolute:
-            fail("material thickness must exceed geometryTolerance", source,
+        if not np.isfinite(thickness) or thickness <= 0:
+            fail("material thickness must be finite and positive", source,
                  thickness=thickness)
+        base, end = _geometry_to_z(geometry), _geometry_to_z(geometry, False)
+        if not np.isfinite(base) or not np.isfinite(end) or end <= base:
+            raise GeometryToleranceError(
+                "material Z endpoints must be finite and numerically distinct",
+                code="numeric_resolution_exceeded", stage="geometry_normalization", source=source,
+            )
         koz = koz_value(feature) if field != "bodies" else 0.0
         if 0 < koz <= policy.absolute:
             fail("positive KOZ width must exceed geometryTolerance", source, koz=koz)
@@ -312,8 +344,8 @@ def normalize_geometry(container, tolerance=None):
             if center.shape != (3,) or radius <= policy.absolute:
                 fail("circle radius must exceed geometryTolerance", source, radius=radius)
             points.extend((center.tolist(), [*center[:2], center[2] + thickness]))
-            policy.check_resolution([[center[0] - radius, center[1] - radius, center[2]],
-                                     [center[0] + radius, center[1] + radius, center[2] + thickness]],
+            policy.check_resolution([[center[0] - radius, center[1] - radius],
+                                     [center[0] + radius, center[1] + radius]],
                                     stage="geometry_normalization", source=source)
             records.append((kind, start, 2, None))
         else:
@@ -322,10 +354,13 @@ def normalize_geometry(container, tolerance=None):
             vertices = np.asarray([point for loop in loops for point in loop], dtype=float)
             if vertices.ndim != 2 or vertices.shape[1] != 3:
                 fail("polygon coordinates must be XYZ triples", source)
-            policy.check_resolution(vertices, stage="geometry_normalization", source=source)
+            policy.check_resolution(vertices[:, :2], stage="geometry_normalization", source=source)
             polygon_states[source] = _polygon_loop_topology(loops, policy, source)
-            if np.ptp(vertices[:, 2]) > policy.absolute:
-                fail("2.5D polygon vertices must lie on one Z plane", source)
+            if np.any(vertices[:, 2] != vertices[0, 2]):
+                raise GeometryToleranceError(
+                    "2.5D polygon vertices must lie on one Z plane; Z is not normalized",
+                    code="invalid_geometry", stage="geometry_normalization", source=source,
+                )
             bottom = vertices.copy()
             bottom[:, 2] = np.min(vertices[:, 2])
             points.extend(bottom.tolist())
@@ -334,18 +369,20 @@ def normalize_geometry(container, tolerance=None):
 
     if not points:
         return container
-    policy.check_resolution(points, stage="geometry_normalization", source="source vertices")
-    normalized = canonicalize_points(points, policy, stage="geometry_normalization",
-                                     source=[source for _, source, _ in features])
+    normalized = np.asarray(points, dtype=float)
+    if not np.all(np.isfinite(normalized)):
+        raise ValueError("geometry coordinates must be finite")
+    policy.check_resolution(normalized[:, :2], stage="geometry_normalization", source="source vertices")
+    normalized[:, :2] = canonicalize_points(normalized[:, :2], policy, stage="geometry_normalization",
+                                            source=[source for _, source, _ in features])
     for (feature, source, _), original, (kind, start, count, sizes) in zip(features, originals, records):
         geometry = feature["geometry"]
         if kind == "BoxGeometry":
             bottom, top = normalized[start:start + 2]
-            if np.any(top - bottom <= policy.absolute):
+            if np.any(top[:2] - bottom[:2] <= policy.absolute):
                 fail("normalization would collapse a material box", source)
             geometry["bottom_left"] = bottom.tolist()
-            geometry["top_right"] = [*top[:2], float(bottom[2])]
-            geometry["thk"] = float(top[2] - bottom[2])
+            geometry["top_right"] = [*top[:2], original["top_right"][2]]
             original_lower = np.minimum(original["bottom_left"][:2], original["top_right"][:2])
             original_upper = np.maximum(original["bottom_left"][:2], original["top_right"][:2])
             before = np.asarray([[x, y, z] for x in (original_lower[0], original_upper[0])
@@ -356,15 +393,10 @@ def normalize_geometry(container, tolerance=None):
             _check_surface_motion(before, after, policy, source)
         elif kind == "CylinderGeometry":
             bottom, top = normalized[start:start + 2]
-            if top[2] - bottom[2] <= policy.absolute:
-                fail("normalization would collapse a material cylinder", source)
             geometry["center"] = bottom.tolist()
-            geometry["thk"] = float(top[2] - bottom[2])
         else:
             vertices = normalized[start:start + count]
             top = normalized[start + count]
-            if top[2] - vertices[0, 2] <= policy.absolute:
-                fail("normalization would collapse a material polygon", source)
             loops, cursor = [], 0
             for size in sizes:
                 loop = vertices[cursor:cursor + size]
@@ -382,7 +414,6 @@ def normalize_geometry(container, tolerance=None):
             _validate_polygon_topology(original["polys"], loops, policy, source,
                                        original_state=polygon_states[source])
             geometry["polys"] = loops
-            geometry["thk"] = float(top[2] - vertices[0, 2])
             original_vertices = np.asarray([point for loop in original["polys"] for point in loop])
             before = np.concatenate((original_vertices,
                                      original_vertices + [0, 0, original["thk"]]))

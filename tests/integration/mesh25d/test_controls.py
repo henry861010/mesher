@@ -22,7 +22,9 @@ def section(method, start=0, end=35, size=10):
 class ControlIntegrationTests(unittest.TestCase):
     def test_control_geometry_errors_retain_structured_context(self):
         model = _box_structure()["root"]
-        control = section("Z_SECTION_TOP", size=.001)
+        control = {"method": "3D_REGION", "coordinateMode": "absolute", "label": "XY",
+                   "elementSize": .001, "region": {"type": "box", "min": {"x": 0, "y": 0, "z": 0},
+                                                  "max": {"x": 2, "y": 2, "z": 1}}}
         with self.assertRaises(GeometryToleranceError) as caught:
             resolve_controls(model, model, [control], global_element_size=1)
         self.assertEqual(caught.exception.code, "feature_below_resolution")
@@ -40,6 +42,17 @@ class ControlIntegrationTests(unittest.TestCase):
         self.assertEqual(caught.exception.context["stage"], "control_division")
         self.assertEqual(caught.exception.context["measured_distance"], 1e-10)
         self.assertEqual(caught.exception.context["control_index"], 0)
+
+    def test_z_section_retains_sub_tolerance_remainder_and_element_size(self):
+        model = _box_structure()["root"]
+        for method in ("Z_SECTION_TOP", "Z_SECTION_BOT", "Z_SECTION_CENTER"):
+            with self.subTest(method=method):
+                control = section(method, end=.0014, size=.001)
+                resolved = resolve_controls(model, model, [control], global_element_size=1)
+                cuts = sorted({value for c in resolved.z for value in (c["start"], c["end"])})
+                self.assertEqual(cuts[0], 0)
+                self.assertEqual(cuts[-1], .0014)
+                self.assertEqual(len(cuts), 3)
 
     def test_section_methods_produce_their_own_remainder_layers(self):
         structure = _box_structure(side=40)

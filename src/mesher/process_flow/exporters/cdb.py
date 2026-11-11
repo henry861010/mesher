@@ -62,7 +62,8 @@ def write_cdb_text(
         handle.write("# Format: raw mesh array sections\n")
         handle.write(f"# unit_system={unit_system}\n")
         handle.write(f"# geometry_tolerance={policy.absolute!r}\n")
-        handle.write("# tolerance_policy_version=1\n")
+        handle.write("# coordinate_alignment=bounded_xy_equivalence\n")
+        handle.write("# tolerance_policy_version=3\n")
         handle.write(f"node_count={mesh.node_count}\n")
         handle.write(f"element_count={mesh.element_count}\n")
         handle.write(f"component_count={mesh.component_count}\n")
@@ -192,8 +193,9 @@ def write_cdb_text(
         "sectionCount": len(mesh.sections),
         "setCount": len(sets),
         "geometryTolerance": policy.absolute,
+        "coordinateAlignment": "bounded_xy_equivalence",
         "unitSystem": unit_system,
-        "tolerancePolicyVersion": "1",
+        "tolerancePolicyVersion": "3",
     }
 
 

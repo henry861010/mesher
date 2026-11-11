@@ -74,6 +74,8 @@ def build_mesh(
             "planarElementSize": plan2d.element_size,
             "symmetry": normalized_symmetry.value,
             "geometryTolerance": tolerance.absolute,
+            "coordinateAlignment": "bounded_xy_equivalence",
+            "tolerancePolicyVersion": "3",
             "unitSystem": mesh_control["unitSystem"],
             "regionMeshing": region_meshing,
             **({"adapterRegions": plan2d.adaptive.region_summary() if plan2d.adaptive else []}
@@ -100,7 +102,7 @@ def build_mesh(
         current=0, total=max(0, len(layer_infos) - 1), unit="layers",
     )
     mesh = build_3d_mesh(mesh_2d, plan3d, progress=progress)
-    EditorMesh3D.set_boundary(mesh, normalized_symmetry.value, tolerance=tolerance)
+    EditorMesh3D.set_boundary(mesh, normalized_symmetry.value, tolerance=tolerance, exact_z=True)
     _complete_stage(
         progress, "building_3d_mesh", stage,
         data={

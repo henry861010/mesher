@@ -153,8 +153,9 @@ class WorkerIntegrationTests(unittest.TestCase):
                     "sectionCount": 0,
                     "setCount": 3,
                     "geometryTolerance": 0.001,
+                    "coordinateAlignment": "bounded_xy_equivalence",
                     "unitSystem": "um",
-                    "tolerancePolicyVersion": "1",
+                    "tolerancePolicyVersion": "3",
                 },
             )
             cdb = output_path.read_text(encoding="utf-8")
@@ -347,7 +348,7 @@ class WorkerIntegrationTests(unittest.TestCase):
             self.assertEqual(set(metadata), {
                 "outputPath", "nodeCount", "elementCount", "componentCount",
                 "typeCount", "realCount", "sectionCount", "setCount",
-                "geometryTolerance", "unitSystem", "tolerancePolicyVersion",
+                "geometryTolerance", "unitSystem", "tolerancePolicyVersion", "coordinateAlignment",
             })
             self.assertEqual(metadata["outputPath"], str(output_path))
             self.assertEqual(metadata["componentCount"], 2)

@@ -24,6 +24,7 @@ class EditorMesh3D:
         model_type: Literal["full", "upper_right_quarter", "upper_half", "right_half"],
         *,
         tolerance=None,
+        exact_z=False,
     ) -> Mesh3D:
         """Replace ``fix_x``, ``fix_y`` and ``fix_z`` node sets in place.
 
@@ -45,6 +46,8 @@ class EditorMesh3D:
         raise ``GeometryToleranceError`` before changing any sets. No nodes
         are created or moved. Other sets and all mesh arrays are preserved;
         the original mesh is returned. Set indices are zero-based node rows.
+        ``exact_z=True`` selects only the exact minimum Z plane while retaining
+        the XY tolerance, so nearby thin layers cannot enter the bottom sets.
         """
         if not isinstance(mesh3d, Mesh3D):
             raise TypeError("mesh3d must be a Mesh3D instance")
@@ -55,10 +58,11 @@ class EditorMesh3D:
         nodes = mesh3d.nodes
         if not len(nodes):
             raise ValueError("mesh3d must contain nodes to set boundary conditions")
-        policy.check_resolution(nodes, stage="boundary_selection")
+        policy.check_resolution(nodes[:, :2] if exact_z else nodes, stage="boundary_selection")
 
         lower = np.min(nodes, axis=0)
-        bottom = np.flatnonzero(within_distance(nodes[:, 2:3], lower[2], policy))
+        bottom = np.flatnonzero(nodes[:, 2] == lower[2] if exact_z else
+                               within_distance(nodes[:, 2:3], lower[2], policy))
         xy = nodes[bottom, :2]
         xy_min, xy_max = np.min(xy, axis=0), np.max(xy, axis=0)
         center_xy = xy_min / 2 + xy_max / 2

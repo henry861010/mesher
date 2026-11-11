@@ -57,14 +57,15 @@ def resolve_controls(
     for obj in objects:
         context = f"controls[{obj.source_index}] ({obj.label!r})"
         try:
-            if hasattr(obj, "element_size") and obj.element_size <= policy.absolute:
+            xy_constraints = obj.get_25D_xy_controls()
+            if xy_constraints and obj.element_size <= policy.absolute:
                 raise GeometryToleranceError(
                     "control element size must exceed geometryTolerance",
                     code="feature_below_resolution", stage="control_normalization",
                     measured_distance=float(obj.element_size), tolerance=policy.absolute,
                 )
-            xy_constraints = obj.get_25D_xy_controls()
-            z.extend(obj.get_25D_z_controls(tolerance=policy, global_element_size=global_element_size))
+            z.extend(obj.get_25D_z_controls(tolerance=policy, global_element_size=global_element_size,
+                                           preserve_z=True))
         except GeometryToleranceError as exc:
             _raise_control_error(exc, context, obj.source_index, policy)
         except ValueError as exc:

@@ -546,6 +546,8 @@ class BuilderIntegrationTests(unittest.TestCase):
                         "planarElementSize": 1.0,
                         "symmetry": "full",
                         "geometryTolerance": 0.001,
+                        "coordinateAlignment": "bounded_xy_equivalence",
+                        "tolerancePolicyVersion": "3",
                         "unitSystem": "um",
                         "regionMeshing": "grid",
                     },

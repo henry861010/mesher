@@ -84,9 +84,12 @@ class Dragger:
             top-layer 3D node id. ``-1`` means the node is not active.
     """
 
-    def __init__(self, *, tolerance=None):
+    def __init__(self, *, tolerance=None, preserve_z=False):
         """Initialize empty 2D state, 3D output buffers, and component table."""
         self.tolerance = resolve_tolerance(tolerance)
+        # Process-flow CDB alignment is XY-only. Generic Dragger callers keep
+        # the existing geometric Z checks unless they explicitly preserve Z.
+        self.preserve_z = preserve_z
         ### component
         self.comps = {"EMPTY":0}
         
@@ -527,14 +530,15 @@ class Dragger:
         distance = float(end) - float(begin)
         if distance <= 0:
             return 0
-        if within_distance(begin, end, self.tolerance):
+        if not self.preserve_z and within_distance(begin, end, self.tolerance):
             raise GeometryToleranceError(
                 "a material layer cannot be resolved at geometryTolerance",
                 code="feature_below_resolution", stage="extrusion", begin=begin,
                 end=end, measured_distance=distance, tolerance=self.tolerance.absolute,
             )
-        self.tolerance.check_resolution([begin, end], stage="extrusion")
-        if element_size <= self.tolerance.absolute:
+        if not self.preserve_z:
+            self.tolerance.check_resolution([begin, end], stage="extrusion")
+        if not self.preserve_z and element_size <= self.tolerance.absolute:
             raise GeometryToleranceError(
                 "requested Z element size must exceed geometryTolerance",
                 code="feature_below_resolution", stage="extrusion",
@@ -543,7 +547,7 @@ class Dragger:
             )
         drag_num = subdivision_count(distance, element_size, rounding="floor")
         element_size = distance / drag_num
-        if element_size <= self.tolerance.absolute:
+        if not self.preserve_z and element_size <= self.tolerance.absolute:
             raise GeometryToleranceError(
                 "requested Z subdivision would create unresolved layers",
                 code="feature_below_resolution", stage="extrusion",
@@ -554,8 +558,10 @@ class Dragger:
         z_cuts = np.linspace(begin, end, drag_num + 1, dtype=self.nodes.dtype)
         gaps = np.diff(z_cuts)
         if (np.any(~np.isfinite(z_cuts)) or np.any(gaps <= 0)
-                or np.any(within_distance(z_cuts[:-1, None], z_cuts[1:, None], self.tolerance))):
+                or (not self.preserve_z and np.any(within_distance(
+                    z_cuts[:-1, None], z_cuts[1:, None], self.tolerance)))):
             raise GeometryToleranceError(
+                "Z subdivision cannot represent distinct cuts" if self.preserve_z else
                 "Z subdivision cannot represent distinct cuts above geometryTolerance",
                 code="numeric_resolution_exceeded", stage="extrusion",
                 measured_distance=float(np.min(gaps)), tolerance=self.tolerance.absolute,
@@ -732,7 +738,8 @@ class Dragger:
             sections=self.sections,
             element_node_num=self.element_node_num[: self.element_num],
         )
-        self.tolerance.check_resolution(mesh.nodes, stage="solid_validation")
+        self.tolerance.check_resolution(mesh.nodes[:, :2] if self.preserve_z else mesh.nodes,
+                                        stage="solid_validation")
         if mesh.element_count:
             corners = mesh.nodes[mesh.elements[:, :8]]
             heights = corners[:, 4:, 2] - corners[:, :4, 2]
@@ -741,7 +748,7 @@ class Dragger:
                     "extrusion produced a solid with non-positive height",
                     code="invalid_solid", stage="solid_validation",
                 )
-            if np.any(within_distance(corners[:, :4, 2:3], corners[:, 4:, 2:3], self.tolerance)):
+            if not self.preserve_z and np.any(within_distance(corners[:, :4, 2:3], corners[:, 4:, 2:3], self.tolerance)):
                 raise GeometryToleranceError(
                     "extrusion produced a solid below geometryTolerance",
                     code="feature_below_resolution", stage="solid_validation",

@@ -180,12 +180,14 @@ class MeshControl(ABC):
 
     @abstractmethod
     def get_25D_z_controls(
-        self, tolerance=None, *, global_element_size: float | None = None,
+        self, tolerance=None, *, global_element_size: float | None = None, preserve_z: bool = False,
     ) -> list[ZControl]:
         """Return Z constraints; Z_POINT requires global_element_size.
 
         tolerance is the shared absolute geometric distance policy. An
         empty list explicitly means this control imposes no Z constraint.
+        ``preserve_z=True`` retains positive Z remainders without applying
+        that geometric tolerance; used by the XY-only process-flow pipeline.
         """
         raise NotImplementedError
 
@@ -218,8 +220,9 @@ class ZSectionControl(MeshControl):
         return [ZControl(element_size=self.element_size, method=self.method, start=start, end=end)
                 for start, end in zip(points, points[1:])]
 
-    def _division(self, tolerance):
-        distance = resolve_tolerance(tolerance).absolute
+    def _division(self, tolerance, *, preserve_z=False):
+        policy = resolve_tolerance(tolerance)
+        distance = 0.0 if preserve_z else policy.absolute
         if self._length < self.element_size:
             return 0, 0.0
         count = subdivision_count(self._length, self.element_size, rounding="floor")
@@ -232,7 +235,7 @@ class ZSectionControl(MeshControl):
 class MeshControl_ZsectionAvg(ZSectionControl):
     METHOD = "Z_SECTION_AVG"
 
-    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None) -> list[ZControl]:
+    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None, preserve_z=False) -> list[ZControl]:
         resolve_tolerance(tolerance)
         return self._sections()
 
@@ -240,8 +243,8 @@ class MeshControl_ZsectionAvg(ZSectionControl):
 class MeshControl_ZsectionTop(ZSectionControl):
     METHOD = "Z_SECTION_TOP"
 
-    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None) -> list[ZControl]:
-        count, remainder = self._division(tolerance)
+    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None, preserve_z=False) -> list[ZControl]:
+        count, remainder = self._division(tolerance, preserve_z=preserve_z)
         if not remainder:
             return self._sections()
         return self._sections(self.start_z + count * self.element_size)
@@ -250,8 +253,8 @@ class MeshControl_ZsectionTop(ZSectionControl):
 class MeshControl_ZsectionBot(ZSectionControl):
     METHOD = "Z_SECTION_BOT"
 
-    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None) -> list[ZControl]:
-        _, remainder = self._division(tolerance)
+    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None, preserve_z=False) -> list[ZControl]:
+        _, remainder = self._division(tolerance, preserve_z=preserve_z)
         if not remainder:
             return self._sections()
         return self._sections(self.start_z + remainder)
@@ -260,8 +263,8 @@ class MeshControl_ZsectionBot(ZSectionControl):
 class MeshControl_ZsectionCenter(ZSectionControl):
     METHOD = "Z_SECTION_CENTER"
 
-    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None) -> list[ZControl]:
-        count, remainder = self._division(tolerance)
+    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None, preserve_z=False) -> list[ZControl]:
+        count, remainder = self._division(tolerance, preserve_z=preserve_z)
         if not remainder:
             return self._sections()
         lower_end = self.start_z + (count // 2) * self.element_size
@@ -275,7 +278,7 @@ class MeshControl_Zpoint(MeshControl):
         super().__init__(control, geometry)
         self.z = self._coordinate(control["z"], "z", "z")
 
-    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None) -> list[ZControl]:
+    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None, preserve_z=False) -> list[ZControl]:
         resolve_tolerance(tolerance)
         size = _positive_number(global_element_size, "global_element_size")
         return [ZControl(element_size=size, method=self.method, start=self.z, end=self.z)]
@@ -313,7 +316,7 @@ class MeshControl_3dRegion(MeshControl):
             raise ValueError(f"Unsupported region type {region['type']}")
         return region
 
-    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None) -> list[ZControl]:
+    def get_25D_z_controls(self, tolerance=None, *, global_element_size=None, preserve_z=False) -> list[ZControl]:
         """3D_REGION controls only the XY plane in the 25D mesher."""
         resolve_tolerance(tolerance)
         return []

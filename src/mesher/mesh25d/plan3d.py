@@ -12,7 +12,7 @@ from ..mesh3d.controls import LayerInfo, ZControl
 from ..mesh3d.extrusion import Dragger
 from ..mesh3d.model import Mesh3D
 from .progress import ProgressCallback
-from ..tolerance import GeometryTolerance, canonicalize_values, resolve_tolerance
+from ..tolerance import GeometryTolerance, resolve_tolerance
 
 
 @dataclass(frozen=True)
@@ -39,9 +39,8 @@ def plan_layers(
         return LayerPlan([], policy)
     values = [float(assignment["z"]) for assignment in assignments]
     values.extend(float(control[key]) for control in controls for key in ("start", "end"))
-    policy.check_resolution(np.asarray(values), stage="layer_planning", source="Z boundaries")
-    fixed = [True] * len(assignments) + [False] * (2 * len(controls))
-    canonical = canonicalize_values(values, policy, fixed=fixed, stage="layer_planning", source="Z boundaries")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Z boundaries must be finite")
     events: dict[float, list[dict[str, Any]]] = {}
     for assignment in sorted(assignments, key=lambda item: (item["z"], item["type"])):
         events.setdefault(assignment["z"], []).append(assignment)
@@ -50,7 +49,7 @@ def plan_layers(
     intervals = []
     for index, control in enumerate(controls):
         offset = len(assignments) + 2 * index
-        start, end = canonical[offset:offset + 2]
+        start, end = values[offset:offset + 2]
         if start == end:
             if model_start <= start <= model_end:
                 boundaries.add(start)
@@ -78,7 +77,7 @@ def build_3d_mesh(
     *,
     progress: ProgressCallback | None = None,
 ) -> Mesh3D:
-    dragger = Dragger(tolerance=plan.tolerance)
+    dragger = Dragger(tolerance=plan.tolerance, preserve_z=True)
     dragger.set_2D(mesh.nodes, _clockwise_elements(mesh.elements))
     return dragger.build(plan.layer_infos, progress=progress)
 

@@ -40,10 +40,10 @@ class LayerPlanningTests(unittest.TestCase):
         self.assertEqual([info["z"] for info in infos], [0, 2, 5, 8, 10])
         self.assertEqual([info["element_size"] for info in infos], [1, 4, 4, 2, 4])
 
-    def test_distinct_fixed_material_boundaries_within_tolerance_are_rejected(self):
+    def test_distinct_fixed_material_z_boundaries_within_tolerance_are_preserved(self):
         assignments = [{"z": z, "type": 3} for z in (0, 0.001, 1)]
-        with self.assertRaisesRegex(ValueError, "fixed_constraint_conflict"):
-            plan_layers(assignments, [], element_size=1)
+        self.assertEqual([info["z"] for info in plan_layers(assignments, [], element_size=1).layer_infos],
+                         [0, .001, 1])
 
     def test_no_material_events_produce_no_layers(self):
         self.assertEqual(plan_layers([], [interval(0, 10, 1)], element_size=1).layer_infos, [])

@@ -117,6 +117,20 @@ Existing `1.0.0` input remains supported and defaults to `0.001`. See the
 [API migration guide](docs/tolerance-migration.md) for changed arguments,
 error codes, and test migration reasons.
 
+Process-flow normalization uses bounded XY equivalence before meshing: nearby
+X/Y coordinates share one deterministic coordinate, and XY controls use the same
+material anchors. Source Z coordinates and thicknesses are preserved; Z controls
+and layer boundaries are not coalesced using geometryTolerance. Thin positive Z
+layers are retained when their endpoints and subdivisions remain representable.
+The bottom boundary sets use the exact minimum Z plane. Sub-tolerance XY gaps
+between materials may close into shared interfaces. Each coordinate group must span at most T and each point must move
+at most T in Euclidean distance; a chain whose total span exceeds T is rejected.
+Collapsed XY footprints, distinct materials collapsing onto the same
+volume, and separated existing interfaces still fail with source diagnostics.
+This alignment does not impose a minimum mesh size or aspect-ratio guarantee.
+CDB headers and worker metadata record `coordinateAlignment` and tolerance
+policy version `3` (`bounded_xy_equivalence`).
+
 ## 3D mesh editing
 
 `EditorMesh3D` is a stateless NumPy-only API. Boundary selection updates the
