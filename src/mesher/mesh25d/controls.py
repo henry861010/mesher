@@ -138,5 +138,5 @@ def _normalize_xy_controls(controls, sources, container, policy):
                 cursor += size
                 loops.append(loop.tolist())
             _validate_polygon_topology(control["region"]["dim"], loops, policy, source,
-                                       stage="control_normalization")
+                                       stage="control_normalization", allow_vertex_contacts=False)
             control["region"]["dim"] = loops

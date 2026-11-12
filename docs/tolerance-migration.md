@@ -57,6 +57,11 @@ Jacobian、體積、網格尺寸與擴展距離保留各自單位；不能把這
 保留相同 policy identity，diagnostics 分開記錄幾何容差及 numerical error budget。
 CDB 座標採 float64 roundtrip 精度。
 
+Process-flow polygon loops 可在雙方既有頂點精確共點，前提是完整 shell／holes 組合有效，
+且 normalization 保留相同頂點間的接觸與包含關係。共邊、交叉及正距離不大於 T 的
+loop gap 仍拒絕；接觸身分改變回報 `polygon_contact_change`。
+規則、合成 UF 回歸與效能重現見 [UF 共點與拓樸保護](uf-shared-vertices.md)。
+
 ## 幾何與失敗契約
 
 - 距離恰好等於 T 屬於接觸／近重合。臨界點距離使用精確 fallback，不以固定

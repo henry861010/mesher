@@ -8,6 +8,7 @@ features that would lose their material volume or keep-out-zone.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from fractions import Fraction
 import heapq
 
@@ -29,9 +30,44 @@ def _features(container, path="root"):
         yield from _features(child, f"{path}.children[{index}]")
 
 
+@dataclass(frozen=True)
+class _PolygonTopology:
+    nesting: frozenset[tuple[int, int]]
+    # Loop and source vertex identities survive bounded coordinate motion.
+    contacts: frozenset[tuple[int, int, int, int]]
+
+
+def _touching_polygon_regions(polygons, nesting, contacts):
+    """Assemble only shells affected by contact, including all sibling holes."""
+    from shapely.geometry import Polygon
+
+    parents = [None] * len(polygons)
+    depths = [0] * len(polygons)
+    areas = [polygon.area for polygon in polygons]
+    for outer, inner in nesting:
+        depths[inner] += 1
+        parent = parents[inner]
+        if parent is None or areas[outer] < areas[parent]:
+            parents[inner] = outer
+    children = [[] for _ in polygons]
+    for inner, outer in enumerate(parents):
+        if outer is not None:
+            children[outer].append(inner)
+    affected = set()
+    for left, right, _, _ in contacts:
+        for index in (left, right):
+            affected.add(parents[index] if depths[index] % 2 else index)
+    for shell in sorted(affected):
+        holes = children[shell]
+        yield [shell, *holes], Polygon(
+            polygons[shell].exterior,
+            [polygons[hole].exterior for hole in holes],
+        )
+
+
 def _polygon_loop_topology(loops, policy, source, *, normalized=False,
-                           stage="geometry_normalization"):
-    """Check loop validity, separation and nesting using spatial candidates."""
+                           stage="geometry_normalization", allow_vertex_contacts=True):
+    """Check separation/nesting and retain valid, exact shared-vertex contacts."""
     from shapely.geometry import Polygon, box
     from shapely.strtree import STRtree
 
@@ -46,6 +82,29 @@ def _polygon_loop_topology(loops, policy, source, *, normalized=False,
             )
     tree = STRtree(polygons)
     nesting = set()
+    contacts = set()
+    vertex_maps = {}
+
+    def vertices(index):
+        if index not in vertex_maps:
+            mapping = {}
+            for vertex, point in enumerate(loops[index]):
+                # An optional repeated closing vertex has the first identity.
+                mapping.setdefault(tuple(point[:2]), vertex)
+            vertex_maps[index] = mapping
+        return vertex_maps[index]
+
+    def fail_contact(indices, gap=0.0):
+        raise GeometryToleranceError(
+            "polygon loops must remain separate or meet only at valid shared vertices"
+            if allow_vertex_contacts else "polygon loops must remain separate at geometryTolerance",
+            code="invalid_geometry" if not normalized and gap == 0
+            else "feature_below_resolution",
+            stage=stage, source=source, reason="polygon_loop_contact" if gap == 0
+            else "polygon_loop_gap", loop_indices=indices,
+            measured_distance=gap, tolerance=policy.absolute,
+        )
+
     for index, polygon in enumerate(polygons):
         xmin, ymin, xmax, ymax = polygon.bounds
         search = box(xmin - policy.absolute, ymin - policy.absolute,
@@ -56,36 +115,62 @@ def _polygon_loop_topology(loops, policy, source, *, normalized=False,
                 continue
             right = polygons[other]
             gap = float(polygon.boundary.distance(right.boundary))
-            if gap <= policy.absolute:
-                # Source crossings/tangencies are invalid input. A positive
-                # source gap below T is a real feature that must not vanish.
-                invalid_source = not normalized and gap == 0
-                raise GeometryToleranceError(
-                    "polygon loops must remain separate at geometryTolerance",
-                    code="invalid_geometry" if invalid_source else "feature_below_resolution",
-                    stage=stage, source=source, reason="polygon_loop_contact" if gap == 0
-                    else "polygon_loop_gap", loop_indices=[other, index],
-                    measured_distance=gap, tolerance=policy.absolute,
-                )
+            if 0 < gap <= policy.absolute:
+                # A positive sub-T gap remains a real feature, not a contact.
+                fail_contact([other, index], gap)
+            if gap == 0 and not allow_vertex_contacts:
+                fail_contact([other, index])
             if polygon.contains(right):
                 nesting.add((index, other))
             elif right.contains(polygon):
                 nesting.add((other, index))
-    return nesting
+            elif gap == 0 and polygon.overlaps(right):
+                # Crossings can occur at vertices of both rings as well.
+                fail_contact([other, index])
+            if gap == 0:
+                intersection = polygon.boundary.intersection(right.boundary)
+                if intersection.geom_type == "Point":
+                    points = [intersection]
+                elif intersection.geom_type == "MultiPoint":
+                    points = intersection.geoms
+                else:
+                    fail_contact([other, index])
+                left_vertices, right_vertices = vertices(other), vertices(index)
+                for point in points:
+                    key = tuple(point.coords[0])
+                    if key not in left_vertices or key not in right_vertices:
+                        fail_contact([other, index])
+                    contacts.add((other, index, left_vertices[key], right_vertices[key]))
+    if contacts:
+        # Pairwise valid tangencies can jointly disconnect a shell's interior.
+        for indices, region in _touching_polygon_regions(polygons, nesting, contacts):
+            if region.is_empty or not region.is_valid or region.area <= 0:
+                fail_contact(indices)
+    return _PolygonTopology(frozenset(nesting), frozenset(contacts))
 
 
 def _validate_polygon_topology(original_loops, normalized_loops, policy, source,
-                               *, stage="geometry_normalization", original_state=None):
-    before = (_polygon_loop_topology(original_loops, policy, source, stage=stage)
+                               *, stage="geometry_normalization", original_state=None,
+                               allow_vertex_contacts=True):
+    before = (_polygon_loop_topology(original_loops, policy, source, stage=stage,
+                                    allow_vertex_contacts=allow_vertex_contacts)
               if original_state is None else original_state)
     after = _polygon_loop_topology(normalized_loops, policy, source,
-                                   normalized=True, stage=stage)
-    if after != before:
+                                   normalized=True, stage=stage,
+                                   allow_vertex_contacts=allow_vertex_contacts)
+    if after.nesting != before.nesting:
         raise GeometryToleranceError(
             "normalization would change polygon hole containment",
             code="feature_below_resolution", stage=stage, source=source,
             reason="polygon_containment_change", tolerance=policy.absolute,
-            original_nesting=sorted(before), normalized_nesting=sorted(after),
+            original_nesting=sorted(before.nesting), normalized_nesting=sorted(after.nesting),
+        )
+    if after.contacts != before.contacts:
+        raise GeometryToleranceError(
+            "normalization would change polygon vertex contacts",
+            code="feature_below_resolution", stage=stage, source=source,
+            reason="polygon_contact_change", tolerance=policy.absolute,
+            original_contacts=sorted(before.contacts), normalized_contacts=sorted(after.contacts),
         )
 
 
