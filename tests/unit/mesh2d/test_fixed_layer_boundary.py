@@ -185,20 +185,27 @@ class FixedLayerBoundaryTests(unittest.TestCase):
         mesh = generate_rectilinear_mesh(1, [0, 4], [0, 4])
         outline = EditorMesh2D.outlines(mesh)[0]
         target, _ = _global_target(mesh, outline, 2)
-        original_validator = _mesher._validate_patch
-        calls = []
+        original_restore = _mesher.restore_fixed_boundary
+        events = []
+
+        def restore(*args):
+            original_restore(*args)
+            events.append("restored")
 
         def validate(*args):
-            calls.append(args[1].copy())
-            if len(calls) == 2:
-                raise QuadLayerError("injected restored-coordinate validation failure")
-            return original_validator(*args)
+            self.assertEqual(events, ["restored"])
+            world = args[4]["_represented_world_nodes"]
+            represented = (world[:, :2] - args[4]["origin"]) / args[4]["scale"]
+            np.testing.assert_array_equal(args[1][:, :2], represented)
+            events.append("validated")
+            raise QuadLayerError("injected restored-coordinate validation failure")
 
-        with patch.object(_mesher, "_validate_patch", side_effect=validate):
+        with patch.object(_mesher, "restore_fixed_boundary", side_effect=restore), \
+                patch.object(_mesher, "_validate_patch", side_effect=validate):
             error = self.assert_atomic_failure(mesh, lambda: _mesher._generate_layer_adaptive_mesh(
                 mesh, outline, 2, outline_o=target, fixed_outer_boundary=True))
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(error.context["stage"], "fixed_boundary_world_validation")
+        self.assertEqual(events, ["restored", "validated"])
+        self.assertEqual(error.context["stage"], "final_validation")
 
     def test_coordinate_match_cannot_replace_a_fixed_target_id(self):
         mesh = generate_rectilinear_mesh(1, [0, 4], [0, 4])

@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections import defaultdict
 
 import numpy as np
+from ....tolerance import within_distance
 
-from ._geometry import BoxIndex, area, cross, intervals_cover, segment_contacts
+from ._geometry import BoxIndex, area, cross, intervals_cover, segment_relations
 from ._old_mesh import edge_membership, edge_owner_count, old_edge_keys
 from ._patterns import covered_intervals, occupied_intervals
 from ._types import QuadLayerError, UnmeshableDirectQuadLayout
@@ -62,73 +63,59 @@ def _check_overlaps(new_cells, old_cells, new_index, old_index, tol):
                 )
 
 
-def _edge_conflicts(edge_ids, edge, other_ids, others, tol):
+def _edge_conflicts(edge_ids, edge, other_ids, others, tol, represented=None):
     """Crossings, overlaps and coordinate-only contacts lack shared topology."""
     if not len(others):
         return np.zeros(0, dtype=bool)
     a, b = edge
     c, d = others[:, 0], others[:, 1]
     u, v = b - a, d - c
-    length = float(np.linalg.norm(u))
-    other_lengths = np.linalg.norm(v, axis=1)
-    if length <= tol or np.any(other_lengths <= tol):
-        _failure("mesh contains a zero-length geometric edge")
-    determinant = cross(u, v)
-    product0, product1 = u[0] * v[:, 1], u[1] * v[:, 0]
-    uncertain = ((np.abs(determinant) <= 8.0 * np.finfo(float).eps
-                  * (np.abs(product0) + np.abs(product1)))
-                 & (product0 != 0) & (product1 != 0))
-    # Geometric tolerance is not an angular cutoff: an arbitrarily shallow
-    # nonparallel segment can still cross a short edge in its interior.
-    transverse = (determinant != 0) & ~uncertain
+    if represented is None:
+        if np.linalg.norm(u) <= tol or np.any(np.linalg.norm(v, axis=1) <= tol):
+            _failure("mesh contains a zero-length geometric edge")
     shared = np.any(edge_ids[:, None, None] == other_ids[None, :, :], axis=(0, 2))
     identical = np.all(other_ids == edge_ids, axis=1)
+    # Nonparallel edges sharing an actual node can only intersect at that node.
+    # Retain nearly parallel candidates for exact overlap classification.
+    determinant = cross(u, v)
+    products = np.abs(u[0] * v[:, 1]) + np.abs(u[1] * v[:, 0])
+    possible_overlap = np.abs(determinant) <= 8 * np.finfo(float).eps * products
+    ids = np.flatnonzero(~identical & (~shared | possible_overlap))
     conflicts = np.zeros(len(others), dtype=bool)
-    if np.any(transverse):
-        ids = np.flatnonzero(transverse)
-        fraction = cross(c[ids] - a, v[ids]) / determinant[ids]
-        other_fraction = cross(c[ids] - a, u) / determinant[ids]
-        contact = ((fraction >= -tol / length) & (fraction <= 1 + tol / length)
-                   & (other_fraction >= -tol / other_lengths[ids])
-                   & (other_fraction <= 1 + tol / other_lengths[ids]))
-        conflicts[ids] = contact & ~shared[ids]
-    parallel = (determinant == 0) & ~uncertain
-    collinear = parallel & (np.abs(cross(u, c - a)) <= tol * length)
-    if np.any(collinear):
-        ids = np.flatnonzero(collinear)
-        t0 = (c[ids] - a) @ u / (length * length)
-        t1 = (d[ids] - a) @ u / (length * length)
-        lower = np.maximum(0.0, np.minimum(t0, t1))
-        upper = np.minimum(1.0, np.maximum(t0, t1))
-        overlap = (upper - lower) * length
-        conflicts[ids] = ((overlap > tol)
-                          | ((overlap >= -tol) & ~shared[ids])) & ~identical[ids]
-    for index in np.flatnonzero(uncertain):
-        if identical[index]:
-            continue
-        contacts = segment_contacts(a, b, c[index], d[index], tol)
-        if len(contacts) == 2 and np.linalg.norm(contacts[1] - contacts[0]) > tol:
-            conflicts[index] = True
-        elif contacts and not shared[index]:
-            conflicts[index] = True
+    if len(ids):
+        exact = None
+        if represented is not None:
+            world, origin, scale, physical_tol = represented
+            exact = (world[edge_ids, :2], world[other_ids[ids], :2], origin, scale, physical_tol)
+        contact, first, last = segment_relations(a, b, others[ids], tol, represented=exact)
+        overlap = np.linalg.norm(last - first, axis=1) > tol
+        conflicts[ids] = contact & (~shared[ids] | overlap)
     return conflicts
 
 
-def _check_edge_geometry(new_keys, new_edges, old_keys, old_edges, new_index, old_index, tol):
+def _check_edge_geometry(new_keys, new_edges, old_keys, old_edges, new_index, old_index, tol,
+                         represented=None):
+    padding = tol
+    if represented is not None:
+        # Broad-phase rounding must not discard pairs whose represented world
+        # distance needs the exact threshold predicate below.
+        magnitude = max(float(np.max(np.abs(new_edges), initial=0.)),
+                        float(np.max(np.abs(old_edges), initial=0.)), tol)
+        padding += 64 * np.finfo(float).eps * magnitude
     for i, edge in enumerate(new_edges):
-        lower, upper = edge.min(axis=0) - tol, edge.max(axis=0) + tol
+        lower, upper = edge.min(axis=0) - padding, edge.max(axis=0) + padding
         candidates = new_index.query(lower, upper)
         candidates = candidates[candidates > i]
         if len(candidates):
             bad = candidates[_edge_conflicts(new_keys[i], edge, new_keys[candidates],
-                                             new_edges[candidates], tol)]
+                                             new_edges[candidates], tol, represented)]
             if len(bad):
                 _failure("new mesh edges cross, overlap, or form a hanging node",
                          edges=(new_keys[i].tolist(), new_keys[int(bad[0])].tolist()))
         candidates = old_index.query(lower, upper)
         if len(candidates):
             bad = candidates[_edge_conflicts(new_keys[i], edge, old_keys[candidates],
-                                             old_edges[candidates], tol)]
+                                             old_edges[candidates], tol, represented)]
             if len(bad):
                 raise QuadLayerError(
                     "a new edge crosses or touches existing mesh without a shared node",
@@ -219,6 +206,16 @@ def validate_patch(mesh, nodes, quads, outline, data):
         _failure("the layer omitted a source or front boundary segment")
 
     new_keys = np.asarray(sorted(incidence), dtype=np.int64).reshape(-1, 2)
+    world = data.get("_represented_world_nodes")
+    represented = None
+    if world is not None:
+        represented = (world, data["origin"], data["scale"], data["tolerance"].absolute)
+        edges_world = world[new_keys, :2]
+        short = within_distance(edges_world[:, 0], edges_world[:, 1], data["tolerance"])
+        if np.any(short):
+            raise QuadLayerError("a represented mesh edge is below geometric resolution",
+                                 code="feature_below_resolution", edge=new_keys[np.flatnonzero(short)[0]].tolist(),
+                                 tolerance=data["tolerance"].absolute)
     old_keys = old_edge_keys(mesh.elements, data)
     shared_keys = {tuple(map(int, key)) for key in new_keys[edge_membership(new_keys, old_keys)]}
     source_keys = {tuple(sorted(map(int, edge))) for edge in data["frozen"]}
@@ -257,7 +254,7 @@ def validate_patch(mesh, nodes, quads, outline, data):
     new_edge_index = BoxIndex(new_edges.min(axis=1), new_edges.max(axis=1), tol)
     old_edge_index = BoxIndex(old_edges.min(axis=1), old_edges.max(axis=1), tol)
     _check_edge_geometry(new_keys, new_edges, old_keys, old_edges,
-                         new_edge_index, old_edge_index, tol)
+                         new_edge_index, old_edge_index, tol, represented)
 
     new_cell_index = BoxIndex(new_cells.min(axis=1), new_cells.max(axis=1), tol)
     if old_cell_index is None:

@@ -26,6 +26,14 @@ class _BoxNode:
     right: _BoxNode | None = None
 
 
+def area_epsilon(points, numeric_tol=0.):
+    """Roundoff budget for signed area; independent of physical resolution."""
+    xy = np.asarray(points)[:, :2]
+    perimeter = float(np.linalg.norm(np.roll(xy, -1, axis=0) - xy, axis=1).sum())
+    span = float(np.ptp(xy, axis=0).max())
+    return max(numeric_tol * perimeter, 64 * np.finfo(float).eps * len(xy) * span**2)
+
+
 class BoxIndex:
     """Static, balanced AABB tree with each primitive stored in one leaf.
 
@@ -100,40 +108,157 @@ def on_segment(p, a, b, tol):
     return within_distance(p, nearest, tol)
 
 
-def segment_contacts(a, b, c, d, tol):
-    """Return contact coordinates (two endpoints for an overlap)."""
-    u, v = b - a, d - c
-    lu, lv = float(np.linalg.norm(u)), float(np.linalg.norm(v))
-    determinant = float(cross(u, v))
-    products = abs(float(u[0] * v[1])) + abs(float(u[1] * v[0]))
-    exact = None
-    if products and abs(determinant) <= 8 * np.finfo(float).eps * products:
-        # Resolve cancellation using the actual supplied floating coordinates.
-        # A length tolerance must never turn shallow crossings into parallels.
-        ax, ay, bx, by, cx, cy, dx, dy = map(Fraction, map(float, (*a, *b, *c, *d)))
-        ux, uy, vx, vy = bx - ax, by - ay, dx - cx, dy - cy
-        exact = ux * vy - uy * vx
-        determinant = float(exact)
-    if determinant != 0 or exact:
-        if exact is not None:
-            t = float(((cx - ax) * vy - (cy - ay) * vx) / exact)
-            s = float(((cx - ax) * uy - (cy - ay) * ux) / exact)
+def _exact_segment_contact(a, b, c, d, tol):
+    """Resolve uncertain intersections/distances using the encoded input floats."""
+    a, b, c, d = [tuple(map(Fraction, map(float, p))) for p in (a, b, c, d)]
+
+    def subtract(p, q):
+        return (p[0] - q[0], p[1] - q[1])
+
+    def dot(p, q):
+        return p[0] * q[0] + p[1] * q[1]
+
+    def det(p, q):
+        return p[0] * q[1] - p[1] * q[0]
+
+    def interpolate(p, v, t):
+        return (p[0] + t * v[0], p[1] + t * v[1])
+
+    def project(p, start, vector):
+        squared = dot(vector, vector)
+        if not squared:
+            return start
+        t = max(Fraction(0), min(Fraction(1), dot(subtract(p, start), vector) / squared))
+        return interpolate(start, vector, t)
+
+    u, v, offset = subtract(b, a), subtract(d, c), subtract(c, a)
+    determinant = det(u, v)
+    if determinant:
+        t, s = det(offset, v) / determinant, det(offset, u) / determinant
+        if 0 <= t <= 1 and 0 <= s <= 1:
+            point = np.array(interpolate(a, u, t), dtype=float)
+            return point, point.copy()
+    pairs = [(a, project(a, c, v)), (b, project(b, c, v)),
+             (project(c, a, u), c), (project(d, a, u), d)]
+    squared, first = min((dot(subtract(p, q), subtract(p, q)), p) for p, q in pairs)
+    if squared > Fraction(float(tol)) ** 2:
+        return None
+    if not determinant and dot(u, u) and dot(v, v):
+        low, high = sorted((dot(offset, u) / dot(u, u),
+                            dot(subtract(d, a), u) / dot(u, u)))
+        low, high = max(Fraction(0), low), min(Fraction(1), high)
+        if low <= high:
+            return (np.array(interpolate(a, u, low), dtype=float),
+                    np.array(interpolate(a, u, high), dtype=float))
+    point = np.array(first, dtype=float)
+    return point, point.copy()
+
+
+def _uncertain_cross(first, second, value):
+    products = (np.abs(first[..., 0] * second[..., 1])
+                + np.abs(first[..., 1] * second[..., 0]))
+    return (products != 0) & (np.abs(value) <= 8 * np.finfo(float).eps * products)
+
+
+def segment_relations(a, b, others, tol, *, represented=None):
+    """Batch finite-segment contacts and their endpoints on the first segment.
+
+    Return (contact mask, first points, last points). A nonzero interval denotes
+    overlapping projections of parallel segments within Euclidean distance T;
+    a single point denotes an intersection or nearest-point contact. Inputs use
+    the caller's safe local frame. No angular or length slack inflates T.
+    """
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    others = np.asarray(others, dtype=float).reshape(-1, 2, 2)
+    count = len(others)
+    contact = np.zeros(count, dtype=bool)
+    first = np.broadcast_to(a, (count, 2)).copy()
+    last = first.copy()
+    if not count:
+        return contact, first, last
+    c, d = others[:, 0], others[:, 1]
+    u, v, offset = b - a, d - c, c - a
+    determinant = cross(u, v)
+    numerator_t, numerator_s = cross(offset, v), cross(offset, u)
+    t = np.divide(numerator_t, determinant, out=np.zeros(count), where=determinant != 0)
+    s = np.divide(numerator_s, determinant, out=np.zeros(count), where=determinant != 0)
+    uncertain = _uncertain_cross(u, v, determinant)
+    # Cancellation near either endpoint can change whether the finite segments
+    # actually intersect, even when their directions are well conditioned.
+    uncertain |= ((determinant != 0)
+                  & (_uncertain_cross(offset, v, numerator_t)
+                     | _uncertain_cross(offset, u, numerator_s)
+                     | _uncertain_cross(c - b, v, cross(c - b, v))
+                     | _uncertain_cross(d - a, u, cross(d - a, u))))
+    contact = ((determinant != 0) & ~uncertain
+               & (t >= 0) & (t <= 1) & (s >= 0) & (s <= 1))
+    first[contact] = a + t[contact, None] * u
+    last[contact] = first[contact]
+    ids = np.flatnonzero(~contact & ~uncertain)
+    if len(ids):
+        cv, dv, vv = c[ids], d[ids], v[ids]
+        u2, v2 = float(u @ u), np.sum(vv * vv, axis=1)
+
+        def project_on_others(point):
+            fraction = np.divide(np.sum((point - cv) * vv, axis=1), v2,
+                                 out=np.zeros(len(ids)), where=v2 != 0)
+            return cv + np.clip(fraction, 0, 1)[:, None] * vv
+
+        tc = (cv - a) @ u / u2 if u2 else np.zeros(len(ids))
+        td = (dv - a) @ u / u2 if u2 else np.zeros(len(ids))
+        first_points = np.stack((np.broadcast_to(a, cv.shape), np.broadcast_to(b, cv.shape),
+                                 a + np.clip(tc, 0, 1)[:, None] * u,
+                                 a + np.clip(td, 0, 1)[:, None] * u), axis=1)
+        second_points = np.stack((project_on_others(a), project_on_others(b), cv, dv), axis=1)
+        delta = first_points - second_points
+        distances = np.hypot(delta[..., 0], delta[..., 1])
+        nearest = np.argmin(distances, axis=1)
+        rows = np.arange(len(ids))
+        distance = distances[rows, nearest]
+        contact[ids] = distance <= tol
+        first[ids] = first_points[rows, nearest]
+        last[ids] = first[ids]
+        low, high = np.maximum(0., np.minimum(tc, td)), np.minimum(1., np.maximum(tc, td))
+        parallel = (determinant[ids] == 0) & (u2 > 0) & (v2 > 0) & (low <= high)
+        overlap_ids = ids[parallel & contact[ids]]
+        first[overlap_ids] = a + low[parallel & contact[ids], None] * u
+        last[overlap_ids] = a + high[parallel & contact[ids], None] * u
+        # Account for subtraction and projection roundoff; only uncertain cases
+        # pay for rational projection and an exact squared-distance comparison.
+        scale = np.maximum(np.max(np.abs(others[ids]), axis=(1, 2)),
+                           max(float(np.max(np.abs((a, b)))), float(tol)))
+        uncertain[ids] |= np.abs(distance - tol) <= 32 * np.finfo(float).eps * scale
+    for index in np.flatnonzero(uncertain):
+        if represented is None:
+            exact = _exact_segment_contact(a, b, c[index], d[index], tol)
         else:
-            t = float(cross(c - a, v)) / determinant
-            s = float(cross(c - a, u)) / determinant
-        if -tol / lu <= t <= 1 + tol / lu and -tol / lv <= s <= 1 + tol / lv:
-            return [a + np.clip(t, 0, 1) * u]
+            world_edge, world_others, origin, frame_scale, physical_tol = represented
+            exact = _exact_segment_contact(*world_edge, *world_others[index], physical_tol)
+            if exact is not None:
+                exact = tuple((point - origin) / frame_scale for point in exact)
+        contact[index] = exact is not None
+        if exact is not None:
+            first[index], last[index] = exact
+    return contact, first, last
+
+
+def segment_contacts(a, b, c, d, tol):
+    """Return finite contact coordinates, preserving parallel overlap endpoints."""
+    # Planning visits many obviously disjoint pairs. This conservative broad
+    # phase avoids allocating batch arrays; its roundoff padding never decides
+    # contact, which remains the core's exact/inclusive distance predicate.
+    padding = tol + 8 * np.finfo(float).eps * max(map(abs, (*a, *b, *c, *d)))
+    if (max(a[0], b[0]) + padding < min(c[0], d[0])
+            or max(c[0], d[0]) + padding < min(a[0], b[0])
+            or max(a[1], b[1]) + padding < min(c[1], d[1])
+            or max(c[1], d[1]) + padding < min(a[1], b[1])):
         return []
-    if abs(float(cross(u, c - a))) > tol * lu:
+    contact, first, last = segment_relations(a, b, np.asarray([[c, d]]), tol)
+    if not contact[0]:
         return []
-    values = sorted((float((c - a) @ u) / (lu * lu),
-                     float((d - a) @ u) / (lu * lu)))
-    lo, hi = max(0., values[0]), min(1., values[1])
-    if hi < lo - tol / lu:
-        return []
-    if (hi - lo) * lu <= tol:
-        return [a + np.clip((lo + hi) * .5, 0., 1.) * u]
-    return [a + lo * u, a + hi * u]
+    if np.linalg.norm(last[0] - first[0]) > tol:
+        return [first[0], last[0]]
+    return [(first[0] + last[0]) * .5]
 
 
 def point_location(point, polygon, tol):

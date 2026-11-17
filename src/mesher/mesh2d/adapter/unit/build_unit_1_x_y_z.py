@@ -12,12 +12,12 @@ from .build_unit_1_1_1_x import (
     _validate_quads,
     _physical_boundary,
     _physical_quads,
-    build_unit_1_1_1_x,
+    _build_unit_1_1_1_x as build_unit_1_1_1_x,
 )
 from .build_unit_1_1_x_y import (
     _clip_half_plane,
     _validate_patch,
-    build_unit_1_1_x_y,
+    _build_unit_1_1_x_y as build_unit_1_1_x_y,
 )
 
 _Edges = tuple[np.ndarray, ...]
@@ -267,7 +267,7 @@ def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = No
         raise ValueError("the available strategies could not construct a valid Quad4 patch") from error
 
 
-def build_unit_1_x_y_z(
+def _build_unit_1_x_y_z(
     mesh: Mesh2D,
     edge1: np.ndarray,
     edge2: np.ndarray,
@@ -319,6 +319,23 @@ def build_unit_1_x_y_z(
     if _diagnostics is not None:
         _diagnostics.update(staged_diagnostics)
     return mesh
+
+
+def build_unit_1_x_y_z(
+    mesh: Mesh2D,
+    edge1: np.ndarray,
+    edge2: np.ndarray,
+    edge3: np.ndarray,
+    edge4: np.ndarray,
+    *,
+    _diagnostics: dict | None = None,
+    tolerance=None,
+) -> Mesh2D:
+    from .build_unit_1_1_1_x import _public_unit
+    return _public_unit(mesh, (edge1, edge2, edge3, edge4), _build_unit_1_x_y_z, tolerance, _diagnostics=_diagnostics)
+
+
+build_unit_1_x_y_z.__doc__ = _build_unit_1_x_y_z.__doc__
 
 
 __all__ = ["build_unit_1_x_y_z"]

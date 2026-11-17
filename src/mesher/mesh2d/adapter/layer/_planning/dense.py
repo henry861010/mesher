@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from .._types import QuadLayerError
-from .mapping import target_node_id, valid_interface
+from .mapping import canonical_target, dense_angle, target_node_id, valid_interface
 
 
 class DenseLinePartition:
@@ -37,8 +37,13 @@ class DenseLinePartition:
         else:
             points = data["xy"][ids[start:stop + 1]]
             size /= data["scale"]
-        margin = data["tol"] * data["scale"] if "_source_mesh" in data else data["tol"]
-        short = np.linalg.norm(np.diff(points, axis=0), axis=1) < size - margin
+        lengths = np.hypot.reduce(np.diff(points, axis=0), axis=1)
+        # Each edge has its own representation budget; physical T must not
+        # shift the user's strict density threshold.
+        ulps = np.abs(np.spacing(points))
+        margin = 2 * np.hypot.reduce(ulps[:-1] + ulps[1:], axis=1)
+        margin += 8 * np.finfo(float).eps * np.maximum(lengths, size)
+        short = lengths < size - margin
         changes = np.diff(np.r_[False, short, False].astype(np.int8))
         runs = list(zip((np.flatnonzero(changes == 1) + start).tolist(),
                         (np.flatnonzero(changes == -1) + start).tolist()))
@@ -47,18 +52,21 @@ class DenseLinePartition:
         cuts = [(start, left)]
         tangent, normal, tol = data["directions"][edge], data["normals"][edge], data["tol"]
         angle_limit = data.get("dense_mapping_angle", 30.0)
-        slope_limit = float(np.tan(np.radians(angle_limit)))
         fixed = data.get("fixed_outer_boundary", False)
         # Candidates are the original contacts of this LINE. A newly projected
         # dense endpoint must not bias the next endpoint's mapping.
-        ordered = np.asarray(sorted(outer, key=lambda p: float(p @ tangent)))
+        ordered = np.asarray(sorted((canonical_target(p, data) for p in outer),
+                                    key=lambda p: float(p @ tangent)))
         for index, role in endpoints:
             source = data["xy"][ids[index]]
-            projected = source + normal * float((outer[0] - source) @ normal)
+            projected = canonical_target(source + normal * float((outer[0] - source) @ normal), data)
             previous = registry.items[cuts[-1][1]].points[-1]
             following = registry.items[right].points[-1]
             interfaces = [seam.points[[0, -1]] for seam in registry.items]
             interfaces.extend(self.interfaces)
+
+            def angle_ok(point):
+                return dense_angle(source, point, tangent, normal, role, angle_limit)[0]
 
             def usable(point):
                 return (float((point - previous) @ tangent) > tol
@@ -75,7 +83,8 @@ class DenseLinePartition:
                 if key in self.targets:
                     distances = np.linalg.norm(ordered - self.targets[key], axis=1)
                     nearest = int(np.argmin(distances))
-                    if distances[nearest] > tol or not usable(ordered[nearest]):
+                    if (distances[nearest] > tol or not angle_ok(ordered[nearest])
+                            or not usable(ordered[nearest])):
                         self.fail("planned dense seam is absent or incompatible with the fixed interface",
                                   edge, [index])
                     target, reason = ordered[nearest].copy(), "canonical_contact"
@@ -83,19 +92,16 @@ class DenseLinePartition:
                 else:
                     reason = "not_planned"
             else:
-                delta = ordered - source
-                along, outward = delta @ tangent, delta @ normal
-                eligible = ((outward > tol)
-                            & (np.abs(along) <= outward * slope_limit + tol)
-                            & ((along <= tol) if role == "begin" else (along >= -tol)))
-                angles = np.degrees(np.arctan2(along, outward))
+                angular = [dense_angle(source, p, tangent, normal, role, angle_limit) for p in ordered]
+                eligible = np.array([valid for valid, _ in angular])
+                angles = np.array([angle for _, angle in angular])
                 candidates = sorted(np.flatnonzero(eligible), key=lambda i: (abs(float(angles[i])), int(i)))
                 for candidate in candidates:
                     if usable(ordered[candidate]):
                         target, reason = ordered[candidate].copy(), "existing_contact"
                         break
                 if target is None and not fixed:
-                    if usable(projected):
+                    if angle_ok(projected) and usable(projected):
                         target, reason = projected, "projected_contact"
                     else:
                         reason = "no_valid_projection"
@@ -106,8 +112,12 @@ class DenseLinePartition:
             cuts.append((index, seam))
             delta = target - source
             angle = float(np.degrees(np.arctan2(delta @ tangent, delta @ normal)))
-            record.update(seam_id=seam, target_node=target_node_id(target, data),
-                          target=(target * data["scale"] + data["origin"]).tolist(), angle=angle)
+            target_id = target_node_id(target, data)
+            world_target = (data["_source_mesh"].nodes[target_id, :2]
+                            if target_id is not None and "_source_mesh" in data
+                            else target * data["scale"] + data["origin"])
+            record.update(seam_id=seam, target_node=target_id,
+                          target=world_target.tolist(), angle=angle)
             self.seams.append(record)
             self.mappings.append({**record, "status": "mapped", "reason": reason})
         cuts.append((stop, right))

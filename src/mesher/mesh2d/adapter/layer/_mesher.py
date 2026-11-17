@@ -9,9 +9,10 @@ from ....tolerance import GeometryTolerance, resolve_tolerance
 from numpy.typing import ArrayLike
 
 from ...model import Mesh2D
+from ._errors import geometric_errors
 from ._fixed_boundary import (fixed_boundary_nodes, prepare_fixed_boundary,
                               restore_fixed_boundary)
-from ._geometry import area, cross
+from ._geometry import area
 from ._limits import check_element_limit
 from ._line_policy import (DEFAULT_MAX_TRANSITION_COUNT, validate_dense_parameters,
                            validate_line_parameters)
@@ -19,7 +20,7 @@ from ._planning.front import (_expansion_distances, _front, _normalize_outline_o
                               _specified_front)
 from ._planning.source import _fail, _prepare, _validate_old_patterns
 from ._planning.sections import partition_sections
-from ._construction.sections import fill_sections, _quality_summary
+from ._construction.sections import fill_sections, finalize_diagnostics, _quality_summary
 from ._types import (PreparedLayerSource, QuadLayerError, QuadLayerResult,
                      QuadSectionPlan, UnmeshableDirectQuadLayout)
 
@@ -175,6 +176,7 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, to
     return data, result
 
 
+@geometric_errors
 def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, *, pattern_lines=(),
                        outline_o: ArrayLike | None = None,
                        fixed_outer_boundary: bool = False,
@@ -375,6 +377,7 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
         small_element_size=small_element_size, dense_mapping_angle=dense_mapping_angle)
 
 
+@geometric_errors
 def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, *,
                                  pattern_lines=(), outline_o=None,
                                  expand_size: float | None = None,
@@ -433,40 +436,33 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
             error.context["required_elements"] += repair_count
         error.context.setdefault("stage", "section_assembly")
         raise
+    all_quads = np.vstack((working.elements[len(mesh.elements):], quads)) if repair_count else quads
+    world_nodes = _world_nodes(nodes, working, data)
+    if fixed_outer_boundary:
+        restore_fixed_boundary(world_nodes, nodes, result_outline, data)
+    # Certify the coordinates that will actually be committed. Source nodes
+    # already have the correct normalized representation; reproject only the
+    # added suffix, replacing the former pre-restoration validation pass.
+    nodes[len(working.nodes):, :2] = ((world_nodes[len(working.nodes):, :2] - data["origin"])
+                                    / data["scale"])
+    data["_represented_world_nodes"] = world_nodes
     try:
         if fixed_outer_boundary:
             fixed_boundary_nodes(nodes, result_outline, data)
         _validate_patch(working, nodes, quads, result_outline, data)
-        all_quads = np.vstack((working.elements[len(mesh.elements):], quads)) if repair_count else quads
         if repair_count:
             original_data = dict(data["_original_data"])
             original_data.update(front=data["front"], outer=data["front"],
-                                 inner=original_data["source"], tol=data["tol"])
+                                 inner=original_data["source"], tol=data["tol"],
+                                 _represented_world_nodes=world_nodes)
             if "outline_anchor_ids" in data:
                 original_data.update(outline_anchor_ids=data["outline_anchor_ids"])
             _validate_patch(mesh, nodes, all_quads, result_outline, original_data)
+        finalize_diagnostics(world_nodes, nodes, quads, registry_diagnostics, plan, data,
+                             element_offset=len(working.elements))
     except QuadLayerError as error:
         error.context.setdefault("stage", "final_validation")
         raise
-    world_nodes = _world_nodes(nodes, working, data)
-    if fixed_outer_boundary:
-        restore_fixed_boundary(world_nodes, nodes, result_outline, data)
-        nodes = world_nodes.copy()
-        nodes[:, :2] = (world_nodes[:, :2] - data["origin"]) / data["scale"]
-        try:
-            fixed_boundary_nodes(nodes, result_outline, data)
-            _validate_patch(working, nodes, quads, result_outline, data)
-            if repair_count:
-                _validate_patch(mesh, nodes, all_quads, result_outline, original_data)
-        except QuadLayerError as error:
-            error.context.setdefault("stage", "fixed_boundary_world_validation")
-            raise
-    # Verify strict convexity again after restoring the caller's coordinate frame.
-    represented = (world_nodes[all_quads, :2] - data["origin"]) / data["scale"]
-    vectors = np.roll(represented, -1, axis=1) - represented
-    if not np.all(np.isfinite(world_nodes)) or np.any(cross(vectors, np.roll(vectors, -1, axis=1)) <= 0):
-        raise UnmeshableDirectQuadLayout("new quads cannot be represented at the input coordinate scale",
-                                        stage="world_coordinates")
     check_element_limit(len(all_quads), max_added_elements, stage="precommit")
     elements = np.vstack((mesh.elements, all_quads))
     diagnostics = {**plan.diagnostics, **registry_diagnostics,

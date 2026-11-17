@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 
 import numpy as np
 
 from .._geometry import on_segment
 from .._types import QuadLayerError
-from .mapping import same_point, target_node_id, valid_interface
+from .mapping import compatible_interfaces, same_point, target_node_id, valid_interface
 
 
 def _nearest_first(points, source, tol):
@@ -26,12 +27,13 @@ def _nearest_first(points, source, tol):
 
 
 def fixed_corner_layouts(data, chords, registry, corners):
-    """Yield geometrically admissible assignments without changing the inputs.
+    """Yield admissible assignments without changing boundary geometry.
 
     Only free OUTER contacts move. INNER reservations, repaired shared seams,
     and finite patterns remain mandatory. Candidate lists have no angle cap.
     Iterative DFS avoids a recursion limit on outlines with many corners.
     """
+    stats = data["_corner_search_stats"] = {"candidate_visits": 0, "ordering_prunes": 0}
     tol, front = data["tol"], data["front"]
     anchors = data["outline_anchors"]
     owners = {}
@@ -74,20 +76,66 @@ def fixed_corner_layouts(data, chords, registry, corners):
             + [(chord.index, None, chord.points[-1]) for chord in chords if chord.edge == edge],
             key=lambda item: item[0]))
 
-    def ordered_contacts():
-        for edge, entries in enumerate(contacts):
-            resolved = [(index, known[seam] if seam is not None else point)
-                        for index, seam, point in entries if seam is None or seam in known]
-            for (a, first), (b, second) in zip(resolved, resolved[1:]):
-                if a == b:
-                    if not same_point(first, second, tol):
-                        return False
-                elif float((second - first) @ data["directions"][edge]) <= tol:
-                    return False
-        return True
+    positions = {item[0]: i for i, item in enumerate(variables)}
+    constraints = []
+    for edge, entries in enumerate(contacts):
+        for first, second in zip(entries, entries[1:]):
+            constraints.append((edge, first, second))
 
+    def values(entry, domains):
+        _, seam, point = entry
+        if seam in positions:
+            position = positions[seam]
+            return np.asarray([variables[position][4][i] for i in domains[position]])
+        return np.asarray([known[seam] if seam is not None else point])
+
+    def propagate(domains):
+        # Only ordered contacts are propagated eagerly. This cheap scalar
+        # feasibility pass catches an impossible late edge before any DFS.
+        changed = True
+        while changed:
+            changed = False
+            if any(not domain for domain in domains):
+                return None
+            for edge, first, second in constraints:
+                a, b = values(first, domains), values(second, domains)
+                if first[0] == second[0]:
+                    keep_a = np.array([np.any(np.linalg.norm(b - p, axis=1) <= tol) for p in a])
+                    keep_b = np.array([np.any(np.linalg.norm(a - p, axis=1) <= tol) for p in b])
+                else:
+                    tangent = data["directions"][edge]
+                    x, y = a @ tangent, b @ tangent
+                    keep_a, keep_b = y.max() - x > tol, y - x.min() > tol
+                if not np.any(keep_a) or not np.any(keep_b):
+                    return None
+                for entry, mask in ((first, keep_a), (second, keep_b)):
+                    position = positions.get(entry[1])
+                    if position is not None and not np.all(mask):
+                        domains[position] = [i for i, keep in zip(domains[position], mask) if keep]
+                        changed = True
+        return domains
+
+    domains = propagate([list(range(len(item[4]))) for item in variables])
+    if domains is None:
+        stats["ordering_prunes"] += 1
+        return
+
+    @lru_cache(maxsize=4096)
+    def unary(position, candidate):
+        _, _, _, source, points = variables[position]
+        return valid_interface(source, points[candidate], data, immutable)
+
+    @lru_cache(maxsize=8192)
+    def compatible(first, first_candidate, second, second_candidate):
+        a, b = variables[first], variables[second]
+        return compatible_interfaces((a[3], a[4][first_candidate]),
+                                     (b[3], b[4][second_candidate]), tol)
+
+    # Keep the original variable and nearest-first candidate order. Domain
+    # pruning changes only branches proven impossible, not preferred solutions.
+    domain_stack = [domains]
+    assigned = [-1] * len(variables)
     choices = [0] * len(variables)
-    selected = {}
     depth = 0
     while depth >= 0:
         if depth == len(variables):
@@ -100,10 +148,13 @@ def fixed_corner_layouts(data, chords, registry, corners):
                 points = np.asarray((source, point))
                 points.setflags(write=False)
                 items[seam_id] = replace(original, points=points)
+                target_id = target_node_id(point, data)
+                world_target = (data["_source_mesh"].nodes[target_id, :2]
+                                if target_id is not None and "_source_mesh" in data
+                                else point * data["scale"] + data["origin"])
                 diagnostics.append({"corner": index, "side": side, "seam_id": seam_id,
                                     "source_node": int(corners[index].source_chains[0][0]),
-                                    "target_node": target_node_id(point, data),
-                                    "target": (point * data["scale"] + data["origin"]).tolist(),
+                                    "target_node": target_id, "target": world_target.tolist(),
                                     "candidate_rank": choices[position],
                                     "substituted": not same_point(point, original.points[-1], tol)})
             mapped = [replace(corner, outer=np.asarray((items[corner.left].points[-1], front[index],
@@ -115,15 +166,25 @@ def fixed_corner_layouts(data, chords, registry, corners):
             continue
         seam_id, _, _, source, candidates = variables[depth]
         known.pop(seam_id, None)
-        selected.pop(seam_id, None)
         accepted = False
         while choices[depth] < len(candidates):
             point = candidates[choices[depth]]
             choices[depth] += 1
             known[seam_id] = point
-            if (ordered_contacts()
-                    and valid_interface(source, point, data, [*immutable, *selected.values()])):
-                selected[seam_id] = (source, point)
+            candidate = choices[depth] - 1
+            if candidate not in domain_stack[depth][depth]:
+                continue
+            stats["candidate_visits"] += 1
+            following = [domain.copy() for domain in domain_stack[depth]]
+            following[depth] = [candidate]
+            following = propagate(following)
+            if following is None:
+                stats["ordering_prunes"] += 1
+            if (following is not None and unary(depth, candidate)
+                    and all(compatible(previous, assigned[previous], depth, candidate)
+                            for previous in range(depth))):
+                assigned[depth] = candidate
+                domain_stack[depth + 1:] = [following]
                 accepted = True
                 break
         if accepted:

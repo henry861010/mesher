@@ -226,9 +226,10 @@ class LineSampling:
         if np.any(np.linalg.norm(residual, axis=1) > self.tol):
             raise _infeasible("LINE sampling moved points off the outer line")
         gaps = np.linalg.norm(np.diff(sampled[:, :2], axis=0), axis=1)
-        if np.any(np.diff(projected) <= 0) or np.any(gaps > self.h + self.tol):
+        margin = spacing_error(sampled[:, :2], self.h)
+        if np.any(np.diff(projected) <= 0) or np.any(gaps > self.h + margin):
             raise _infeasible("LINE sampling violates ordering or maximum size")
-        short = gaps < self.h_min - self.tol
+        short = gaps < self.h_min - margin
         index, anchor_indices = 0, []
         for position, anchor in zip(self._anchor_positions, self.anchors):
             while index < len(sampled) and projected[index] < position - self.tol:
@@ -249,3 +250,26 @@ class LineSampling:
 
 
 __all__ = ["LineSampling", "line_count_bounds"]
+
+
+def spacing_error(points, h):
+    ulps = np.abs(np.spacing(points))
+    return (2 * np.hypot.reduce(ulps[:-1] + ulps[1:], axis=1)
+            + 32 * np.finfo(float).eps * h)
+
+
+def validate_spacing(points, h, ratio, forced):
+    """Check actual spacing; only exact mandatory intervals can be short."""
+    points = np.asarray(points)[:, :2]
+    gaps = np.hypot.reduce(np.diff(points, axis=0), axis=1)
+    margin = spacing_error(points, h)
+    if np.any(gaps > h + margin):
+        raise _infeasible("committed LINE spacing exceeds maximum size",
+                          maximum_spacing=float(gaps.max()), element_size=h)
+    short = gaps < ratio * h - margin
+    exceptions = {(tuple(interval["start"]), tuple(interval["end"])) for interval in forced}
+    for i in np.flatnonzero(short):
+        if (tuple(points[i]), tuple(points[i + 1])) not in exceptions:
+            raise _infeasible("committed LINE spacing is below minimum size",
+                              spacing=float(gaps[i]), minimum_size=ratio * h)
+    return gaps

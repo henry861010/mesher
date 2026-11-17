@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ....model import Mesh2D
-from .._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
+from .._geometry import BoxIndex, area, area_epsilon, cross, on_segment, point_location, segment_contacts
 from .._limits import ElementLimitExceeded, check_element_limit
 from .._old_mesh import edge_membership, old_edge_keys
 from .._types import QuadLayerError
@@ -186,8 +186,7 @@ def _candidate(slot, anchor, data):
     polygon = data["xy"][source_ids]
     tol = data["tol"]
     _simple_polygon(polygon, tol, reason="invalid_slot_mouth")
-    perimeter = float(np.linalg.norm(np.roll(polygon, -1, axis=0) - polygon, axis=1).sum())
-    if area(polygon) <= tol * perimeter:
+    if area(polygon) <= area_epsilon(polygon, data["numeric_tol"]):
         _fail("the slot mouth leaves no positive repair region", reason="invalid_slot_mouth")
 
     # An outward bracket is useful when old node spacing misses the mouth.
@@ -251,8 +250,7 @@ def _corner_candidate(corner, data):
     directions = data["directions"][list(corner.edges)[::-1]]
     if np.any(np.sum(np.diff(boundary, axis=0) * directions, axis=1) <= tol):
         _fail("a corner cap reverses its semantic direction", reason="invalid_corner_cap")
-    perimeter = float(np.linalg.norm(np.roll(polygon, -1, axis=0) - polygon, axis=1).sum())
-    if area(polygon) <= tol * perimeter:
+    if area(polygon) <= area_epsilon(polygon, data["numeric_tol"]):
         _fail("the corner cap leaves no positive repair region", reason="invalid_corner_cap")
     return _Candidate(corner, chains, source_ids, polygon, boundary)
 
@@ -523,7 +521,8 @@ def repair_slots(mesh, data, *, max_added_elements=None, repair_max_element_size
                 patch = build_repair_patch(tuple(mesh.nodes[chain] for chain in candidate.source_chains),
                                            data["pattern_records"], data["h"], tol,
                                            max_added_elements=remaining,
-                                           repair_max_element_size=repair_max_element_size, **options)
+                                           repair_max_element_size=repair_max_element_size,
+                                           numeric_tol=data["numeric_tol"], **options)
                 check_element_limit(added_count + len(patch.quads), max_added_elements,
                                     stage=f"{kind}_repair", **context)
                 chosen = candidate, patch

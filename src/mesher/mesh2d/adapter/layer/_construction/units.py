@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ....model import Mesh2D, _validate_zero_z
-from ...unit import build_unit_1_1_1_x, build_unit_1_1_x_y, build_unit_1_x_y_z
+from ...unit.build_unit_1_1_1_x import _build_unit_1_1_1_x as build_unit_1_1_1_x
+from ...unit.build_unit_1_1_x_y import _build_unit_1_1_x_y as build_unit_1_1_x_y
+from ...unit.build_unit_1_x_y_z import _build_unit_1_x_y_z as build_unit_1_x_y_z
+from ...unit.build_unit_1_1_1_x import _physical_boundary, _physical_quads
 from ...unit.build_unit_1_1_x_y import _validate_patch
 from .._registry import _BoundedCoordinates
 
@@ -94,16 +97,30 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
         raise ValueError("unit boundary has no usable extent")
     normalized = np.column_stack(((boundary[:, :2] - origin) / scale,
                                   np.zeros(len(boundary))))
-    cache_key = (tuple(map(len, ids)), normalized.tobytes())
-    cached = None if _cache is None else _cache.get(cache_key)
-    if cached is not None:
-        raw_nodes, raw_quads, method = cached
+    effective_tol = tol / scale
+    policy = _physical_boundary(boundary, np.arange(len(boundary)), tol)
+
+    def restored(raw_nodes, raw_quads, method):
         nodes = np.column_stack((origin + scale * raw_nodes[:, :2],
                                  np.zeros(len(raw_nodes))))
+        # Every fixed coordinate survives normalization exactly, on either path.
         nodes[:len(boundary)] = boundary
-        quads = raw_quads.copy()
+        quads = np.asarray(raw_quads, dtype=np.int64).copy()
+        if not np.all(np.isfinite(nodes)):
+            raise ValueError("restored unit coordinates must be finite")
+        _physical_quads(nodes, quads, policy)
         return UnitPlan(nodes, quads, ids, method, quality_score(nodes, quads),
                         {"boundary_counts": tuple(map(len, ids))})
+
+    cache_key = (tuple(map(len, ids)), normalized.tobytes(), effective_tol)
+    cached = None if _cache is None else _cache.get(cache_key)
+    if cached is not None:
+        try:
+            return restored(*cached)
+        except ValueError:
+            # Restoring a different frame can expose an unrepresentable edge.
+            # Retry the ordinary builders without modifying the stored arrays.
+            pass
     mesh = Mesh2D(normalized, np.empty((0, 4), dtype=np.int64))
     diagnostics: dict = {}
     long_sides = [i for i, side in enumerate(ids) if len(side) > 2]
@@ -116,31 +133,26 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
     for builder in templates:
         attempt = Mesh2D(mesh.nodes, np.empty((0, 4), dtype=np.int64))
         try:
-            builder(attempt, *ids, tolerance=tol / scale)
+            builder(attempt, *ids, tolerance=effective_tol)
             # 11xy already performs the complete patch checks. The smaller
             # 111x public builder checks convexity only, so complete that here.
             if builder is build_unit_1_1_1_x:
                 _validate_patch(attempt.nodes, attempt.elements, ids)
+            result = restored(attempt.nodes, attempt.elements, "template")
         except ValueError:
             continue
         mesh = attempt
         diagnostics["method"] = "template"
         break
     else:
-        build_unit_1_x_y_z(mesh, *ids, tolerance=tol / scale, _diagnostics=diagnostics)
+        build_unit_1_x_y_z(mesh, *ids, tolerance=effective_tol, _diagnostics=diagnostics)
+        result = restored(mesh.nodes, mesh.elements, diagnostics["method"])
     if _cache is not None:
-        # Store the actual normalized builder output, before restoring world
-        # coordinates. Keys are byte-exact: no rounding or fuzzy geometry
-        # equivalence can bypass a unit validation.
+        # Store normalized output only after its restored representation passes
+        # validation. Byte-exact shape AND effective tolerance govern reuse.
         _cache[cache_key] = (mesh.nodes.copy(), np.asarray(mesh.elements, dtype=np.int64).copy(),
                              diagnostics["method"])
-    nodes = np.column_stack((origin + scale * mesh.nodes[:, :2],
-                             np.zeros(len(mesh.nodes))))
-    # Coordinates on all fixed boundaries survive normalization exactly.
-    nodes[:len(boundary)] = boundary
-    quads = np.asarray(mesh.elements, dtype=np.int64)
-    return UnitPlan(nodes, quads, ids, diagnostics["method"], quality_score(nodes, quads),
-                    {"boundary_counts": tuple(map(len, ids))})
+    return result
 
 
 class CoordinatePool:
@@ -203,6 +215,7 @@ def assemble_section(units: list[UnitPlan], source: np.ndarray, outer: np.ndarra
             "boundary_counts": [len(side) for side in unit.sides],
             "method": unit.method, "quality": unit.quality,
             "polygon": unit.nodes[np.concatenate([side[:-1] for side in unit.sides])].tolist(),
+            "_polygon_ids": mapping[np.concatenate([side[:-1] for side in unit.sides])].tolist(),
         })
         offset += len(unit.quads)
     return SectionPatch(pool.array(), np.vstack(quads), left_ids, right_ids,

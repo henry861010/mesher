@@ -18,6 +18,7 @@ from ..model import Mesh2D
 from ._full_geometry import (complement_domains, discover_boundaries,
                              section_outline_points, validate_fronts)
 from .layer import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
+from .layer._errors import layer_error
 from .layer._geometry import BoxIndex, area, cross
 from .layer._line_policy import (DEFAULT_MAX_TRANSITION_COUNT, validate_dense_parameters,
                                  validate_line_parameters)
@@ -53,9 +54,7 @@ def _call(operation, *, stage, **context):
             error.context.setdefault(key, value)
         raise
     except GeometryToleranceError as error:
-        details = {**error.context, **context}
-        details.setdefault("stage", stage)
-        raise QuadLayerError(str(error), code=error.code, **details) from error
+        raise layer_error(error, stage=stage, **context) from error
     except (ValueError, TypeError, OverflowError) as error:
         code = ("invalid_input" if stage == "input_validation" else
                 "global_meshing_failed" if stage == "global_meshing" else

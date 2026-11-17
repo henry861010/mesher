@@ -11,12 +11,12 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from .._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
+from .._geometry import BoxIndex, area, area_epsilon, cross, on_segment, point_location, segment_contacts
 from .._patterns import AxisPattern, covered_intervals, pattern_contacts
 from .._types import QuadLayerError, QuadSectionPlan, Seam, Section
 from .dense import DenseLinePartition
 from .fixed_corners import fixed_corner_layouts
-from .mapping import target_node_id
+from .mapping import canonical_target, target_node_id
 
 
 def _fail(message, *, patterns=False, **context):
@@ -51,9 +51,10 @@ def _loop_segments(points):
     return zip(points, np.roll(points, -1, axis=0))
 
 
-def _band_location(point, data):
+def _band_location(point, data, *, numerical=False):
     outer, inner = data["outer"], data["inner"]
-    outside, inside = point_location(point, outer, data["tol"]), point_location(point, inner, data["tol"])
+    tol = data["numeric_tol"] if numerical else data["tol"]
+    outside, inside = point_location(point, outer, tol), point_location(point, inner, tol)
     if outside < 0 or inside > 0:
         return -1
     return 0 if outside == 0 or inside == 0 else 1
@@ -204,6 +205,8 @@ class _Seams:
         self.data, self.anchors, self.items = data, anchors, []
 
     def add(self, points):
+        if not self.data.get("fixed_outer_boundary", False):
+            points = [canonical_target(point, self.data) for point in points]
         points = _with_anchors(points, self.anchors, self.data["tol"])
         if len(points) < 2:
             _fail("a section interface has zero length")
@@ -347,7 +350,7 @@ def _validate_sections(sections, seams, data):
     boundary_segments = list(_loop_segments(data["source"])) + list(_loop_segments(data["front"]))
     for seam in seams:
         a, b = seam.points[0], seam.points[-1]
-        if _band_location((a + b) / 2., data) != 1:
+        if _band_location((a + b) / 2., data, numerical=True) != 1:
             _fail("a section interface leaves the open layer", seam=seam.id)
         for c, d in boundary_segments:
             for point in segment_contacts(a, b, c, d, tol):
@@ -365,9 +368,11 @@ def _validate_sections(sections, seams, data):
         polygon = section_polygon(section, seams, data["xy"], tol)
         if len(polygon) < 3:
             _fail("a section has fewer than three distinct boundary points", section=section.id)
-        lengths = np.linalg.norm(np.roll(polygon, -1, axis=0) - polygon, axis=1)
         signed = area(polygon)
-        if signed <= tol * float(lengths.sum()):
+        # A physical distance is not an area-degeneracy threshold: tol * P
+        # rejects even a square of side 4*tol. Shape validity uses only the
+        # numerical error budget in this normalized frame.
+        if signed <= area_epsilon(polygon, data["numeric_tol"]):
             _fail("a section has zero or reversed area", section=section.id)
         lower, upper = np.minimum(polygon, np.roll(polygon, -1, axis=0)), np.maximum(polygon, np.roll(polygon, -1, axis=0))
         index = BoxIndex(lower, upper, tol)
@@ -416,11 +421,13 @@ def partition_sections(data) -> QuadSectionPlan:
             last_error = error
             continue
         return replace(plan, diagnostics={**plan.diagnostics, "corner_mappings": diagnostics,
-                                         "corner_mapping_attempts": attempt})
+                                         "corner_mapping_attempts": attempt,
+                                         "corner_search": dict(data["_corner_search_stats"])})
     if last_error is not None:
         raise last_error
     _fail("no existing outer nodes form compatible corner interfaces",
-          parameter="outline_o", stage="fixed_boundary_plan")
+          parameter="outline_o", stage="fixed_boundary_plan",
+          corner_search=dict(data["_corner_search_stats"]))
 
 
 def _partition_sections(data, chords, anchors, registry, corners):
@@ -429,6 +436,7 @@ def _partition_sections(data, chords, anchors, registry, corners):
     dense = DenseLinePartition(data, [chord.points[[0, -1]] for chord in chords])
 
     def append(kind, source_chains, outer, left, right, *, source_edge=None, corner=None):
+        outer = [canonical_target(point, data) for point in outer]
         outer = _with_anchors(outer, anchors, data["tol"])
         section = Section(len(sections), kind, source_chains, _readonly(outer), left, right,
                           source_edge, corner)

@@ -241,7 +241,7 @@ def _validate_patch(
                 raise ValueError("quadrilateral edges cross")
 
 
-def build_unit_1_1_x_y(
+def _build_unit_1_1_x_y(
     mesh: Mesh2D,
     edge1: np.ndarray,
     edge2: np.ndarray,
@@ -294,6 +294,22 @@ def build_unit_1_1_x_y(
     _physical_quads(nodes, quads, policy)
     mesh.replace_data(nodes=nodes, elements=np.concatenate((mesh.elements, quads), axis=0))
     return mesh
+
+
+def build_unit_1_1_x_y(
+    mesh: Mesh2D,
+    edge1: np.ndarray,
+    edge2: np.ndarray,
+    edge3: np.ndarray,
+    edge4: np.ndarray,
+    *,
+    tolerance=None,
+) -> Mesh2D:
+    from .build_unit_1_1_1_x import _public_unit
+    return _public_unit(mesh, (edge1, edge2, edge3, edge4), _build_unit_1_1_x_y, tolerance)
+
+
+build_unit_1_1_x_y.__doc__ = _build_unit_1_1_x_y.__doc__
 
 
 __all__ = ["build_unit_1_1_x_y"]

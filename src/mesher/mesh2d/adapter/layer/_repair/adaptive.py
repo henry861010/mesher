@@ -11,7 +11,7 @@ import numpy as np
 from .....tolerance import subdivision_count
 
 from ...unit.build_unit_1_1_x_y import _validate_patch
-from .._geometry import area, cross
+from .._geometry import area, area_epsilon, cross
 from .._limits import ElementLimitExceeded, check_element_limit
 from .._construction.line import _plan_count
 from .._construction.units import CoordinatePool, UnitPlan, merge_unit_plans, quality_score
@@ -214,7 +214,7 @@ def _core(sides, tol, limit, cache, legacy):
         raise
 
 
-def build_adaptive_face(boundary, boundary_size, max_size, tol, limit, cache, legacy):
+def build_adaptive_face(boundary, boundary_size, max_size, tol, limit, cache, legacy, numeric_tol=0.):
     """Fill one fixed face, returning isolated units and sizing diagnostics."""
     try:
         sides = _logical_sides(boundary, tol)
@@ -242,9 +242,7 @@ def build_adaptive_face(boundary, boundary_size, max_size, tol, limit, cache, le
         inner_corners = corners.copy()
         inner_corners[:, :2] += target * velocities
         outer_area, inner_area = area(corners[:, :2]), area(inner_corners[:, :2])
-        perimeter = float(np.linalg.norm(np.roll(corners[:, :2], -1, axis=0)
-                                         - corners[:, :2], axis=1).sum())
-        area_margin = tol * perimeter
+        area_margin = area_epsilon(corners, numeric_tol)
         if (not np.isfinite(inner_area) or inner_area <= area_margin
                 or outer_area - inner_area <= area_margin):
             stop_reason = "offset_limit"

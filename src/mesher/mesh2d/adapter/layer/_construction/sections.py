@@ -7,6 +7,8 @@ import numpy as np
 
 from .corners import plan_corner
 from .line import plan_line
+from .sampling import validate_spacing
+from .._planning.mapping import dense_angle
 from .._limits import ElementLimitExceeded, check_element_limit, preflight_element_limit
 from .._registry import _NodePool, _PointIndex
 from .._types import QuadLayerError
@@ -220,11 +222,20 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
         if "line_sampling" in patch.diagnostics:
             sampling_details = {key: value for key, value in patch.diagnostics.items()
                                 if key not in line_stats[section.id]}
-            sampling_details["forced_short_intervals"] = [
-                {"start": world(np.asarray([interval["start"]]))[0],
-                 "end": world(np.asarray([interval["end"]]))[0],
-                 "length": interval["length"] * data["scale"]}
-                for interval in patch.diagnostics["forced_short_intervals"]]
+            forced_ids = []
+            forced = patch.diagnostics["forced_short_intervals"]
+            if forced:
+                endpoint_ids = {tuple(patch.nodes[i, :2]): int(mapping[i]) for i in patch.outer_ids}
+                if len(endpoint_ids) != len(patch.outer_ids):
+                    raise QuadLayerError("a mandatory LINE interval lost its endpoint",
+                                         code="invalid_section_boundary", section_id=section.id)
+                for interval in forced:
+                    try:
+                        forced_ids.append([endpoint_ids[tuple(interval[name])] for name in ("start", "end")])
+                    except KeyError as error:
+                        raise QuadLayerError("a mandatory LINE interval lost its endpoint",
+                                             code="invalid_section_boundary", section_id=section.id) from error
+            sampling_details["_forced_interval_ids"] = forced_ids
             spacing = np.linalg.norm(np.diff(patch.nodes[patch.outer_ids, :2], axis=0), axis=1)
             sampling_details.update(min_outer_spacing=float(spacing.min()) * data["scale"],
                                     max_outer_spacing=float(spacing.max()) * data["scale"])
@@ -240,14 +251,18 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                         "outer_ids": mapping[patch.outer_ids].tolist(),
                         "unit_ids": list(range(len(units), len(units) + len(patch.units))),
                         "element_start": offset, "element_end": offset + len(quads),
-                        "polygon": world(polygon), "size_error": patch.size_error,
+                        "polygon": world(polygon),
+                        "_polygon_ids": mapping[np.concatenate((patch.source_ids, patch.right_ids[1:],
+                                                patch.outer_ids[::-1][1:], patch.left_ids[::-1][1:]))].tolist(),
+                        "size_error": patch.size_error,
                         "quality": patch.quality, **line_stats.get(section.id, {}),
                         **sampling_details})
         for record in patch.units:
             units.append({**record, "unit_id": len(units), "section_id": section.id,
                           "element_start": offset + record["element_start"],
                           "element_end": offset + record["element_end"],
-                          "polygon": world(record["polygon"])})
+                          "polygon": world(record["polygon"]),
+                          "_polygon_ids": mapping[record["_polygon_ids"]].tolist()})
         offset += len(quads)
     index = _PointIndex(pool, front_ids)
     outline = [index.on_segment(a, b) for a, b in zip(plan.front, np.roll(plan.front, -1, axis=0))]
@@ -266,3 +281,49 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                    "line_alignment_error": sum(detail.get("alignment_error", 0.0) for detail in details),
                    "quality": _quality_summary(result_nodes, result_quads)}
     return result_nodes, result_quads, outline, diagnostics
+
+
+def finalize_diagnostics(world_nodes, nodes, quads, diagnostics, plan, data, *, element_offset):
+    """Validate final LINE spacing and report geometry by its committed IDs."""
+    for seam in diagnostics["seam_states"]:
+        seam["points"] = world_nodes[seam["node_ids"], :2].tolist()
+    cells = nodes[quads, :2]
+    vectors = np.roll(cells, -1, axis=1) - cells
+    vectors /= np.max(np.abs(vectors), axis=(1, 2))[:, None, None]
+    lengths = np.linalg.norm(vectors, axis=2)
+    following = np.roll(vectors, -1, axis=1)
+    scaled = (vectors[..., 0] * following[..., 1] - vectors[..., 1] * following[..., 0])
+    scaled /= lengths * np.roll(lengths, -1, axis=1)
+    scores = np.maximum(lengths.max(axis=1) / lengths.min(axis=1), 1 / scaled.min(axis=1))
+    for record in [*diagnostics["section_details"], *diagnostics["units"]]:
+        record["polygon"] = world_nodes[record.pop("_polygon_ids"), :2].tolist()
+        record["quality"] = float(scores[record["element_start"] - element_offset:
+                                         record["element_end"] - element_offset].max())
+        if "line_sampling" in record:
+            points = world_nodes[record["outer_ids"], :2]
+            record["forced_short_intervals"] = [
+                {"start": world_nodes[a, :2].tolist(), "end": world_nodes[b, :2].tolist(),
+                 "length": float(np.hypot.reduce(world_nodes[b, :2] - world_nodes[a, :2]))}
+                for a, b in record.pop("_forced_interval_ids")]
+            gaps = validate_spacing(points, data["h"] * data["scale"], data["min_size_ratio"],
+                                    record["forced_short_intervals"])
+            record.update(min_outer_spacing=float(gaps.min()), max_outer_spacing=float(gaps.max()),
+                          size_error=float(np.mean((gaps / (data["h"] * data["scale"]) - 1) ** 2)))
+    diagnostics["outer_size_error"] = sum(d["size_error"] for d in diagnostics["section_details"])
+    seams = {record["seam_id"]: record for record in diagnostics["seam_states"]}
+    mapped_dense = {}
+    for record in plan.diagnostics.get("dense_seams", ()):
+        ids = seams[record["seam_id"]]["node_ids"]
+        first, last = ids[0], ids[-1]
+        edge = record["source_edge"]
+        valid, angle = dense_angle(nodes[first, :2], nodes[last, :2], data["directions"][edge],
+                                   data["normals"][edge], record["endpoint"], data["dense_mapping_angle"])
+        if not valid:
+            raise QuadLayerError("represented dense seam exceeds its angular interval",
+                                 code="unmeshable_section_layout", seam_id=record["seam_id"])
+        record.update(target=world_nodes[last, :2].tolist(), angle=angle)
+        mapped_dense[record["seam_id"]] = record
+    for record in plan.diagnostics.get("dense_mappings", ()):
+        if record.get("status") == "mapped":
+            matched = mapped_dense[record["seam_id"]]
+            record.update(target=matched["target"], angle=matched["angle"])

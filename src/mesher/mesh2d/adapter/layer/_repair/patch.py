@@ -12,7 +12,7 @@ from math import ceil, floor
 import numpy as np
 
 from ...unit.build_unit_1_1_x_y import _validate_patch
-from .._geometry import BoxIndex, area, cross, on_segment, point_location, segment_contacts
+from .._geometry import BoxIndex, area, area_epsilon, cross, on_segment, point_location, segment_contacts
 from .._limits import ElementLimitExceeded, check_element_limit
 from .._construction.patch import _four_sided_units
 from .._patterns import AxisPattern, pattern_contacts
@@ -43,7 +43,7 @@ def _fail(message, *, patterns=False, **context):
                          stage="slot_repair", **context)
 
 
-def _source_path(chains, tol, free_boundary=None):
+def _source_path(chains, tol, free_boundary=None, numeric_tol=0.):
     if free_boundary is None and len(chains) != 3:
         _fail("a slot repair needs three frozen source chains")
     if free_boundary is not None and len(chains) < 2:
@@ -78,7 +78,7 @@ def _source_path(chains, tol, free_boundary=None):
     following = np.roll(polygon, -1, axis=0)
     if np.any(np.linalg.norm(following - polygon, axis=1) <= tol):
         _fail("the repair boundary contains a zero-length segment")
-    if abs(area(polygon)) <= tol * np.linalg.norm(np.ptp(polygon, axis=0)):
+    if abs(area(polygon)) <= area_epsilon(polygon, numeric_tol):
         _fail("the slot repair polygon has no usable area")
     lower, upper = np.minimum(polygon, following), np.maximum(polygon, following)
     index = BoxIndex(lower, upper, tol)
@@ -333,7 +333,7 @@ def _four_chains(boundary, tol):
 
 
 def _build_faces(points, source_ids, mouth, faces, free, counts, tol, limit, cache,
-                 boundary_size, max_size):
+                 boundary_size, max_size, numeric_tol=0.):
     lookup = dict(zip(free, counts))
     lower_bound = sum(sum(lookup.get(tuple(sorted((a, b))), 1)
                           for a, b in zip(face, face[1:] + face[:1])) // 2 - 1 for face in faces)
@@ -365,7 +365,7 @@ def _build_faces(points, source_ids, mouth, faces, free, counts, tol, limit, cac
             from .adaptive import build_adaptive_face
             try:
                 built, sizing = build_adaptive_face(
-                    boundary, boundary_size, max_size, tol, available, cache, legacy)
+                    boundary, boundary_size, max_size, tol, available, cache, legacy, numeric_tol)
             except ElementLimitExceeded:
                 raise
             except ValueError:
@@ -409,7 +409,7 @@ def _build_faces(points, source_ids, mouth, faces, free, counts, tol, limit, cac
 
 
 def build_repair_patch(source_chains, patterns, h, tol, *, max_added_elements=None,
-                       repair_max_element_size=None, free_boundary=None):
+                       repair_max_element_size=None, free_boundary=None, numeric_tol=0.):
     """Fill frozen source chains and a free closing boundary.
 
     Coordinates are normalized XYZ; source endpoints and every old segment are
@@ -422,7 +422,7 @@ def build_repair_patch(source_chains, patterns, h, tol, *, max_added_elements=No
     """
     if not np.isfinite(h) or h <= 0 or not np.isfinite(tol) or tol <= 0:
         _fail("repair size and tolerance must be positive and finite")
-    source, free_boundary = _source_path(source_chains, tol, free_boundary)
+    source, free_boundary = _source_path(source_chains, tol, free_boundary, numeric_tol)
     lengths = np.linalg.norm(np.diff(source[:, :2], axis=0), axis=1)
     boundary_size = min(float(h), float(np.median(lengths[lengths > tol])))
     if repair_max_element_size is None:
@@ -451,7 +451,7 @@ def build_repair_patch(source_chains, patterns, h, tol, *, max_added_elements=No
         try:
             nodes, quads, source_ids_out, mouth_ids, units, face_records = _build_faces(
                 points, source_ids, mouth, faces, free, counts, tol, max_added_elements, cache,
-                boundary_size, max_size)
+                boundary_size, max_size, numeric_tol)
         except ElementLimitExceeded as error:
             errors.append(error)
             continue

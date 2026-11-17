@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from ....tolerance import GeometryToleranceError, resolve_tolerance
+from ....tolerance import GeometryToleranceError, resolve_tolerance, within_distance
 
 from ...model import Mesh2D, _validate_zero_z
 
@@ -57,9 +57,7 @@ def _segments_intersect(
     )
 
 
-def _validate_cyclic_boundary(
-    mesh: Mesh2D | np.ndarray, edges: tuple[np.ndarray, ...], *, require_convex: bool
-) -> np.ndarray:
+def _boundary_indices(mesh, edges):
     if isinstance(mesh, Mesh2D):
         _validate_zero_z(mesh.nodes)
     nodes = mesh.nodes if isinstance(mesh, Mesh2D) else mesh
@@ -81,6 +79,14 @@ def _validate_cyclic_boundary(
     if np.unique(boundary).size != boundary.size:
         raise ValueError("boundary node indices must be distinct except at edge joins")
 
+    return boundary
+
+
+def _validate_cyclic_boundary(
+    mesh: Mesh2D | np.ndarray, edges: tuple[np.ndarray, ...], *, require_convex: bool
+) -> np.ndarray:
+    boundary = _boundary_indices(mesh, edges)
+    nodes = mesh.nodes if isinstance(mesh, Mesh2D) else mesh
     points = nodes[boundary]
     if not np.all(np.isfinite(points)):
         raise ValueError("boundary node coordinates must be finite")
@@ -95,7 +101,7 @@ def _validate_cyclic_boundary(
         raise ValueError("boundary contains a zero-length segment")
 
     area_twice = _polygon_area_twice(points)
-    if abs(area_twice) <= area_tolerance * len(boundary):
+    if not np.isfinite(area_twice) or abs(area_twice) <= area_tolerance * len(boundary):
         raise ValueError("boundary has zero XY area")
     if require_convex:
         turns = _cross(vectors, np.roll(vectors, -1, axis=0))
@@ -144,7 +150,7 @@ def _validate_quads(nodes: np.ndarray, quads: np.ndarray) -> None:
     corners = _cross(edges, np.roll(edges, -1, axis=1))
     scale = float(np.max(np.ptp(xy.reshape(-1, 2), axis=0)))
     area_tolerance = 64.0 * np.finfo(float).eps * scale * scale
-    if np.any(corners <= area_tolerance):
+    if not np.all(np.isfinite(corners)) or np.any(corners <= area_tolerance):
         raise ValueError("generated quadrilaterals are degenerate or inverted")
 
 
@@ -200,12 +206,15 @@ def _stage_unit_1_1_1_x(
     return new_nodes, new_quads
 
 
-def _physical_boundary(nodes, boundary, tolerance):
+def _physical_boundary(nodes, boundary, tolerance, *, represented=False):
     policy = resolve_tolerance(tolerance)
     points = nodes[boundary, :2]
     policy.check_resolution(points, stage="unit_boundary", source="fixed_boundary")
-    lengths = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
-    if np.any(lengths <= policy.absolute):
+    with np.errstate(over="ignore", invalid="ignore"):
+        lengths = np.hypot.reduce(np.roll(points, -1, axis=0) - points, axis=1)
+    short = (within_distance(points, np.roll(points, -1, axis=0), policy)
+             if represented else lengths <= policy.absolute)
+    if np.any(short):
         raise GeometryToleranceError("a fixed unit boundary edge is below geometric resolution",
                                      code="feature_below_resolution", stage="unit_boundary",
                                      source="fixed_boundary", measured_distance=float(lengths.min()),
@@ -213,18 +222,21 @@ def _physical_boundary(nodes, boundary, tolerance):
     return policy
 
 
-def _physical_quads(nodes, quads, tolerance):
+def _physical_quads(nodes, quads, tolerance, *, represented=False):
     policy = resolve_tolerance(tolerance)
     points = nodes[quads, :2]
-    lengths = np.linalg.norm(np.roll(points, -1, axis=1) - points, axis=2)
-    if np.any(lengths <= policy.absolute):
+    with np.errstate(over="ignore", invalid="ignore"):
+        lengths = np.hypot.reduce(np.roll(points, -1, axis=1) - points, axis=2)
+    short = (within_distance(points, np.roll(points, -1, axis=1), policy)
+             if represented else lengths <= policy.absolute)
+    if np.any(short):
         raise GeometryToleranceError("generated unit edges are below geometric resolution",
                                      code="feature_below_resolution", stage="unit_construction",
                                      source="generated_edges", measured_distance=float(lengths.min()),
                                      minimum_length=float(lengths.min()), tolerance=policy.absolute)
 
 
-def build_unit_1_1_1_x(
+def _build_unit_1_1_1_x(
     mesh: Mesh2D,
     edge1: np.ndarray,
     edge2: np.ndarray,
@@ -263,6 +275,74 @@ def build_unit_1_1_1_x(
     combined_elements = np.concatenate((mesh.elements, new_quads), axis=0)
     mesh.replace_data(nodes=combined_nodes, elements=combined_elements)
     return mesh
+
+
+def _public_unit(mesh, edges, builder, tolerance, **kwargs):
+    """Stage just the boundary in a safe frame, then restore original IDs."""
+    if not isinstance(mesh, Mesh2D):
+        raise TypeError("mesh must be a Mesh2D instance")
+    boundary = _boundary_indices(mesh, edges)
+    points = mesh.nodes[boundary]
+    policy = resolve_tolerance(tolerance)
+    policy.check_resolution(points, stage="unit_boundary", source="fixed_boundary")
+    # Scale before subtracting: opposite large finite coordinates may have
+    # an unrepresentable difference in the caller's frame.
+    exponent = int(np.frexp(np.max(np.abs(points[:, :2])))[1])
+    scaled = np.ldexp(points[:, :2], -exponent)
+    origin = scaled[0].copy()
+    span = float(np.ptp(scaled, axis=0).max())
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        local_tol = float(np.ldexp(policy.absolute, -exponent) / span) if span else np.inf
+    if not np.isfinite(local_tol) or local_tol <= 0 or not span:
+        raise GeometryToleranceError("unit frame cannot resolve the requested tolerance",
+                                     code="numeric_resolution_exceeded", stage="unit_boundary")
+    local = np.column_stack(((scaled - origin) / span, np.zeros(len(boundary))))
+    offsets = np.cumsum([0, *(len(edge) - 1 for edge in edges)])
+    local_edges = tuple(np.r_[np.arange(offsets[i], offsets[i + 1]),
+                             offsets[(i + 1) % 4]].astype(np.int64) for i in range(4))
+    staged = Mesh2D(local, np.empty((0, 4), dtype=np.int64))
+    diagnostics = kwargs.get("_diagnostics")
+    if diagnostics is not None:
+        kwargs["_diagnostics"] = {}
+    builder(staged, *local_edges, tolerance=local_tol, **kwargs)
+    with np.errstate(over="ignore", invalid="ignore"):
+        added = np.column_stack((np.ldexp(staged.nodes[len(boundary):, :2] * span + origin,
+                                         exponent), np.zeros(len(staged.nodes) - len(boundary))))
+    if not np.all(np.isfinite(added)):
+        raise GeometryToleranceError("unit coordinates cannot be represented",
+                                     code="numeric_resolution_exceeded", stage="unit_construction")
+    restored = np.vstack((points, added))
+    # Validate the actually represented result in the same safe frame.
+    represented = np.column_stack(((np.ldexp(restored[:, :2], -exponent) - origin) / span,
+                                    np.zeros(len(restored))))
+    try:
+        _validate_quads(represented, staged.elements)
+    except ValueError as error:
+        raise GeometryToleranceError("restored unit shape cannot be represented",
+                                     code="numeric_resolution_exceeded", stage="unit_construction") from error
+    _physical_boundary(restored, np.arange(len(boundary)), policy, represented=True)
+    _physical_quads(restored, staged.elements, policy, represented=True)
+    mapping = np.r_[boundary, np.arange(len(mesh.nodes), len(mesh.nodes) + len(added))]
+    mesh.replace_data(nodes=np.vstack((mesh.nodes, added)),
+                      elements=np.vstack((mesh.elements, mapping[staged.elements])))
+    if diagnostics is not None:
+        diagnostics.update(kwargs["_diagnostics"])
+    return mesh
+
+
+def build_unit_1_1_1_x(
+    mesh: Mesh2D,
+    edge1: np.ndarray,
+    edge2: np.ndarray,
+    edge3: np.ndarray,
+    edge4: np.ndarray,
+    *,
+    tolerance=None,
+) -> Mesh2D:
+    return _public_unit(mesh, (edge1, edge2, edge3, edge4), _build_unit_1_1_1_x, tolerance)
+
+
+build_unit_1_1_1_x.__doc__ = _build_unit_1_1_1_x.__doc__
 
 
 __all__ = ["build_unit_1_1_1_x"]
