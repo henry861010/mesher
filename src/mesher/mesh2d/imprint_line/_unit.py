@@ -75,7 +75,14 @@ def build_unit(bounds, axis, side, coordinates, tolerance):
         lengths = np.linalg.norm(v, axis=2)
         nxt = np.roll(v, -1, axis=1)
         turns = v[..., 0] * nxt[..., 1] - v[..., 1] * nxt[..., 0]
-        if np.any(lengths <= tolerance) or np.any(turns <= 0) or not np.all(np.isfinite(turns)):
+        if np.any(turns < 0) or not np.all(np.isfinite(turns)):
             raise ImprintLineError("unit geometry is below resolution or inverted",
                                    code="invalid_unit", stage="unit_construction", bounds=bounds)
+        if np.any(lengths <= tolerance):
+            raise ImprintLineError("unit edge is below resolution", code="unit_below_resolution",
+                                   stage="unit_construction", bounds=bounds,
+                                   minimum_edge=float(lengths.min()), tolerance=tolerance)
+        if np.any(turns == 0):
+            raise ImprintLineError("unit has a collinear corner", code="invalid_unit",
+                                   stage="unit_construction", bounds=bounds)
     return xy, cells

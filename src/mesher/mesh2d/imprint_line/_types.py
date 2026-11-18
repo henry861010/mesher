@@ -2,10 +2,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import numpy as np
 from numpy.typing import ArrayLike
+
+if TYPE_CHECKING:
+    from ._constraints import Constraints
+
+
+class Patterns(tuple):
+    """Sorted exact segments with their original input indices."""
+
+    def __new__(cls, segments, source_indices):
+        result = super().__new__(cls, segments)
+        result.source_indices = tuple(source_indices)
+        return result
 
 
 class LinePair(TypedDict):
@@ -62,6 +74,7 @@ class Transition:
     bounds: tuple[float, float, float, float]
     splits: np.ndarray
     chains: list[np.ndarray] = field(default_factory=list)
+    units: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
 
     @property
     def inner(self):
@@ -74,3 +87,4 @@ class ImprintPlan:
     transitions: list[Transition]
     rectangles: np.ndarray
     diagnostics: dict
+    constraints: Constraints

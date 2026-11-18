@@ -7,9 +7,9 @@ from collections.abc import Mapping
 import numpy as np
 
 from ...tolerance import canonicalize_points, resolve_tolerance
-from ..generators._holed_geometry import OrthogonalDomain, normalize_patterns
+from ..generators._holed_geometry import OrthogonalDomain
 from ..generators._holed_grid import _ElementBudget
-from ._types import Band, ImprintLineError
+from ._types import Band, ImprintLineError, Patterns
 
 
 def scalar(value, name, *, zero=False):
@@ -48,6 +48,10 @@ def prepare(element_size, line_pairs, pattern_lines, outer_outline,
         patterns = np.empty((0, 2, 2))
     if patterns.ndim != 3 or patterns.shape[1:] != (2, 2):
         raise ValueError("pattern_lines must have shape (n, 2, 2)")
+    policy.check_resolution(patterns, stage="imprint_input", source="pattern_lines")
+    equal = patterns[:, 0] == patterns[:, 1]
+    if np.any(np.sum(equal, axis=1) != 1):
+        raise ValueError("pattern_lines must be nonzero and exactly axis aligned; fixed endpoints cannot move")
     raw = []
     arrays = [outer, patterns.reshape(-1, 2)]
     for index, pair in enumerate(line_pairs):
@@ -78,7 +82,12 @@ def prepare(element_size, line_pairs, pattern_lines, outer_outline,
             expands.append(scalar(value.item(), f"line_pairs[{index}].{name}", zero=True))
         raw.append((axis, expands, len(points)))
         arrays.extend((lines.reshape(-1, 2), points))
-    merged = canonicalize_points(np.vstack(arrays), policy, stage="imprint_input", source="fixed_constraints")
+    points = np.vstack(arrays)
+    policy.check_resolution(points, stage="imprint_input", source="fixed_constraints")
+    fixed = np.zeros(len(points), dtype=bool)
+    fixed[len(outer):len(outer) + patterns.size // 2] = True
+    merged = canonicalize_points(points, policy, fixed=fixed,
+                                 stage="imprint_input", source="fixed_constraints")
     offsets = np.cumsum([0, *map(len, arrays)])
     parts = [merged[a:b] for a, b in zip(offsets, offsets[1:])]
     domain = OrthogonalDomain(parts[0], tolerance=policy)
@@ -88,7 +97,14 @@ def prepare(element_size, line_pairs, pattern_lines, outer_outline,
         if not math.isfinite(ratio):
             budget.check(budget.limit + 1, "imprint_extent_preflight")
         budget.check(math.ceil(ratio), "imprint_extent_preflight")
-    patterns = normalize_patterns(parts[1].reshape(-1, 2, 2), policy)
+    # Sort and deduplicate exact segments only. Do not normalize patterns again.
+    unique = {}
+    for index, p in enumerate(parts[1].reshape(-1, 2, 2)):
+        p = p[::-1].copy() if tuple(p[1]) < tuple(p[0]) else p.copy()
+        p.setflags(write=False)
+        unique.setdefault(tuple(p.ravel()), (p, index))
+    ordered = [unique[key] for key in sorted(unique)]
+    patterns = Patterns((p for p, _ in ordered), (i for _, i in ordered))
     bands = []
     cores = []
     for index, (axis, expands, _) in enumerate(raw):

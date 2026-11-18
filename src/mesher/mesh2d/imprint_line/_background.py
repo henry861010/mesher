@@ -5,6 +5,8 @@ repair (parity belongs to each mixed-element transition unit here).
 """
 from __future__ import annotations
 
+import heapq
+
 import numpy as np
 
 from ..generators._holed_geometry import OrthogonalDomain, _AxisIndex, _logical_corners
@@ -51,11 +53,25 @@ class ReservedDomain(OrthogonalDomain):
             yield coordinate, tuple(i for i in intervals if i.start < i.end)
 
 
+class BackgroundConflict(Exception):
+    """A generated reservation must move before the grid can be resolved."""
+
+    def __init__(self, owners):
+        self.owners = tuple(sorted(owners))
+        super().__init__(f"background conflicts with reservations {self.owners}")
+
+
 class Background(_Builder):
-    def __init__(self, domain, budget, transitions):
+    def __init__(self, domain, budget, transitions, constraints):
         super().__init__(domain, budget)
         self.transitions = transitions
         self.origins = {}
+        self.constraints = constraints
+
+    def support_coordinate(self, axis, coordinate):
+        # Input supports are already fixed. Generated cuts are resolved before
+        # querying visibility, never by the shared builder's distance snapping.
+        return float(coordinate)
 
     def anchor(self, point, kind):
         for axis in (0, 1):
@@ -90,59 +106,133 @@ class Background(_Builder):
                         self.add(band.axis, coordinate, interval, "dense")
                         self.origins.setdefault((band.axis, float(coordinate)), set()).update(
                             (max(band.start, interval.start), min(band.end, interval.end)))
+
+    def _failure(self, message, code, bounds, owners=()):
+        owners = set(owners)
+        for owner, t in enumerate(self.transitions, 1):
+            for axis in (0, 1):
+                other = 1 - axis
+                # Reservation corners cast chords far beyond the reservation.
+                # A remote thin rectangle can therefore require replanning its
+                # source even when it does not touch that reservation directly.
+                generated = (t.bounds[axis], t.bounds[axis + 2])
+                if axis != t.axis:
+                    generated = (*generated, *t.splits)
+                for value in (bounds[axis], bounds[axis + 2]):
+                    fixed = self.constraints.supports[axis]
+                    index = np.searchsorted(fixed, value)
+                    if (index == len(fixed) or fixed[index] != value) and value in generated:
+                        owners.add(owner)
+                if (bounds[axis] == t.bounds[axis + 2] or bounds[axis + 2] == t.bounds[axis]):
+                    if min(bounds[other + 2], t.bounds[other + 2]) > max(bounds[other], t.bounds[other]):
+                        owners.add(owner)
+        if owners:
+            raise BackgroundConflict(owners)
+        raise ImprintLineError(message, code=code, stage="background", bounds=bounds,
+                               tolerance=self.domain.tolerance)
+
+    def _resolvable(self, length, size):
+        return length > 0 and length / subdivision_count(length, size) > self.domain.tolerance
+
     def partition(self, size):
-        # Inspect all hard contacts before allocating a possibly invalid grid.
         rectangles = _initial_rectangles(self.domain, self.cuts.values(), self.budget)
         self.budget.preflight(rectangles, size)
+        for bounds in rectangles:
+            if any(not self._resolvable(bounds[a + 2] - bounds[a], size) for a in (0, 1)):
+                self._failure("rectangle cannot satisfy both size and resolution",
+                              "feature_below_resolution", bounds)
         self.index = _RectangleIndex(rectangles, self.budget)
 
+    def _cut_feasible(self, fixed, coordinate, interval, size):
+        """Check every leaf touched by this complete visibility chord."""
+        varying = 1 - fixed
+        pending = [self.index.root]
+        while pending:
+            node = self.index.nodes[pending.pop()]
+            b = node.bounds
+            if not (b[fixed] < coordinate < b[fixed + 2]):
+                continue
+            if b[varying + 2] <= interval.start or b[varying] >= interval.end:
+                continue
+            if node.children is not None:
+                pending.extend(node.children)
+            elif not all(self._resolvable(length, size) for length in
+                         (coordinate - b[fixed], b[fixed + 2] - coordinate)):
+                return False
+        return True
+
     def size_locked(self, size):
-        """Choose sizing cuts at unit corners instead of splitting locked sides."""
+        """Each successful iteration splits its target; retries are finite."""
         for fixed in (0, 1):
             varying = 1 - fixed
             while True:
                 bounds = self.index.largest(fixed)
+                # largest() has removed stale heap entries; retain this exact
+                # leaf so a successful cut must split the selected rectangle.
+                target = self.index.nodes[self.index.heaps[fixed][0][-1]]
                 length = bounds[fixed + 2] - bounds[fixed]
                 if length <= size * (1 + 32 * np.finfo(float).eps):
                     break
                 count = subdivision_count(length, size)
                 self.budget.check(self.index.leaf_count + count - 1, "imprint_sizing")
-                coordinate = bounds[fixed] + length * ((count // 2) / count)
-                visited = set()
+                ideal = bounds[fixed] + length * ((count // 2) / count)
+                pending = [(0., ideal)]
+                visited, owners = set(), set()
+                expanded = False
                 while True:
+                    if not pending:
+                        if expanded:
+                            self._failure("no admissible sizing cut", "locked_sizing_conflict", bounds, owners)
+                        expanded = True
+                        # Fallback positions are bounded by the subdivision budget.
+                        for k in range(1, count):
+                            value = bounds[fixed] + length * (k / count)
+                            heapq.heappush(pending, (abs(value - ideal), value))
+                        for t in self.transitions:
+                            allowed = t.splits if varying == t.axis else (t.bounds[fixed], t.bounds[fixed + 2])
+                            for value in allowed:
+                                if bounds[fixed] < value < bounds[fixed + 2]:
+                                    heapq.heappush(pending, (abs(value - ideal), float(value)))
+                        if not pending:
+                            self._failure("no admissible sizing cut", "locked_sizing_conflict", bounds, owners)
+                    _, original = heapq.heappop(pending)
+                    coordinate = float(self.constraints.align_generated(fixed, original, self.domain.tolerance))
                     if coordinate in visited:
-                        raise ImprintLineError("cannot size background beside a reserved unit",
-                                               code="locked_sizing_conflict", stage="background")
+                        continue
                     visited.add(coordinate)
+                    if not (bounds[fixed] < coordinate < bounds[fixed + 2]):
+                        continue
                     interval = next((i for i in self.domain.intervals(varying, coordinate)
                                      if i.start <= bounds[varying] and bounds[varying + 2] <= i.end), None)
                     if interval is None:
-                        raise ImprintLineError("sizing cut leaves its rectangle", code="grid_topology", stage="background")
-                    replacement = None
+                        continue
+                    blocked = False
                     for owner, endpoint in ((interval.start_owner, interval.start), (interval.end_owner, interval.end)):
                         if not owner:
                             continue
                         t = self.transitions[owner - 1]
                         if varying == t.axis and endpoint == t.inner:
                             continue
-                        allowed = (t.splits if varying == t.axis else
-                                   (t.bounds[fixed], t.bounds[fixed + 2]))
+                        allowed = t.splits if varying == t.axis else (t.bounds[fixed], t.bounds[fixed + 2])
                         if coordinate in allowed:
                             continue
-                        candidates = [float(v) for v in allowed if bounds[fixed] < v < bounds[fixed + 2]]
-                        if not candidates:
-                            raise ImprintLineError("locked side prevents background sizing",
-                                                   code="locked_sizing_conflict", stage="background")
-                        replacement = min(candidates, key=lambda v: (abs(v - coordinate), v))
-                        break
-                    if replacement is None:
-                        break
-                    coordinate = replacement
-                self.add(varying, coordinate, interval, "sizing")
+                        owners.add(owner)
+                        blocked = True
+                        for value in allowed:
+                            if bounds[fixed] < value < bounds[fixed + 2]:
+                                heapq.heappush(pending, (abs(value - ideal), float(value)))
+                    if blocked or not self._cut_feasible(fixed, coordinate, interval, size):
+                        continue
+                    before = self.index.leaf_count
+                    added = self.add(varying, coordinate, interval, "sizing")
+                    if not added or self.index.leaf_count <= before or target.children is None:
+                        raise ImprintLineError("sizing cut made no progress", code="sizing_no_progress",
+                                               stage="background", bounds=bounds, coordinate=coordinate)
+                    break
 
 
-def background(outer, transitions, cores, patterns, bands, size, budget):
+def background(outer, transitions, cores, patterns, bands, size, budget, constraints):
     domain = ReservedDomain(outer, transitions)
-    builder = Background(domain, budget, transitions)
+    builder = Background(domain, budget, transitions, constraints)
     builder.seed_lines(cores, patterns, bands, size)
     return builder

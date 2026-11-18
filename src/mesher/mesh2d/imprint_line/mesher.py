@@ -7,7 +7,6 @@ from ..model import Mesh2D
 from ._input import prepare
 from ._planning import plan
 from ._types import ImprintLineError
-from ._unit import build_unit
 
 
 def _prepare_plan(element_size, line_pairs, pattern_lines=(), *, outer_outline,
@@ -31,11 +30,7 @@ def _assemble(domain, result, policy, budget):
     cells = [np.arange(4 * len(rectangles), dtype=np.int64).reshape(-1, 4)]
     offset = len(nodes[0])
     for transition in result.transitions:
-        t = 1 - transition.axis
-        for (low, high), chain in zip(zip(transition.splits, transition.splits[1:]), transition.chains):
-            bounds = list(transition.bounds)
-            bounds[t], bounds[t + 2] = low, high
-            xy, elements = build_unit(tuple(bounds), transition.axis, transition.side, chain, policy.absolute)
+        for xy, elements in transition.units:
             nodes.append(xy)
             cells.append(elements + offset)
             offset += len(xy)
@@ -46,11 +41,12 @@ def _assemble(domain, result, policy, budget):
     # Deterministic IDs and element ordering, independent of pair order.
     order = np.lexsort(elements[:, ::-1].T)
     mesh = Mesh2D(xy, elements[order])
-    _validate(mesh, domain)
+    del nodes, cells, xy, inverse, elements, order
+    _validate(mesh, domain, result.constraints)
     return mesh
 
 
-def _validate(mesh, domain):
+def _validate(mesh, domain, constraints=None):
     """Linear-size topology checks; no quadratic all-element intersection scan."""
     e = mesh.elements
     edges = np.stack((e, np.roll(e, -1, axis=1)), axis=-1).reshape(-1, 2)
@@ -83,6 +79,10 @@ def _validate(mesh, domain):
     if np.any(areas <= 0) or abs(float(areas.sum()) - domain.area) > allowance:
         raise ImprintLineError("mesh does not cover the exterior exactly", code="invalid_coverage", stage="validation")
 
+    if constraints is not None:
+        del edges, ordered, counts, directed, boundary, accepted, points, local, nxt, areas
+        constraints.validate(mesh, unique)
+
 
 def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_outline,
                   min_transition_size: float, pattern_snap_distance: float,
@@ -96,7 +96,11 @@ def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_ou
     E is straight extension *before* the transition, not its depth.
 
     All geometry is orthogonal; the exterior is a simple loop without holes.
-    Finite patterns are clipped to it. Each transition occupies one coarse cell,
+    Pattern endpoints are fixed at their original float64 coordinates, including
+    during input normalization. Finite patterns are clipped to the exterior;
+    their retained segments and endpoints are checked before return. Conflicting
+    fixed supports are rejected rather than moved. ``pattern_snap_distance``
+    moves generated boundaries only. Each transition occupies one coarse cell,
     has three two-node sides, and contains only quads except for one triangle
     when its dense side has an odd number of nodes. No single band is widened.
     Same-direction overlapping envelopes merge; blocked or too-narrow ends
@@ -107,6 +111,9 @@ def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_ou
     zero. ``tolerance`` follows the package policy (default 1e-3). All arrays are
     privately owned, and input mappings/arrays are never modified.
     ``max_elements`` bounds final cells and intermediate rectangular partitions.
+    Sizing must make progress; incompatible size and resolution requirements
+    raise a structured error. Unresolvable transition units are replanned before
+    assembly, with dense lines continuing to the exterior if necessary.
     Runtime is output-sensitive, not bounded by the number of pairs alone.
     """
     return _assemble(*_prepare_plan(element_size, line_pairs, pattern_lines,
