@@ -58,20 +58,23 @@ def merge_bands(bands, size, domain):
     bands.sort(key=lambda b: (b.axis, b.start, b.end, b.low, b.high, tuple(b.coordinates)))
 
 
-def partition(low, high, mandatory, size, minimum, constraints=None, axis=0,
+def partition(low, high, mandatory, size, constraints=None, axis=0,
               tolerance=0, max_parts=1_000_000):
+    """Split across the line, bounded by size and geometric resolution only."""
     values = sorted({low, high, *(float(v) for v in mandatory if low < v < high)})
     result = [low]
     rounding = 32 * np.finfo(float).eps
     for a, b in zip(values, values[1:]):
         first = subdivision_count(b - a, size)
-        last = min(max_parts - len(result) + 1, int(np.floor((b - a) / minimum * (1 + rounding))))
+        last = max_parts - len(result) + 1
+        if tolerance > 0:
+            last = min(last, int(np.ceil((b - a) / tolerance)) - 1)
         for n in range(first, last + 1):
             cuts = np.linspace(a, b, n + 1)
             if constraints is not None:
                 cuts[1:-1] = constraints.align_generated(axis, cuts[1:-1], tolerance)
             widths = np.diff(cuts)
-            if (np.all(widths >= minimum * (1 - rounding))
+            if (np.all(widths > tolerance)
                     and np.all(widths <= size * (1 + rounding))):
                 result.extend(cuts[1:].tolist())
                 break
@@ -131,9 +134,6 @@ def candidate(domain, band, index, side, patterns, size, minimum, snap, constrai
     sign = -1 if side == 0 else 1
     limit = limits(domain, band)[side]
     if not band.active[side]:
-        return None
-    if band.high - band.low < minimum:
-        band.active[side] = False
         return None
     transverse = 1 - band.axis
     visited = set()
@@ -197,7 +197,7 @@ def candidate(domain, band, index, side, patterns, size, minimum, snap, constrai
                     mandatory.add(low)
                 else:
                     blockers.append(a if side == 0 else b)
-        splits = partition(band.low, band.high, mandatory, size, minimum, constraints,
+        splits = partition(band.low, band.high, mandatory, size, constraints,
                            transverse, domain.tolerance, budget.limit)
         if splits is None:
             for p in patterns:
@@ -220,7 +220,7 @@ def candidate(domain, band, index, side, patterns, size, minimum, snap, constrai
         return Transition(index, band.axis, side, box, splits)
 
 
-def boundary_feedback(builder, transitions, bands, size, minimum, constraints):
+def boundary_feedback(builder, transitions, bands, size, constraints):
     """Hard cut contacts either become whole unit dividers or move the front."""
     # Parallel neighbouring end caps should share a front. Moving each cap past
     # the other's outer corner independently would make them chase one another
@@ -265,7 +265,7 @@ def boundary_feedback(builder, transitions, bands, size, minimum, constraints):
         new = set(map(float, levels)) - set(t.splits)
         if new:
             splits = partition(t.bounds[transverse], t.bounds[transverse + 2],
-                               set(t.splits) | new, size, minimum, constraints, transverse,
+                               set(t.splits) | new, size, constraints, transverse,
                                builder.domain.tolerance, builder.budget.limit)
             if splits is None:
                 # An incoming hard ray may originate far away. Jump to its
@@ -339,7 +339,7 @@ def plan(domain, bands, cores, patterns, size, minimum, snap, policy, budget):
         if changed:
             continue
         builder = background(domain, transitions, cores, patterns, bands, size, budget, constraints)
-        if boundary_feedback(builder, transitions, bands, size, minimum, constraints):
+        if boundary_feedback(builder, transitions, bands, size, constraints):
             continue
         try:
             builder.partition(size)
@@ -350,7 +350,7 @@ def plan(domain, bands, cores, patterns, size, minimum, snap, policy, budget):
                 bands[t.band].fronts[t.side] = t.bounds[t.axis + (0 if t.side == 0 else 2)]
                 bands[t.band].splits[t.side].clear()
             continue
-        if boundary_feedback(builder, transitions, bands, size, minimum, constraints):
+        if boundary_feedback(builder, transitions, bands, size, constraints):
             continue
         for owner, t in enumerate(transitions, 1):
             pts = np.array(sorted(builder.boundary_points[owner]))

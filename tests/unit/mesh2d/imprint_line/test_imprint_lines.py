@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from mesher.mesh2d.imprint_line import imprint_lines, ImprintLineError
+from mesher.mesh2d.imprint_line import get_pair_line, imprint_lines, ImprintLineError
 from mesher.mesh2d.imprint_line.mesher import _prepare_plan, _assemble
 from mesher.mesh2d.imprint_line._unit import build_unit
 
@@ -32,6 +32,8 @@ class ImprintTests(unittest.TestCase):
             a = transition.axis
             t = 1 - a
             b = transition.bounds
+            self.assertGreaterEqual(b[a + 2] - b[a] + 1e-9 * minimum, minimum)
+            self.assertLessEqual(b[a + 2] - b[a], size * (1 + 1e-9))
             for source_index in plan.bands[transition.band].sources:
                 source = pairs[source_index]
                 ends = [source["line1"][0][a], source["line2"][0][a]]
@@ -107,14 +109,44 @@ class ImprintTests(unittest.TestCase):
                                    patterns, outer=((-2, 0), (12.1, 0), (12.1, 10), (-2, 10)))
         right = next(t for t in plan.transitions if t.axis == 0 and t.side == 1)
         self.assertEqual(right.bounds, (8.1, 4., 10.1, 6.))
-        self.assertFalse(any(t.axis == 1 for t in plan.transitions))
+        self.assertEqual(len([t for t in plan.transitions if t.axis == 1]), 2)
         self.assert_segment(mesh, 0, 4.1, 5.5, 8.1)
         self.assert_segment(mesh, 1, 10.1, 0, 10)
 
-    def test_thin_pair_does_not_widen(self):
-        _, plan = self.run_case([pair(0, (3, 4, 5, 4.2), count=4)], minimum=.5)
-        self.assertFalse(plan.transitions)
-        self.assertEqual((plan.bands[0].low, plan.bands[0].high), (4, 4.2))
+    def test_thin_pair_transitions_without_widening_in_both_directions(self):
+        for axis in (0, 1):
+            with self.subTest(axis=axis):
+                bounds = (3, 4, 5, 4.2) if axis == 0 else (4, 3, 4.2, 5)
+                _, plan = self.run_case([pair(axis, bounds, count=4)], minimum=.5)
+                self.assertEqual(len(plan.transitions), 2)
+                self.assertEqual({t.inner for t in plan.transitions}, {1, 7})
+                self.assertEqual((plan.bands[0].low, plan.bands[0].high), (4, 4.2))
+
+    def test_short_box_sides_transition_after_requested_expansion(self):
+        for box in ([0, 0, 50, 2000], [0, 0, 2000, 50]):
+            with self.subTest(box=box):
+                x1, y1, x2, y2 = box
+                pairs = get_pair_line([
+                    dict(box=box,
+                         x_points=[[x1, y] for y in np.arange(y1, y2 + 1, 10)],
+                         y_points=[[x, y1] for x in np.arange(x1, x2 + 1, 10)]),
+                ], expand_size=1000)
+                _, plan = self.run_case(pairs, size=1000, minimum=100, snap=0,
+                                       outer=((-5000, -5000), (7000, -5000),
+                                              (7000, 7000), (-5000, 7000)))
+                self.assertEqual(len(plan.transitions), 4)
+                self.assertFalse(plan.diagnostics['boundary_ends'])
+                for t in plan.transitions:
+                    expected = box[t.axis] - 1000 if t.side == 0 else box[t.axis + 2] + 1000
+                    self.assertEqual(t.inner, expected)
+
+    def test_thin_pair_still_requires_minimum_expansion_depth(self):
+        mesh, plan = self.run_case([pair(0, (3, 4, 5, 4.2), count=4)], minimum=.5,
+                                   outer=((-2, -2), (7.25, -2), (7.25, 12), (-2, 12)))
+        self.assertEqual([t.side for t in plan.transitions], [0])
+        self.assertEqual(plan.diagnostics['boundary_ends'], [((0,), 1)])
+        for coordinate in plan.bands[0].coordinates:
+            self.assert_segment(mesh, 0, coordinate, 5, 7.25)
 
     def test_no_room_extends_to_domain_without_transition(self):
         mesh, plan = self.run_case([pair(0, (3, 4, 5, 6), expand=100)])
@@ -173,6 +205,13 @@ class ImprintTests(unittest.TestCase):
         self.assertEqual(plan.diagnostics["transition_count"], 4)
         self.assert_segment(mesh, 0, 5, 0, 10)
 
+    def test_parallel_pattern_can_split_off_width_below_minimum(self):
+        mesh, plan = self.run_case([pair(0, (4, 4, 6, 6))], [[[0, 4.1], [10, 4.1]]])
+        self.assertEqual({t.inner for t in plan.transitions}, {2, 8})
+        for t in plan.transitions:
+            np.testing.assert_array_equal(t.splits, [4, 4.1, 6])
+        self.assert_segment(mesh, 0, 4.1, 0, 10)
+
     def test_perpendicular_pattern_can_bound_a_smaller_valid_grid_cell(self):
         mesh, plan = self.run_case([pair(0, (4, 4, 6, 6))], [[[9, 3], [9, 7]]])
         self.assert_segment(mesh, 1, 9, 3, 7)
@@ -185,11 +224,12 @@ class ImprintTests(unittest.TestCase):
         right = next(t for t in plan.transitions if t.side == 1)
         self.assertEqual(right.bounds, (8., 4., 8.5, 6.))
 
-    def test_remote_pattern_endpoint_uses_event_jump(self):
+    def test_remote_pattern_endpoint_splits_narrow_width_without_moving_transition(self):
         mesh, plan = self.run_case([pair(0, (4, 4, 6, 6))], [[[900, 4.1], [900, 4.2]]],
                                    outer=((0, 0), (1000, 0), (1000, 10), (0, 10)), snap=0)
         right = next(t for t in plan.transitions if t.side == 1)
-        self.assertEqual(right.inner, 900)
+        self.assertEqual(right.inner, 8)
+        np.testing.assert_array_equal(right.splits, [4, 4.1, 4.2, 6])
         self.assertLessEqual(plan.diagnostics["planning_iterations"], 3)
         self.assert_segment(mesh, 1, 900, 4.1, 4.2)
 

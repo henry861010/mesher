@@ -136,10 +136,10 @@ else:
 
     def test_fixed_divider_requires_more_transition_cells(self):
         constraints = Constraints((np.array([]), np.array([4, 6.0005, 8])), ())
-        splits = partition(4, 8, (), 2, .5, constraints, 1, .001, 100)
+        splits = partition(4, 8, (), 2, constraints, 1, .001, 100)
         self.assertEqual(len(splits), 4)
         self.assertTrue(np.all(np.diff(splits) <= 2))
-        self.assertTrue(np.all(np.diff(splits) >= .5))
+        self.assertTrue(np.all(np.diff(splits) > .001))
 
     def test_validation_rejects_moved_patterns_and_missing_endpoints(self):
         for move_axis, old, new in ((1, 5, 5.1), (0, 1, 1.1)):

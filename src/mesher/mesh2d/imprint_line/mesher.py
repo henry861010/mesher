@@ -103,10 +103,12 @@ def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_ou
     moves generated boundaries only. Each transition occupies one coarse cell,
     has three two-node sides, and contains only quads except for one triangle
     when its dense side has an odd number of nodes. No single band is widened.
-    Same-direction overlapping envelopes merge; blocked or too-narrow ends
+    Same-direction overlapping envelopes merge; blocked ends
     extend to the exterior if no admissible transition remains.
 
-    Both size parameters use world units. Require
+    ``min_transition_size`` limits transition depth along the expansion
+    direction only, not line length or transverse cell width. Transverse widths
+    must exceed the geometric tolerance. Both size parameters use world units. Require
     ``tolerance < min_transition_size <= element_size``; snap distance may be
     zero. ``tolerance`` follows the package policy (default 1e-3). All arrays are
     privately owned, and input mappings/arrays are never modified.

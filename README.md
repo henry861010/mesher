@@ -14,6 +14,9 @@ The package is organized by responsibility:
 - `mesher.mesh25d` translates Standard V1 geometry and coordinates the complete
   workflow through `plan2d.py` (2D meshing) and `plan3d.py` (3D meshing).
 - `mesher.process_flow` owns the worker CLI, progress transport, and CDB export.
+- `mesher.utils` provides geometry preparation helpers such as
+  [`get_mm2_control_area`](src/mesher/utils/README.md), which finds local
+  die-corner and adjoining-gap control regions without generating a mesh.
 
 See [Architecture](docs/architecture.md) for the dependency rules,
 [Mesh25D design](docs/mesh25d-design.md) for the architecture and data-flow diagrams,

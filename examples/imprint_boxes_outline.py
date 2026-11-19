@@ -139,12 +139,17 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     boxes, outer = model()
 
+    # Sampling belongs to the caller; enable each direction explicitly.
+    specs = [dict(box=box,
+                  x_points=[[box[0], y] for y in np.r_[np.arange(box[1], box[3], SPACING), box[3]]],
+                  y_points=[[x, box[1]] for x in np.r_[np.arange(box[0], box[2], SPACING), box[2]]])
+             for box in boxes]
     # Public helper -> public mesher. No hand-built pairs or private planner calls.
-    pairs = get_pair_line(boxes, EXPAND_SIZE, outer_outline=outer,
-                          distance=DISTANCE, spacing=SPACING)
+    pairs = get_pair_line(specs, EXPAND_SIZE, outer_outline=outer,
+                          distance=DISTANCE)
     mesh = imprint_lines(ELEMENT_SIZE, pairs, outer_outline=outer,
                          min_transition_size=1, pattern_snap_distance=0)
-    baseline_pairs = get_pair_line(boxes, EXPAND_SIZE, spacing=SPACING)
+    baseline_pairs = get_pair_line(specs, EXPAND_SIZE)
     baseline = imprint_lines(ELEMENT_SIZE, baseline_pairs, outer_outline=outer,
                              min_transition_size=1, pattern_snap_distance=0)
     extensions = selected_extensions(pairs, outer)
