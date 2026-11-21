@@ -2,24 +2,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import TypeVar
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from mesher.mesh2d.imprint_line import BoxPairSpec
 
+_Line = TypeVar("_Line", bound=ArrayLike)
 
-def group_lines(group_size: float, lines: list) -> list[BoxPairSpec]:
-    """Group parallel segments with identical spans into box controls.
 
-    Endpoint order and duplicate segments are immaterial. A gap between
-    consecutive lines splits a group when it is at least `group_size`.
-    An isolated line raises ValueError because it cannot form a rectangle.
+def find_adapter_group(
+    group_size: float, lines: Iterable[_Line], min_group_count: int = 3
+) -> tuple[list[BoxPairSpec], list[_Line]]:
+    """Return adapter box controls and the remaining original pattern lines.
+
+    Parallel segments must have identical spans. A gap of at least
+    `group_size` separates runs. A run qualifies at `min_group_count`
+    distinct offsets, counting duplicate and reversed segments once.
+    All copies of grouped lines are consumed. Remaining lines preserve
+    input order, endpoint orientation, and duplicates. Inputs are not mutated.
     Horizontal lines supply Y samples in x_points, verticals X in y_points.
     """
     if not np.isfinite(group_size) or group_size <= 0:
         raise ValueError("group_size must be finite and positive")
+    if not isinstance(min_group_count, (int, np.integer)) or min_group_count < 2:
+        raise ValueError("min_group_count must be an integer of at least 2")
 
-    offsets: dict[tuple[str, float, float], set[float]] = {}
+    lines = list(lines)
+    offsets: dict[tuple[str, float, float], dict[float, list[int]]] = {}
     for index, line in enumerate(lines):
         endpoints = np.asarray(line, dtype=float)
         if endpoints.shape != (2, 2) or not np.isfinite(endpoints).all():
@@ -33,28 +45,31 @@ def group_lines(group_size: float, lines: list) -> list[BoxPairSpec]:
             offset = x1
         else:
             raise ValueError(f"lines[{index}] must be a nonzero axis-aligned segment")
-        offsets.setdefault(key, set()).add(offset)
+        offsets.setdefault(key, {}).setdefault(offset, []).append(index)
 
     result: list[BoxPairSpec] = []
-    for (orientation, low, high), values in sorted(offsets.items()):
-        positions = sorted(values)
+    grouped = [False] * len(lines)
+    for (orientation, low, high), indices_by_offset in sorted(offsets.items()):
+        positions = sorted(indices_by_offset)
         start = 0
         for stop in range(1, len(positions) + 1):
             if stop < len(positions) and positions[stop] - positions[stop - 1] < group_size:
                 continue
-            first, last = positions[start], positions[stop - 1]
-            if stop - start == 1:
-                raise ValueError(
-                    f"isolated {orientation} line at offset {first} with span [{low}, {high}]"
-                )
+            run = positions[start:stop]
+            start = stop
+            if len(run) < min_group_count:
+                continue
+            first, last = run[0], run[-1]
             if orientation == "horizontal":
                 result.append(BoxPairSpec(box=[low, first, high, last],
-                                          x_points=[[low, y] for y in positions[start:stop]]))
+                                          x_points=[[low, y] for y in run]))
             else:
                 result.append(BoxPairSpec(box=[first, low, last, high],
-                                          y_points=[[x, low] for x in positions[start:stop]]))
-            start = stop
-    return result
+                                          y_points=[[x, low] for x in run]))
+            for offset in run:
+                for index in indices_by_offset[offset]:
+                    grouped[index] = True
+    return result, [line for index, line in enumerate(lines) if not grouped[index]]
 
 
 def get_mm2_control_area(

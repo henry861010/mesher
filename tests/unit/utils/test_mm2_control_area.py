@@ -2,10 +2,11 @@
 
 import itertools
 import unittest
+from copy import deepcopy
 
 import numpy as np
 
-from mesher.utils import get_mm2_control_area, group_lines
+from mesher.utils import find_adapter_group, get_mm2_control_area
 
 
 def product_boxes(xs, ys):
@@ -168,19 +169,53 @@ class ControlAreaTests(unittest.TestCase):
                 get_mm2_control_area([box], corner_extent=extent)
 
 
-class GroupLinesTests(unittest.TestCase):
-    def test_multiple_groups(self):
+class FindAdapterGroupTests(unittest.TestCase):
+    def test_default_groups_and_remaining_patterns(self):
+        horizontal = [[[10, y], [0, y]] for y in (2, 0, 1)]
+        vertical = [[[x, 0], [x, 10]] for x in (4, 6, 5)]
+        short = [[2, 1], [10, 1]]
+        pair = [[[10, y], [0, y]] for y in (6, 5)]
+        lines = [pair[0], *horizontal, pair[0][::-1], short, *vertical,
+                 horizontal[0][::-1], pair[1], short]
+        before = deepcopy(lines)
+        groups, remaining = find_adapter_group(3, lines)
+        self.assertEqual(groups, [
+            {"box": [0, 0, 10, 2], "x_points": [[0, 0], [0, 1], [0, 2]]},
+            {"box": [4, 0, 6, 10], "y_points": [[4, 0], [5, 0], [6, 0]]},
+        ])
+        self.assertEqual(remaining, [pair[0], pair[0][::-1], short, pair[1], short])
+        self.assertEqual(lines, before)
+
+    def test_gap_equal_to_threshold_separates_groups(self):
         lines = [[[10, y], [0, y]] for y in (4, 0, 5, 1)]
-        self.assertEqual(group_lines(3, lines), [
+        self.assertEqual(find_adapter_group(3, lines, min_group_count=2), ([
             {"box": [0, 0, 10, 1], "x_points": [[0, 0], [0, 1]]},
             {"box": [0, 4, 10, 5], "x_points": [[0, 4], [0, 5]]},
-        ])
+        ], []))
 
-    def test_isolated_line_after_valid_group(self):
-        lines = [[[x, 0], [x, 10]] for x in (0, 1, 4)]
-        lines.append(lines[-1][::-1])
-        with self.assertRaisesRegex(ValueError, "isolated vertical line"):
-            group_lines(3, lines)
+    def test_custom_minimum_counts_distinct_positions(self):
+        lines = [[[x, 0], [x, 10]] for x in (0, 1, 2, 2)]
+        self.assertEqual(find_adapter_group(2, lines, min_group_count=4), ([], lines))
+        lines.append([[3, 10], [3, 0]])
+        self.assertEqual(find_adapter_group(2, iter(lines), min_group_count=4), ([
+            {"box": [0, 0, 3, 10], "y_points": [[0, 0], [1, 0], [2, 0], [3, 0]]},
+        ], []))
+
+    def test_empty(self):
+        self.assertEqual(find_adapter_group(1, []), ([], []))
+
+    def test_invalid_thresholds(self):
+        for count in (0, 1, True, 3.0, "3"):
+            with self.subTest(count=count), self.assertRaisesRegex(ValueError, "min_group_count"):
+                find_adapter_group(1, [], min_group_count=count)
+        for size in (0, -1, np.nan, np.inf):
+            with self.subTest(size=size), self.assertRaisesRegex(ValueError, "group_size"):
+                find_adapter_group(size, [])
+
+    def test_invalid_segments(self):
+        for line in ([[0, 0], [1, 1]], [[0, 0], [0, 0]], [[0, 0], [0, np.inf]], [[0, 0]]):
+            with self.subTest(line=line), self.assertRaisesRegex(ValueError, r"lines\[0\]"):
+                find_adapter_group(1, [line])
 
 
 if __name__ == "__main__":

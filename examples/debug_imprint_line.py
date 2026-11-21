@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from mesher import ElementType2D, Mesh2D
 from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
-from mesher.utils import group_lines, get_mm2_control_area
+from mesher.utils import find_adapter_group, get_mm2_control_area
 from mesher.mesh2d.imprint_line import get_pair_line, imprint_lines
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.editor import EditorMesh2D
@@ -69,15 +69,13 @@ def _find_pair_td_corner(cow_outline):
     
     return line_pairs
 
-def _find_pair_fillet(cow_outline):
-    fillet_objs = []
-    
+def _find_pair_fillet(cow_outline, fillet_objs):
     box_objs = []
+    remaining_patterns = []
     for fillet_obj in fillet_objs:
-        lines = fillet_objs.get_mesh_control()
-        
-        # classify the line to box group
-        box_objs += group_lines(lines)
+        groups, remaining = find_adapter_group(group_size=6, lines=fillet_obj.get_mesh_control())
+        box_objs.extend(groups)
+        remaining_patterns.extend(remaining)
         
     line_pairs = get_pair_line(
         boxes = box_objs, 
@@ -86,9 +84,9 @@ def _find_pair_fillet(cow_outline):
         distance = 4000
     )
         
-    return line_pairs
+    return line_pairs, remaining_patterns
 
-def cow_mesh():
+def cow_mesh(fillet_objs=()):
     cow_outline = _get_cow_outline()
     
     # die pattern
@@ -103,7 +101,8 @@ def cow_mesh():
         ])
     
     td_corner_pair = _find_pair_td_corner(cow_outline=cow_outline)
-    fillet_pair = _find_pair_fillet(cow_outline=cow_outline)
+    fillet_pair, fillet_patterns = _find_pair_fillet(cow_outline, fillet_objs)
+    pattern_lines.extend(fillet_patterns)
     
     line_pairs = td_corner_pair + fillet_pair
     
