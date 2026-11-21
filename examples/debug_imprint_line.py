@@ -1,13 +1,15 @@
-"""Inspect boxes on their boundary grid using Matplotlib.
+"""Connect the imprinted cow mesh to the surrounding non-cow grid.
 
 Run from the repository root:
-    PYTHONPATH=src venv/bin/python examples/pattern2d.py
-
-Edit BOXES below, then use the window toolbar to pan, zoom, or save a picture.
+    PYTHONPATH=src venv/bin/python examples/debug_imprint_line.py
 """
 
 import json
+from pathlib import Path
+
 import numpy as np
+from mesher import ElementType2D, Mesh2D
+from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
 from mesher.utils import group_lines, get_mm2_control_area
 from mesher.mesh2d.imprint_line import get_pair_line, imprint_lines
 from mesher.mesh2d.generators import generate_rectilinear_mesh
@@ -15,10 +17,11 @@ from mesher.mesh2d.editor import EditorMesh2D
 
 from mesher.mesh2d.visualization import view_mesh
 
-JSON_PATH = "/Users/henry/Desktop/code/mesher/examples/data/mm2_symmetric_package.json"
+JSON_PATH = Path(__file__).parent / "data" / "mm2_symmetric_package.json"
 GLOBAL_ELEMENT_SIZE = 1000
 FOCUS_ELEMENT_SIZE = 5
 ADAPTER_KOZ_SIZE = 1000
+COW_CUTOUT_MARGIN = 2000
 
 COW_TO_STIFFENER = 3000
 STIFFENER_WIDTH = 4000
@@ -141,40 +144,57 @@ def non_cow_mesh():
     return mesh
 
 
-if __name__ == "__main__":
-    cow_mesh = cow_mesh()
-    non_cow_mesh = non_cow_mesh()
-    
-    editor = EditorMesh2D()
-    editor.merge(cow_mesh, non_cow_mesh)
-    
-    cow_outline = _get_cow_outline()
-    cow_x1 = cow_outline[0][0]
-    cow_y1 = cow_outline[0][1]
-    cow_x2 = cow_outline[2][0]
-    cow_y2 = cow_outline[2][1]
-    indices = editor.search_element(non_cow_mesh, cow_x1-2000, cow_y1-2000, cow_x2+2000, cow_y2+2000, tolerance=0.01)
-    non_cow_mesh = editor.delete_element(non_cow_mesh, indices)
+def build_connected_mesh() -> Mesh2D:
+    """Grow two Quad4 layers from the cow boundary to the non-cow cutout."""
+    cow = cow_mesh()
+    grid = non_cow_mesh()
+    cow_boundary, = EditorMesh2D.outlines(cow)
+    xy = cow.nodes[cow_boundary, :2]
+    lower = xy.min(axis=0) - COW_CUTOUT_MARGIN
+    upper = xy.max(axis=0) + COW_CUTOUT_MARGIN
+    cutout = EditorMesh2D.search_element(grid, *lower, *upper, tolerance=0.01)
+    EditorMesh2D.delete_element(grid, cutout)
 
-    # merge
-    mesh = editor.merge(cow_mesh, non_cow_mesh)
-    
-    # adaptive mesh
-    rst = generate_layer_adaptive_mesh(
-        mesh = mesh, 
-        outline_i = outline_i, 
-        element_size = element_size, 
-        pattern_lines = pattern_lines,
-        outline_o = outline_o,
-        fixed_outer_boundary = fixed_outer_boundary,
-        expand_size = expand_size,
-        expand_ratio = expand_ratio,
-        tolerance = tolerance,
-        max_transition_count = max_transition_count,
-        min_size_ratio = min_size_ratio,
-        small_element_size = small_element_size,
-        dense_mapping_angle = dense_mapping_angle
+    # Drop nodes used only by deleted cells before assigning shared IDs.
+    used, inverse = np.unique(grid.elements, return_inverse=True)
+    ring = Mesh2D(grid.nodes[used], inverse.reshape(grid.elements.shape))
+    hole, _ = sorted(EditorMesh2D.outlines(ring), key=lambda loop: np.ptp(ring.nodes[loop, 0]))
+
+    # Stage only the cow elements that own an exterior edge. The adapter
+    # requires Quad4s, while the cow interior also contains Tri3s.
+    successor = np.full(cow.node_count, -1, dtype=np.int64)
+    successor[cow_boundary] = np.roll(cow_boundary, -1)
+    edge_end = np.roll(cow.elements, -1, axis=1)
+    boundary_edges = (successor[cow.elements] == edge_end) | (successor[edge_end] == cow.elements)
+    boundary_cells = np.any(boundary_edges, axis=1)
+    if np.any(cow.element_types[boundary_cells] != ElementType2D.QUAD4):
+        raise ValueError("The adaptive layer requires Quad4s along the cow boundary.")
+
+    ring_elements = ring.elements + cow.node_count
+    working = Mesh2D(np.vstack((cow.nodes, ring.nodes)),
+                     np.vstack((ring_elements, cow.elements[boundary_cells])))
+    original_count = working.element_count
+    first_layer = generate_layer_adaptive_mesh(
+        mesh=working,
+        outline_i=cow_boundary,
+        element_size=GLOBAL_ELEMENT_SIZE,
+        expand_size=20 * FOCUS_ELEMENT_SIZE,
+        small_element_size=30,
+        max_transition_count=10,
+        dense_mapping_angle=30,
+        min_size_ratio=0.001
     )
-    mesh = rst.mesh
-    
-    view_mesh(mesh)
+    generate_layer_adaptive_mesh(
+        mesh=working,
+        outline_i=first_layer.outline,
+        element_size=GLOBAL_ELEMENT_SIZE,
+        outline_o=hole + cow.node_count,
+        fixed_outer_boundary=True,
+    )
+    added_elements = working.elements[original_count:]
+    working.elements = np.vstack((cow.elements, ring_elements, added_elements))
+    return working
+
+
+if __name__ == "__main__":
+    view_mesh(build_connected_mesh())
