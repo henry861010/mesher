@@ -8,7 +8,7 @@ import numpy as np
 from ....tolerance import within_distance
 
 from ._geometry import BoxIndex, area, cross, intervals_cover, segment_relations
-from ._old_mesh import edge_membership, edge_owner_count, old_edge_keys
+from ._old_mesh import edge_membership, old_edge_keys
 from ._patterns import covered_intervals, occupied_intervals
 from ._types import QuadLayerError, UnmeshableDirectQuadLayout
 
@@ -221,15 +221,18 @@ def validate_patch(mesh, nodes, quads, outline, data):
     source_keys = {tuple(sorted(map(int, edge))) for edge in data["frozen"]}
     front_keys = set(expected).difference(source_keys)
     shared_front = front_keys.intersection(shared_keys)
-    old_cells = _ccw_cells(data["xy"][mesh.elements])
-    old_cell_index = None
-    if shared_front:
-        old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
-    for key in sorted(shared_front):
-        if (not set(key).issubset(target_ids)
-                or edge_owner_count(key, mesh.elements, data["xy"], old_cell_index, tol) != 1):
+    boundary_keys = old_edge_keys(mesh.elements, data, boundary_only=True)
+    attachments = np.asarray(sorted(source_keys))
+    missing = np.flatnonzero(~edge_membership(attachments, boundary_keys))
+    if len(missing):
+        raise QuadLayerError("each source edge must belong to exactly one existing element",
+                             code="topology_change", parameter="outline_i",
+                             edge=attachments[missing[0]].tolist())
+    shared_target = np.asarray(sorted(shared_front), dtype=np.int64).reshape(-1, 2)
+    for key, is_boundary in zip(shared_target, edge_membership(shared_target, boundary_keys)):
+        if not is_boundary or not set(key).issubset(target_ids):
             raise QuadLayerError("the target would create a nonconforming shared edge",
-                                 code="topology_change", parameter="outline_o", edge=key)
+                                 code="topology_change", parameter="outline_o", edge=key.tolist())
     unexpected_old_edges = shared_keys.difference(source_keys | shared_front)
     if unexpected_old_edges:
         raise QuadLayerError("the layer meets old mesh away from its source boundary",
@@ -257,8 +260,8 @@ def validate_patch(mesh, nodes, quads, outline, data):
                          new_edge_index, old_edge_index, tol, represented)
 
     new_cell_index = BoxIndex(new_cells.min(axis=1), new_cells.max(axis=1), tol)
-    if old_cell_index is None:
-        old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
+    old_cells = _ccw_cells(data["xy"][mesh.elements])
+    old_cell_index = BoxIndex(old_cells.min(axis=1), old_cells.max(axis=1), tol)
     _check_overlaps(new_cells, old_cells, new_cell_index, old_cell_index, data["numeric_tol"])
     _check_patterns(data["pattern_records"], new_cells, old_cells, new_cell_index, old_cell_index,
                     new_edges, old_edges, new_edge_index, old_edge_index, tol)

@@ -238,8 +238,10 @@ def _paired_unit(sides, i, j, tol, cache, stats):
     if not ((dist_a.max() < -margin and dist_b.min() > margin) or
             (dist_b.max() < -margin and dist_a.min() > margin)):
         _validate_patch(nodes, quads, ids)
+    fixed = (*first.fixed_interior, *shared_a[1:-1],
+             *(remap[node] for node in second.fixed_interior))
     return UnitPlan(nodes, quads, ids, "paired", max(first.quality, second.quality),
-                    metadata={"paired_cut": (i, j)})
+                    metadata={"paired_cut": (i, j)}, fixed_interior=fixed)
 
 
 def _adjacent_cuts(pairs, at, source_xy, outer_xy, tol, cap):

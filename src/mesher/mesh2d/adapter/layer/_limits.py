@@ -69,7 +69,7 @@ def bounded_outer_counts(counts, source_segments, left_nodes, right_nodes, limit
     return retained, rejected
 
 
-def preflight_element_limit(plan, data):
+def preflight_element_limit(plan, data, dense_section_ids):
     """Reject a proven whole-layer excess before any sampling or unit build.
 
     One minimum is counted per section. Seam alternatives and trials are not
@@ -96,7 +96,8 @@ def preflight_element_limit(plan, data):
                 line_bounds = line_count_bounds(
                     lengths, source_segments, data["h"], data["tol"],
                     data.get("max_transition_count", DEFAULT_MAX_TRANSITION_COUNT),
-                    data.get("min_size_ratio", .5), data.get("max_size_ratio", DEFAULT_MAX_SIZE_RATIO))
+                    data.get("min_size_ratio", .5), data.get("max_size_ratio", DEFAULT_MAX_SIZE_RATIO),
+                    size_band_active=section.id not in dense_section_ids)
             except QuadLayerError as error:
                 error.context.setdefault("section_id", section.id)
                 raise

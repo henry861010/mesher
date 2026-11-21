@@ -21,6 +21,7 @@ from ._planning.front import (_expansion_distances, _front, _normalize_outline_o
 from ._planning.source import _fail, _prepare, _validate_old_patterns
 from ._planning.sections import partition_sections
 from ._construction.sections import fill_sections, finalize_diagnostics, _quality_summary
+from ._construction.smoothing import smooth_selected_units
 from ._types import (PreparedLayerSource, QuadLayerError, QuadLayerResult,
                      QuadSectionPlan, UnmeshableDirectQuadLayout)
 
@@ -42,6 +43,7 @@ def _world_nodes(nodes, source_mesh, data):
             or np.any(np.abs(restored - nodes[count:, :2]) > data["numeric_tol"])):
         raise UnmeshableDirectQuadLayout("mapping new nodes back exceeds the geometric tolerance",
                                         stage="world_coordinates")
+    data["tolerance"].check_resolution(result[count:, :2], stage="world_coordinates", source="layer")
     return result
 
 
@@ -257,10 +259,8 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     source boundary node. The caller must supply clockwise exterior loops and
     counterclockwise hole loops, placing existing mesh to the right. The API
     preserves that direction and always grows to the left; it does not infer
-    ownership or reverse the source. The caller guarantees that each consecutive
-    pair is an existing boundary edge available for attachment. These source
-    preconditions are not checked against element ownership; violations have no
-    guaranteed early rejection or dedicated error code.
+    winding or reverse the source. Before committing, it checks that each
+    consecutive pair is an edge of exactly one existing element.
     Any starting point is accepted; closure is implicit, with an optional
     repeated first ID at the end. The API groups consecutive segments by their
     signed dominant X/Y direction into near-axis logical edges. It never
@@ -340,10 +340,13 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     Each resampled LINE outer segment may receive at most this many source
     segments; reverse refinement is unrestricted. ``min_size_ratio`` is finite
     and in (0, 1], default 0.5. ``max_size_ratio`` is finite and at least 1,
-    default 1.25. Outer spacing lies between the two ratios times
-    ``element_size``, within numerical roundoff.
-    Adjacent mandatory anchors closer than that minimum remain one unsplit
-    segment and are recorded as an exception; the transition cap still applies.
+    default 1.25. In ordinary and mixed LINE sections, outer spacing lies
+    between the two ratios times ``element_size``, within numerical roundoff.
+    Adjacent mandatory anchors closer than that minimum form one unsplit
+    segment recorded as an exception. In fully dense LINE sections, the
+    planner uses ``element_size`` as a preferred spacing and allows gaps below
+    the minimum or above the maximum. The transition cap applies to every
+    resampled LINE section.
     These constraints do not change layer thickness, source edges, corner
     sections, or repair interiors. LINE units favor normal projections of their
     source nodes and share single full-height edges. The first and last units
@@ -446,15 +449,17 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
     world_nodes = _world_nodes(nodes, working, data)
     if fixed_outer_boundary:
         restore_fixed_boundary(world_nodes, nodes, result_outline, data)
+    moved = smooth_selected_units(world_nodes, quads, registry_diagnostics["units"],
+                                  element_offset=len(working.elements), original_count=len(working.nodes),
+                                  tol=data["tolerance"].absolute)
     # Certify the coordinates that will actually be committed. Source nodes
     # already have the correct normalized representation; reproject only the
     # added suffix, replacing the former pre-restoration validation pass.
     nodes[len(working.nodes):, :2] = ((world_nodes[len(working.nodes):, :2] - data["origin"])
                                     / data["scale"])
     data["_represented_world_nodes"] = world_nodes
-    try:
-        if fixed_outer_boundary:
-            fixed_boundary_nodes(nodes, result_outline, data)
+
+    def validate_geometry():
         _validate_patch(working, nodes, quads, result_outline, data)
         if repair_count:
             original_data = dict(data["_original_data"])
@@ -464,6 +469,21 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
             if "outline_anchor_ids" in data:
                 original_data.update(outline_anchor_ids=data["outline_anchor_ids"])
             _validate_patch(mesh, nodes, all_quads, result_outline, original_data)
+
+    try:
+        if fixed_outer_boundary:
+            fixed_boundary_nodes(nodes, result_outline, data)
+        try:
+            validate_geometry()
+        except QuadLayerError:
+            if not moved:
+                raise
+            # A locally valid move can still enter the geometric tolerance
+            # band of a nonincident edge. Retry the original selected geometry.
+            ids = list(moved)
+            world_nodes[ids, :2] = list(moved.values())
+            nodes[ids, :2] = (world_nodes[ids, :2] - data["origin"]) / data["scale"]
+            validate_geometry()
         finalize_diagnostics(world_nodes, nodes, quads, registry_diagnostics, plan, data,
                              element_offset=len(working.elements))
     except QuadLayerError as error:

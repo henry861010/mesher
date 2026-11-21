@@ -209,6 +209,21 @@ class ExpandSizeTests(unittest.TestCase):
                     error = self.assert_atomic_error(api, value)
                     self.assertEqual(str(error), "expand_size must be finite and positive")
 
+    def test_size_and_expansion_parameters_require_real_scalars(self):
+        for api in _APIS:
+            for parameter in ("element_size", "expand_size", "expand_ratio"):
+                for value in (True, np.bool_(True), np.array(True), np.complex128(1 + 2j)):
+                    with self.subTest(api=api.__name__, parameter=parameter, value_type=type(value)):
+                        mesh, outline = layer_checks._rectangle()
+                        snapshot = self._snapshot(mesh)
+                        kwargs = {"element_size": .5, parameter: value}
+                        with self.assertRaises(QuadLayerError) as caught:
+                            api(mesh, outline, **kwargs)
+                        self.assertEqual(caught.exception.code, "invalid_input")
+                        self.assertEqual(caught.exception.context["stage"], "input_validation")
+                        self.assertEqual(caught.exception.context["parameter"], parameter)
+                        self.assert_unchanged(mesh, snapshot)
+
     def test_expand_size_conversion_failures_are_typed_and_atomic(self):
         for api in _APIS:
             for value in ("not-a-number", [1, 2], 10 ** 1000):

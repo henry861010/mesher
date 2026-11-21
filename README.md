@@ -347,8 +347,9 @@ and elements remain unchanged; only matching interface nodes are shared.
 All calls are staged on a private mesh, with one final commit. Any failure
 leaves the caller's arrays unchanged.
 
-`max_transition_count`, `min_size_ratio`, and `max_size_ratio` apply to resampled
-LINE sections in ordinary intermediate layers. The final transition preserves
+`max_transition_count` applies to all resampled LINE sections in intermediate
+layers. `min_size_ratio` and `max_size_ratio` bound outer spacing in ordinary
+and mixed LINE sections. The final transition preserves
 the global generator's fixed interface. Full-result diagnostics record all three
 settings and whether an ordinary layer uses them (`line_policy_active`).
 
@@ -416,9 +417,9 @@ optional repeated closing ID is accepted. The caller must supply clockwise
 exterior loops and counterclockwise hole loops, placing existing mesh to the
 right. Consecutive IDs, including the closing pair, must be existing boundary
 segments available for attachment: intermediate nodes cannot be omitted.
-These are caller preconditions; the adapter does not check source ownership or
-infer/reverse its direction. Violations have no guaranteed early rejection or
-dedicated error code. `EditorMesh2D.outlines(mesh)` supplies correctly oriented loops.
+Before committing, construction verifies that each source segment belongs to
+exactly one existing element. The geometric preview assumes an attachable
+source. `EditorMesh2D.outlines(mesh)` supplies correctly oriented loops.
 The adapter groups cyclic runs by their signed dominant X/Y direction. Adjacent
 logical edges must be perpendicular and each run must be near a global X or Y
 axis. Logical edges start at the lowest directed corner edge, so equivalent
@@ -594,11 +595,12 @@ may contain interior nodes.
 - `max_transition_count=20` caps the number of source segments assigned to
   each outer segment. One source segment may refine into multiple outer segments.
 - `min_size_ratio=0.5` and `max_size_ratio=1.25` define the allowed outer spacing
-  as multiples of `element_size`. The upper ratio must be finite and at least 1.
+  in ordinary and mixed LINE sections as multiples of `element_size`.
+  The upper ratio must be finite and at least 1.
   Set it to 1 to use `element_size` as a strict upper bound. Additional outer
   nodes can keep cross-band connections closer to the normal.
-- Two mandatory anchors closer than the minimum define a single unsplit
-  interval. Its coordinates and transition limit still apply.
+- Where a size band applies, two mandatory anchors closer than the minimum
+  define a single unsplit interval.
 
 All three adapter entry points (`plan_quad_sections`, `generate_layer_adaptive_mesh`,
 and `generate_full_adaptive_mesh`) accept optional dense-run partitioning:
@@ -606,8 +608,8 @@ and `generate_full_adaptive_mesh`) accept optional dense-run partitioning:
 ```python
 result = generate_layer_adaptive_mesh(
     mesh, outline_i, element_size=1000,
-    max_transition_count=1000,     # Explicit override for this extreme density contrast.
-    small_element_size=10,          # Opt in; default None preserves the partition.
+    max_transition_count=20,       # Each outer edge can receive up to 20 source edges.
+    small_element_size=10,         # Opt in; default None preserves the partition.
     dense_mapping_angle=30.0,      # Degrees; outward-only dense endpoint mapping.
 )
 ```
@@ -622,19 +624,26 @@ contact in increasing absolute-angle order, within its current LINE. Ordinary
 mode falls back to a normal projection when valid; fixed mode skips only the
 unmatched optional endpoint. One matched endpoint can still split the LINE.
 A single short edge qualifies; an entirely dense LINE needs no additional seams.
+For a resampled LINE contained entirely in a dense run, `element_size` is a
+preferred spacing. Outer gaps can fall below the minimum or exceed the maximum.
+The transition cap, mandatory anchors, Quad4 parity and element budget still
+apply. A LINE with both short and ordinary source edges keeps the size band.
 The old `dense_region_tolerance` keyword has been removed without an alias.
 
 The full adapter sends these seam contacts to the global generator before the
 last layer, then reuses the saved canonical contacts in its fixed interface.
+Each LINE in `section_details` reports `size_band_active` and its actual
+`min_outer_spacing` and `max_outer_spacing` in world units.
 Diagnostics expose `dense_sections`, `dense_seams`, and `dense_mappings`, including
 source/target IDs, shared seam IDs, mapping angles, and reasons for skipped cuts. Dense partitioning bounds the transition's location; it does
 not guarantee good internal cell quality under extreme coarsening.
 
 [Dense-section example](examples/dense_adaptive_sections.py) compares the old
 cap, the relaxed cap, and explicit dense sections on the same 5-versus-1000
-fixture. The last two cases explicitly use a cap of 1000; the default is 20.
-For this fixture, combining dense splitting with cap 20 conflicts with the
-outer spacing constraint and raises `QuadLayerError`. Reproduce the comparison with:
+fixture. The last two cases use a cap of 1000. With the default cap of 20,
+each fully dense run of 60 source edges needs at least three outer edges to
+span its 300-unit width. Ordinary sections keep their 500–1250 size band.
+Run the illustrated comparison with the following command.
 
 ```sh
 PYTHONPATH=src python examples/dense_adaptive_sections.py --no-show --plot /tmp/dense-adaptive-sections.png

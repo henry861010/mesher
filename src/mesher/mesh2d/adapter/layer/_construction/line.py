@@ -20,11 +20,13 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
               max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
               min_size_ratio: float = 0.5,
               max_size_ratio: float = DEFAULT_MAX_SIZE_RATIO,
+              size_band_active: bool = True,
               _sampling_cache: dict | None = None) -> list[SectionPatch]:
     """Build bounded alternatives for one pair of prescribed section seams.
 
     Fixed fronts supply exact vertices. Resampleable fronts supply mandatory
     anchors and let the position of each source cut guide its outer partner.
+    Fully dense sections retain the target size and cap without a size band.
     The section cache is shared only between seam states of this same LINE.
     """
     source, outer, left, right = map(xyz_chain, (source, outer, left, right))
@@ -60,7 +62,8 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
         plans = ((outer, cuts) for cuts in fixed_cut_plans(source, outer, left, right, tol))
     else:
         plans = plan_resampled(source, outer, left, right, h, tol, cap, min_ratio, max_ratio,
-                               cache=cache, max_added_elements=max_added_elements)
+                               size_band_active=size_band_active, cache=cache,
+                               max_added_elements=max_added_elements)
 
     stats = {} if _diagnostics is None else _diagnostics
     stats.update(line_planner="projection", unit_trial_count=0, local_repair_count=0,
@@ -81,7 +84,9 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
             continue
         if patch is None:
             continue
-        if not fixed_outer_boundary:
+        if fixed_outer_boundary:
+            patch.diagnostics["size_band_active"] = False
+        else:
             sampling = cache["sampling"]
             sampling.validate_sample(patch.nodes[patch.outer_ids])
             patch.diagnostics.update(sampling.diagnostics, line_sampling="projection")

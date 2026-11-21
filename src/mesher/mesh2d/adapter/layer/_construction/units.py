@@ -23,6 +23,7 @@ class UnitPlan:
     method: str
     quality: float
     metadata: dict = field(default_factory=dict)
+    fixed_interior: tuple[int, ...] = ()
 
 
 @dataclass
@@ -100,7 +101,8 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
     effective_tol = tol / scale
     policy = _physical_boundary(boundary, np.arange(len(boundary)), tol)
 
-    def restored(raw_nodes, raw_quads, method):
+    def restored(raw_nodes, raw_quads, details):
+        method, fixed_interior = details
         nodes = np.column_stack((origin + scale * raw_nodes[:, :2],
                                  np.zeros(len(raw_nodes))))
         # Every fixed coordinate survives normalization exactly, on either path.
@@ -110,7 +112,7 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
             raise ValueError("restored unit coordinates must be finite")
         _physical_quads(nodes, quads, policy)
         return UnitPlan(nodes, quads, ids, method, quality_score(nodes, quads),
-                        {"boundary_counts": tuple(map(len, ids))})
+                        {"boundary_counts": tuple(map(len, ids))}, fixed_interior)
 
     cache_key = (tuple(map(len, ids)), normalized.tobytes(), effective_tol)
     cached = None if _cache is None else _cache.get(cache_key)
@@ -138,20 +140,23 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
             # 111x public builder checks convexity only, so complete that here.
             if builder is build_unit_1_1_1_x:
                 _validate_patch(attempt.nodes, attempt.elements, ids)
-            result = restored(attempt.nodes, attempt.elements, "template")
+            details = ("template", ())
+            result = restored(attempt.nodes, attempt.elements, details)
         except ValueError:
             continue
         mesh = attempt
-        diagnostics["method"] = "template"
         break
     else:
-        build_unit_1_x_y_z(mesh, *ids, tolerance=effective_tol, _diagnostics=diagnostics)
-        result = restored(mesh.nodes, mesh.elements, diagnostics["method"])
+        midpoints = []
+        build_unit_1_x_y_z(mesh, *ids, tolerance=effective_tol, _diagnostics=diagnostics,
+                           _fixed_interior=midpoints)
+        details = (diagnostics["method"], tuple(midpoints))
+        result = restored(mesh.nodes, mesh.elements, details)
     if _cache is not None:
         # Store normalized output only after its restored representation passes
         # validation. Byte-exact shape AND effective tolerance govern reuse.
         _cache[cache_key] = (mesh.nodes.copy(), np.asarray(mesh.elements, dtype=np.int64).copy(),
-                             diagnostics["method"])
+                             details)
     return result
 
 
@@ -210,13 +215,16 @@ def assemble_section(units: list[UnitPlan], source: np.ndarray, outer: np.ndarra
     for unit in units:
         mapping = pool.add_unit(unit)
         quads.append(mapping[unit.quads])
+        boundary = np.concatenate([side[:-1] for side in unit.sides])
         records.append({
             "element_start": offset, "element_end": offset + len(unit.quads),
             "boundary_counts": [len(side) for side in unit.sides],
             "method": unit.method, "quality": unit.quality,
-            "polygon": unit.nodes[np.concatenate([side[:-1] for side in unit.sides])].tolist(),
-            "_polygon_ids": mapping[np.concatenate([side[:-1] for side in unit.sides])].tolist(),
+            "polygon": unit.nodes[boundary].tolist(),
+            "_polygon_ids": mapping[boundary].tolist(),
         })
+        if unit.fixed_interior:
+            records[-1]["_fixed_interior"] = [int(mapping[node]) for node in unit.fixed_interior]
         offset += len(unit.quads)
     return SectionPatch(pool.array(), np.vstack(quads), left_ids, right_ids,
                         source_ids, outer_ids, records, float(size_error),

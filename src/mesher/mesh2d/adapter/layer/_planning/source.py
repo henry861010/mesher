@@ -17,6 +17,11 @@ def _fail(message, code="invalid_input", **context):
 
 
 def _input_scalar(value, parameter):
+    if isinstance(value, np.ndarray) and value.ndim == 0:
+        value = value.item()
+    if isinstance(value, (bool, np.bool_, complex, np.complexfloating, np.ndarray)):
+        _fail(f"{parameter} must be a finite real scalar",
+              stage="input_validation", parameter=parameter)
     try:
         return float(value)
     except QuadLayerError:
@@ -46,14 +51,20 @@ def _normalize_patterns(pattern_lines, origin, scale, tol, source):
                              pattern_index=index, limit=PATTERN_RANGE_LIMIT, reason=reason)
 
     try:
-        patterns = np.asarray(pattern_lines, dtype=float)
+        raw = np.asarray(pattern_lines)
+        if raw.shape in ((0,), (0, 2, 2)):
+            return np.empty((0, 2, 2))
+        if (raw.shape[1:] != (2, 2) or raw.ndim != 3 or np.iscomplexobj(raw)
+                or (raw.dtype.kind == "O" and any(np.iscomplexobj(v) for v in raw.flat))):
+            _fail("patterns must be real XY segments with shape (n, 2, 2)", parameter="pattern_lines")
+        patterns = np.asarray(raw, dtype=float)
+    except QuadLayerError:
+        raise
     except OverflowError:
         range_failure("coordinate_conversion")
     except (ValueError, TypeError) as exc:
         raise QuadLayerError("patterns must have shape (n, 2, 2)") from exc
-    if patterns.size == 0:
-        return np.empty((0, 2, 2))
-    if patterns.ndim != 3 or patterns.shape[1:] != (2, 2) or not np.all(np.isfinite(patterns)):
+    if not np.all(np.isfinite(patterns)):
         _fail("patterns must be finite XY segments with shape (n, 2, 2)")
     with np.errstate(over="ignore", invalid="ignore"):
         patterns = (patterns - origin) / scale

@@ -104,7 +104,7 @@ def _distance_to_segment_squared(point: np.ndarray, segment: np.ndarray) -> floa
     return float(delta @ delta)
 
 
-def _stage_sweep(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
+def _stage_sweep(nodes: np.ndarray, edges: _Edges, tolerance=None, *, midpoints) -> _Patch:
     """Advance a primary node by one segment and match the nearest valid node."""
     frontier, left, opposite, back = edges
     right = back[::-1]
@@ -169,6 +169,8 @@ def _stage_sweep(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
                 staged_quads.append(cap_quads)
                 i, j = next_i, next_j
                 # Reuse the entire connector, including its midpoint index.
+                if len(connector) == 3:
+                    midpoints.append(int(connector[1]))
                 frontier = connector[::-1]
                 accepted = True
                 break
@@ -239,7 +241,8 @@ def _stage_inner_ring(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patc
     return _checked_patch(np.vstack((nodes, inner_nodes)), np.vstack((strips, fan)), edges)
 
 
-def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = None, tolerance=None) -> _Patch:
+def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = None, tolerance=None,
+                 *, fixed_interior=None) -> _Patch:
     def selected(patch: _Patch, method: str) -> _Patch:
         _physical_quads(*patch, tolerance)
         if diagnostics is not None:
@@ -254,7 +257,12 @@ def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = No
         if len(edge) != 2:
             continue
         try:
-            return selected(_stage_sweep(nodes, edges[index:] + edges[:index], tolerance), "sweep")
+            midpoints = []
+            result = selected(_stage_sweep(nodes, edges[index:] + edges[:index], tolerance,
+                                           midpoints=midpoints), "sweep")
+            if fixed_interior is not None:
+                fixed_interior.extend(midpoints)
+            return result
         except ValueError:
             pass
     try:
@@ -275,6 +283,7 @@ def _build_unit_1_x_y_z(
     edge4: np.ndarray,
     *,
     _diagnostics: dict | None = None,
+    _fixed_interior=None,
     tolerance=None,
 ) -> Mesh2D:
     """Append convex Quad4 cells inside four cyclic boundary chains.
@@ -313,7 +322,8 @@ def _build_unit_1_x_y_z(
         edges = tuple(edge[::-1] for edge in edges[::-1])
 
     staged_diagnostics: dict = {}
-    nodes, quads = _stage_patch(mesh.nodes, edges, staged_diagnostics, policy)
+    nodes, quads = _stage_patch(mesh.nodes, edges, staged_diagnostics, policy,
+                                fixed_interior=_fixed_interior)
     _checked_patch(nodes, quads, (edge1, edge2, edge3, edge4))
     mesh.replace_data(nodes=nodes, elements=np.vstack((mesh.elements, quads)))
     if _diagnostics is not None:

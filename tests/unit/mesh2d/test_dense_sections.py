@@ -111,11 +111,78 @@ class DenseSectionTests(unittest.TestCase):
                             for d in result.diagnostics['section_details']))
         self.assertTrue(all(d.get('max_actual_transition_count', 0) <= 20
                             for d in result.diagnostics['section_details']))
-        # This extreme dense section cannot satisfy both cap 20 and the size band.
+
+    def test_short_dense_sections_obey_transition_cap_and_neighbors_obey_spacing(self):
+        for cap in (20, 10):
+            with self.subTest(cap=cap):
+                mesh, outline = rectangle()
+                nodes, cells = mesh.nodes.copy(), mesh.elements.copy()
+                result = generate_layer_adaptive_mesh(mesh, outline, 1000., small_element_size=10.,
+                                                      max_transition_count=cap, max_added_elements=1000)
+                self.assert_built_partition(mesh, nodes, cells, result)
+                diagnostics = result.diagnostics
+                dense = {record['section_id'] for record in diagnostics['dense_sections']}
+                self.assertEqual(len(dense), 2)
+                for detail in diagnostics['section_details']:
+                    if detail['kind'] != 'LINE':
+                        continue
+                    points = mesh.nodes[detail['outer_ids'], :2]
+                    gaps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+                    self.assertAlmostEqual(detail['min_outer_spacing'], gaps.min())
+                    self.assertAlmostEqual(detail['max_outer_spacing'], gaps.max())
+                    self.assertEqual(detail['size_band_active'], detail['section_id'] not in dense)
+                    if detail['section_id'] in dense:
+                        self.assertEqual(detail['forced_short_intervals'], [])
+                        self.assertAlmostEqual(gaps.sum(), 300.)
+                        self.assertLess(gaps.max(), 500.)
+                        loads = [count for index in detail['unit_ids']
+                                 for count in diagnostics['units'][index]['source_segments_per_outer']]
+                        self.assertEqual(len(loads), len(gaps))
+                        self.assertEqual(sum(loads), 60)
+                        self.assertLessEqual(max(loads), cap)
+                        if cap == 20:
+                            np.testing.assert_allclose(gaps, [75.] * 4)
+                            self.assertAlmostEqual(detail['max_alignment_angle'], 0.)
+                    else:
+                        self.assertGreaterEqual(gaps.min(), 500. - 1e-8)
+                        self.assertLessEqual(gaps.max(), 1250. + 1e-8)
+
+    def test_dense_spacing_can_exceed_max_ratio_on_a_resampled_front(self):
+        mesh, outline = rectangle([0., 20., 31., 42., 62.], height=40.)
+        result = generate_layer_adaptive_mesh(mesh, outline, 10., small_element_size=12.,
+                                              max_transition_count=1, max_size_ratio=1.)
+        dense = {record['section_id'] for record in result.diagnostics['dense_sections']}
+        self.assertEqual(len(dense), 2)
+        for detail in result.diagnostics['section_details']:
+            if detail['kind'] != 'LINE':
+                continue
+            points = mesh.nodes[detail['outer_ids'], :2]
+            gaps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+            self.assertLessEqual(detail['max_actual_transition_count'], 1)
+            if detail['section_id'] in dense:
+                np.testing.assert_allclose(gaps, [11., 11.])
+            else:
+                self.assertLessEqual(gaps.max(), 10. + 1e-8)
+
+    def test_a_wholly_dense_line_gets_the_exemption_without_any_new_seams(self):
+        mesh, outline = rectangle(np.arange(0., 305., 5.))
+        result = generate_layer_adaptive_mesh(mesh, outline, 1000., small_element_size=10.)
+        diagnostics = result.diagnostics
+        self.assertEqual(diagnostics['dense_seams'], [])
+        self.assertEqual(len(diagnostics['dense_sections']), 2)
+        for record in diagnostics['dense_sections']:
+            detail = diagnostics['section_details'][record['section_id']]
+            self.assertFalse(detail['size_band_active'])
+            self.assertLess(detail['max_outer_spacing'], 500.)
+            self.assertLessEqual(detail['max_actual_transition_count'], 20)
+
+    def test_dense_layer_over_budget_fails_atomically(self):
         mesh, outline = rectangle()
         nodes, cells = mesh.nodes, mesh.elements
-        with self.assertRaisesRegex(QuadLayerError, 'transition limit and size band'):
-            generate_layer_adaptive_mesh(mesh, outline, 1000., small_element_size=10.)
+        with self.assertRaises(QuadLayerError) as caught:
+            generate_layer_adaptive_mesh(mesh, outline, 1000., small_element_size=10.,
+                                         max_added_elements=1)
+        self.assertEqual(caught.exception.code, 'element_limit_exceeded')
         self.assertIs(mesh.nodes, nodes)
         self.assertIs(mesh.elements, cells)
 
@@ -175,7 +242,7 @@ class DenseSectionTests(unittest.TestCase):
         self.assert_plan(mesh, outline, plan)
         nodes, cells = mesh.nodes.copy(), mesh.elements.copy()
         result = generate_layer_adaptive_mesh(mesh, outline, 1000., small_element_size=10.,
-                                              pattern_lines=patterns, max_transition_count=1000)
+                                              pattern_lines=patterns)
         self.assert_built_partition(mesh, nodes, cells, result)
         section_checks.SectionIntegrationTests.assert_pattern_covered(self, mesh, patterns[0])
 
@@ -259,7 +326,7 @@ class DenseSectionTests(unittest.TestCase):
                 with patch.object(_full, '_generate_layer_adaptive_mesh',
                                   wraps=_full._generate_layer_adaptive_mesh) as fixed:
                     result = generate_full_adaptive_mesh(mesh, sizes, outer_outline=target,
-                                                        small_element_size=10., max_transition_count=1000)
+                                                        small_element_size=10.)
                 self.assert_frozen(mesh, nodes, cells)
                 self.assertEqual(fixed.call_args.kwargs['small_element_size'], 10.)
                 self.assertNotIn('max_transition_count', fixed.call_args.kwargs)

@@ -10,6 +10,7 @@ from mesher.mesh2d.adapter import (QuadLayerError, generate_layer_adaptive_mesh,
 from mesher.mesh2d.adapter.layer._geometry import area, collinear_interval, intervals_cover
 from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.adapter.layer._construction import strip as _strip
+from mesher.mesh2d.adapter.layer._construction import smoothing
 from tests.unit.mesh2d.test_quad_sections import _cells
 from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
 
@@ -66,10 +67,11 @@ class SectionIntegrationTests(unittest.TestCase):
         self.assertEqual(result.diagnostics['path'], 'sections')
         self.assertNotIn('collar_distance', result.diagnostics)
 
-    def test_all_six_section_kinds_build_and_left_right_are_mirrors(self):
+    def test_all_six_section_kinds_build_and_left_right_boundaries_are_mirrors(self):
         left = [[1., 3.], [1., 4.6]]
         right = [[1.4, 5.], [3., 5.]]
         summaries = {}
+        polygons = {}
         for expected, patterns in (('INNER', []), ('INNER_LEFT', [left]),
                                    ('INNER_RIGHT', [right]), ('INNER_BOTH', [left, right])):
             with self.subTest(kind=expected):
@@ -85,9 +87,23 @@ class SectionIntegrationTests(unittest.TestCase):
                     self.assert_pattern_covered(mesh, pattern)
                 corner = next(section for section in result.diagnostics['section_details']
                               if section['kind'] == expected)
-                summaries[expected] = (corner['element_end'] - corner['element_start'],
-                                       corner['quality'], corner['size_error'])
+                if expected in ('INNER_LEFT', 'INNER_RIGHT'):
+                    original, ids = self._l_shape()
+                    with patch.object(smoothing, '_THRESHOLD', np.inf):
+                        raw = generate_layer_adaptive_mesh(original, ids, 1.6, pattern_lines=patterns)
+                    raw_corner = next(s for s in raw.diagnostics['section_details'] if s['kind'] == expected)
+                    np.testing.assert_array_equal(mesh.elements, original.elements)
+                    self.assertLess(corner['quality'], raw_corner['quality'])
+                    summaries[expected] = (corner['element_end'] - corner['element_start'],
+                                           raw_corner['quality'], corner['size_error'])
+                    polygons[expected] = np.asarray(corner['polygon'][:-1])
         np.testing.assert_allclose(summaries['INNER_LEFT'], summaries['INNER_RIGHT'], rtol=1e-11, atol=1e-11)
+        # The inner-ring fans use different diagonals. Their direct neighbors
+        # can differ even when their boundary segments are exact mirrors.
+        reflected = 6 - polygons['INNER_LEFT'][:, ::-1]
+        right = polygons['INNER_RIGHT'][::-1]
+        start = np.linalg.norm(right - reflected[0], axis=1).argmin()
+        np.testing.assert_allclose(reflected, np.roll(right, -start, axis=0), atol=1e-11)
 
     def test_public_plan_is_readonly_and_uses_world_coordinates(self):
         mesh, outline = _cells({(x, y) for x in range(4) for y in range(3)})

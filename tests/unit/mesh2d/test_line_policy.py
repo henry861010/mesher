@@ -112,6 +112,48 @@ class LinePolicyTests(unittest.TestCase):
         for actual, original in zip(args, originals):
             np.testing.assert_array_equal(actual, original)
 
+    def test_dense_candidates_ignore_both_ratios_and_keep_mandatory_anchors(self):
+        source, outer, left, right = existing._fixture(60, 300., 500.)
+        anchor = [125., 500., 0.]
+        outer = np.insert(outer, 1, anchor, axis=0)
+
+        def candidates(minimum, maximum):
+            return line.plan_line(source, outer, left, right, 1000., 1e-8,
+                                  min_size_ratio=minimum, max_size_ratio=maximum,
+                                  max_transition_count=20, size_band_active=False)
+
+        reference = candidates(1., 1.)
+        self.assertTrue(reference)
+        alternatives = candidates(.01, 2.)
+        self.assertEqual(len(alternatives), len(reference))
+        for expected, actual in zip(reference, alternatives):
+            np.testing.assert_array_equal(actual.nodes, expected.nodes)
+            np.testing.assert_array_equal(actual.quads, expected.quads)
+            front = actual.nodes[actual.outer_ids]
+            self.assertEqual(np.count_nonzero(np.all(front == anchor, axis=1)), 1)
+            self.assertTrue(np.all(np.diff(front[:, 0]) > 0.))
+            self.assertEqual(actual.diagnostics['forced_short_intervals'], [])
+            self.assertLessEqual(actual.diagnostics['max_actual_transition_count'], 20)
+            self.assert_conforming(actual)
+
+    def test_dense_sampling_survives_coincident_cut_projections(self):
+        source, _, _, _ = existing._fixture(6, 6., 5.)
+        outer = np.array([[x, 5., 0.] for x in (1., 2.08, 3.7)])
+        left = np.array([source[0], outer[0]])
+        right = np.array([source[-1], outer[-1]])
+        candidates = line.plan_line(source, outer, left, right, 5., 1e-10,
+                                    max_transition_count=1, size_band_active=False, best_only=True)
+        self.assertTrue(candidates)
+        candidate = candidates[0]
+        front = candidate.nodes[candidate.outer_ids]
+        self.assertTrue(np.all(np.diff(front[:, 0]) > 0.))
+        for anchor in outer:
+            self.assertEqual(np.count_nonzero(np.all(front == anchor, axis=1)), 1)
+        loads = [count for unit in candidate.units for count in unit['source_segments_per_outer']]
+        self.assertEqual(sum(loads), 6)
+        self.assertLessEqual(max(loads), 1)
+        self.assert_conforming(candidate)
+
     def test_equal_upper_and_lower_ratio_one_require_exact_target_spacing(self):
         candidates = line.plan_line(*existing._fixture(8, 16., 4.), 4., 1e-10,
                                     min_size_ratio=1., max_size_ratio=1., max_transition_count=10)

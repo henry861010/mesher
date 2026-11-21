@@ -239,8 +239,9 @@ def generate_full_adaptive_mesh(
     collapsed required edges fail; existing source coordinates stay exact.
 
     ``max_transition_count``, ``min_size_ratio`` and ``max_size_ratio`` have the
-    single-layer LINE defaults of 20, 0.5 and 1.25. They apply to ordinary
-    intermediate layers only. The final transition preserves the global
+    single-layer LINE defaults of 20, 0.5 and 1.25. In intermediate layers
+    the transition cap applies to every resampled LINE. The size ratios apply
+    to ordinary and mixed LINE sections. The final transition preserves the global
     generator's complete fixed interface, without imposing these constraints.
     The arguments are validated even when there is only one, fixed layer.
 

@@ -5,8 +5,10 @@ from unittest.mock import patch
 
 import numpy as np
 
+from mesher import Mesh2D
 from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from mesher.mesh2d.adapter.layer import _mesher
+from mesher.mesh2d.editor import EditorMesh2D
 from tests.unit.mesh2d import test_extend_quad_layer as layer_checks
 from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
 from tests.unit.mesh2d.test_corner_repair import _step
@@ -171,6 +173,32 @@ class OutlineTargetTests(unittest.TestCase):
         ids = _target_ids(mesh, target)
         result = self.run_layer(mesh, outline, h=.2, outline_o=ids)
         self.assert_target(mesh, result, ids)
+
+    def test_small_resolved_hole_target_matches_automatic_front(self):
+        cells = {(x, y) for x in range(5) for y in range(5)
+                 if x in (0, 4) or y in (0, 4)}
+        mesh, _, _ = layer_checks._polyomino(cells)
+        radius, target_radius = 2.**19, .0625
+        axis = np.array([-2 * radius, -radius, -target_radius, target_radius, radius, 2 * radius])
+        mesh.nodes[:, :2] = axis[mesh.nodes[:, :2].astype(int)]
+        outline = next(loop for loop in EditorMesh2D.outlines(mesh)
+                       if mesh.nodes[loop, :2].max() == radius)
+        target = target_radius * np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]])
+        ids = _target_ids(mesh, target)
+        size = radius - target_radius
+        automatic = Mesh2D(mesh.nodes.copy(), mesh.elements.copy())
+        snapshot = self._snapshot(mesh)
+
+        plan = plan_quad_sections(mesh, outline, size, outline_o=ids)
+        np.testing.assert_array_equal(plan.front, target)
+        self.assert_unchanged(mesh, snapshot)
+        generated = generate_layer_adaptive_mesh(automatic, outline, size)
+        specified = generate_layer_adaptive_mesh(mesh, outline, size, outline_o=ids)
+        np.testing.assert_array_equal(mesh.nodes[:len(snapshot[2])], snapshot[2])
+        np.testing.assert_array_equal(mesh.elements[:len(snapshot[3])], snapshot[3])
+        np.testing.assert_array_equal(specified.outline, ids)
+        np.testing.assert_array_equal(automatic.nodes[generated.outline, :2], target)
+        np.testing.assert_array_equal(mesh.nodes[mesh.elements], automatic.nodes[automatic.elements])
 
     def test_concave_target_matches_the_source_corner_sequence(self):
         coarse = {(0, 0), (1, 0), (0, 1)}

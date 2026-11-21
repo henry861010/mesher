@@ -50,8 +50,8 @@ assert result.diagnostics['added_elements'] > 0
 - loop 隱含閉合；最後可選擇再放一次第一顆 ID。起點可以在直邊中間。
   `outline_i` 的外輪廓必須順時針、孔洞必須逆時針；`outline_o` 仍接受兩種繞行方向。
 - `outline_i` 必須包含每一顆 source 邊界節點，相鄰 ID 必須是可接合的既有邊界邊段。
-  此為呼叫者責任，API 不透過既有元素 ownership 驗證 source；違反前置條件時，
-  不保證提前拒絕或特定錯誤碼。
+  建立網格時會在寫回前確認每段都恰好屬於一個既有元素。幾何預覽
+  `plan_quad_sections()` 則假設傳入的邊段可供接合。
   邏輯邊需接近全域 X／Y 軸，相鄰邏輯邊互相垂直。
 - `outline_o` 必須是簡單、水平／垂直的封閉 loop。忽略共線中間點後，其轉向順序須對應
   **repair 之後的 source**，每條對應邊都必須位於擴展側，且與 source 留有正間距。
@@ -80,9 +80,9 @@ assert result.diagnostics['added_elements'] > 0
 | `expand_ratio` | `1.0` | 有限數值，≥1 | 搜尋平行 pattern 的距離範圍倍率 |
 | `tolerance` | `GeometryTolerance(0.001)` | 有限正絕對距離或共用容差物件 | source 邏輯邊對軸向的實際偏離距離；與邊長無關、不移動 source |
 | `max_added_elements` | `1_000_000` | 正的 Python／NumPy 整數 | 本次 repair 與轉接新增 Quad4 的共同上限；等於上限可接受 |
-| `max_transition_count` | `20` | 正的 Python／NumPy 整數 | 一般 LINE 外框一段最多對應幾個 source 邊段；固定模式停用 |
-| `min_size_ratio` | `0.5` | 有限數值，`0 < value ≤ 1` | 一般 LINE 外框取樣間距下限相對 `element_size` 的比例；固定模式停用 |
-| `max_size_ratio` | `1.25` | 有限數值，`value ≥ 1` | 一般 LINE 外框取樣間距上限相對 `element_size` 的比例；設為 1 可維持原尺寸上限 |
+| `max_transition_count` | `20` | 正的 Python／NumPy 整數 | 所有可重採樣 LINE（含密集區）每段外框最多承接的 source 邊數 |
+| `min_size_ratio` | `0.5` | 有限數值，`0 < value ≤ 1` | 一般及混合 LINE 的外框間距下限相對 `element_size` 的比例 |
+| `max_size_ratio` | `1.25` | 有限數值，`value ≥ 1` | 一般及混合 LINE 的外框間距上限相對 `element_size` 的比例 |
 | `repair_slots` | `True` | Python／NumPy boolean | 先修補受擴展覆蓋的支援槽口與孤立階梯轉角 |
 | `repair_max_element_size` | `None` | 有限正長度或 `None` | repair 內部目標尺寸上限；不是所有邊長的硬上限 |
 | `small_element_size` | `None` | 有限正長度或 `None` | 辨識短邊密集段的門檻；`None` 關閉額外密集段切分 |
@@ -106,7 +106,8 @@ assert result.diagnostics['added_elements'] > 0
 | --- | --- | --- |
 | 自動外框 | 未提供 `outline_o` 時，依擴展基準與 pattern 決定 | 不適用，必須提供外框 |
 | 已提供 `outline_o` | 使用指定外框，pattern 不會吸附或移動它 | 相同，並鎖定完整節點與邊段 |
-| `max_transition_count`／`min_size_ratio`／`max_size_ratio` | 約束重採樣的 LINE 外框 | 數值仍驗證，但不施加這些限制 |
+| `max_transition_count` | 約束所有重採樣的 LINE 外框 | 驗證數值，採用指定外框 |
+| `min_size_ratio`／`max_size_ratio` | 約束一般及混合 LINE 的外框間距 | 驗證數值，採用指定外框 |
 | 密集段接點不存在 | 可建立合法法線投影點 | 只略過該端的額外分界 |
 | 必要 pattern 接點不存在 | 可依一般規則建立新外框接點 | 報錯，不以附近 node 取代 |
 | 元素預算、幾何、拓撲及 Quad4 驗證 | 全部適用 | 全部適用 |
@@ -119,18 +120,29 @@ assert result.diagnostics['added_elements'] > 0
 `expand_ratio` 與 pattern。repair 完成後才以 `outline_o` 建立轉接；不相容時直接失敗，
 不會因指定外框再重做一次 repair。
 
-一般 LINE 優先參照內框接點的法向投影來決定外框節點。可多加外點，也可讓
+一般及混合 LINE 優先參照內框接點的法向投影來決定外框節點。可多加外點，也可讓
 個別間距略大於目標，範圍為 `[min_size_ratio × element_size, max_size_ratio × element_size]`。
 相鄰 unit 之間只用兩點接線。頭尾接線有三點或更多必要節點時，端部 unit 會容納這些點。
 粗細轉接仍可能在單一 unit 內部產生節點。
 已存在的相鄰必要接點若比下限更近，保留為一段並記錄例外，轉接數量上限仍適用。
 這些規則不限制 corner、repair 內部或每一條內部元素邊的長度。
 
+選定 LINE 與 corner 的 unit 後，若最差元素的長短邊比或最小 scaled Jacobian 的倒數大於 4，
+adapter 會對接觸這些元素的新增內點做一輪局部平滑。每個點朝直接鄰點的平均位置先走半步，
+必要時再試四分之一步。相鄰 Quad4 都須通過凸性與邊長檢查，且整圈的最差邊長比和
+最小 scaled Jacobian 至少一項改善、另一項持平或改善。unit 邊界與共用接線維持原座標。
+尖角案例的座標推算、品質指標與重現方式見 [Quad4 unit 的局部平滑](quad4-unit-smoothing.md)。
+
 ## 5. 密集段：單側角度與第一顆 node
 
 同一 LINE 中，連續且長度 **嚴格小於** `small_element_size` 的 source 邊段組成密集段。
 單一短邊也符合；整條 LINE 都是密集段時，已有兩端分界，不需要再切。
 corner 與 pattern 已確立的分界優先保留。
+
+重採樣時，整個 LINE 都落在密集段內，外框間距就可以小於尺寸下限或大於尺寸上限。
+`element_size` 仍是候選間距的偏好，`max_transition_count` 控制每一外框段最多承接幾條 source 邊。
+例如 60 條長度為 5 的 source 邊，設上限為 20，至少需要 3 段外框。實際分段還要配合必要接點、
+共用接線的奇偶與 Quad4 配對。若分區混有普通邊，整個分區仍套用兩個尺寸比例。
 
 以正規化 LINE 的行進方向作為正方向，法線朝向外框為 0°：
 
@@ -300,8 +312,8 @@ repair 邊界取樣以既有邊段長度中位數為目標，並以 `element_siz
 | 欄位 | 用途 |
 | --- | --- |
 | `fixed_outer_boundary` | 本次是否鎖定外框 |
-| `line_policy_active` | LINE 重採樣的尺寸／轉接數限制是否生效；固定模式為 `False` |
-| `max_transition_count`、`min_size_ratio`、`max_size_ratio` | 傳入並驗證後的值；是否有效須搭配 `line_policy_active` |
+| `line_policy_active` | 本層是否允許 LINE 重採樣，固定外框為 `False` |
+| `max_transition_count`、`min_size_ratio`、`max_size_ratio` | 傳入並驗證後的值 |
 | `small_element_size`、`dense_mapping_angle` | 密集段門檻與角度設定 |
 | `dense_sections`、`dense_seams` | 成功形成的完整密集分區與新增分界；單端切分可能留下混合 LINE |
 | `dense_mappings` | 每個額外端點的 `endpoint`、`status`、`reason`；採用時另含 target ID／座標、角度及 seam ID |
@@ -310,6 +322,8 @@ repair 邊界取樣以既有邊段長度中位數為目標，並以 `element_siz
 | `repair_added_elements`、`expand_added_elements` | repair 與後續轉接各自新增量 |
 | `edge_expansion`、`snapped_patterns` | 實際厚度與自動擴展採用的 pattern；指定外框時後者皆為 `None` |
 | `section_details[].max_alignment_angle` | LINE 內部接線相對外框法線的最大偏角，單位為度 |
+| `section_details[].size_band_active` | 該 LINE 是否套用尺寸比例，完整密集區及固定外框為 `False` |
+| `section_details[].min_outer_spacing`、`max_outer_spacing` | 該 LINE 最終外框的最小、最大間距，採用原模型長度單位 |
 | `quality` | 新元素最差長寬比、最小 scaled Jacobian 等品質資訊 |
 
 `dense_mappings.status` 為 `mapped` 或 `skipped`。
@@ -333,7 +347,7 @@ repair 邊界取樣以既有邊段長度中位數為目標，並以 `element_siz
 | source 與固定外框奇偶數不合 | 調整上游網格的邊界分段；僅增加內部節點不能修正邊界奇偶數 |
 | 無法找到合法轉角分區 | 檢查外框對應邊是否有可用的非轉角 node、間距及附近分區 |
 | `unmeshable_section_layout`／`unmeshable_seam_assignment`／`unmeshable_direct_quad_layout` | 依 context 檢查分區及局部 Quad4 配對；合法預覽不代表一定可建構 |
-| `line_constraints_infeasible` | 一般模式的尺寸帶與轉接數上限衝突；調整 `element_size`、尺寸比例或 `max_transition_count` |
+| `line_constraints_infeasible` | 檢查該 LINE 的必要接點、轉接數及奇偶限制。一般及混合 LINE 也須檢查尺寸帶 |
 | `element_limit_exceeded` | 檢查 `limit`、`required_elements`，調整預算或上游尺寸設定 |
 | `topology_change` | 外框穿過 source、接到已佔用區域，或形成懸掛節點／非流形接合 |
 | `numeric_range_exceeded` | 檢查 pattern 範圍與座標尺度 |
@@ -348,3 +362,26 @@ repair 邊界取樣以既有邊段長度中位數為目標，並以 `element_siz
 
 新規則還限制 begin／end 的偏移方向，因此原本距離很近但朝密集段內側的 node 不再被選中。
 `small_element_size` 名稱保持不變。未指定 `fixed_outer_boundary` 時仍允許外框補點。
+
+## 13. FEM 交付回歸比對
+
+- `tests.unit.mesh2d.test_adapter_fem_regression` 固定一個非均勻轉接網格的元素連接表及外框 ID，
+  以 2×2 Gauss 積分求解單位熱源、單位熱傳導係數、外框溫度為零的穩態熱傳問題。
+  原始節點 `(24, 20)` 的參考溫度為 `128.05851863492813`，絕對允差為 `1e-8`。
+- `tests.integration.mesh25d.test_case1_tolerance` 使用 Case1 原始輸入檢查八個介面、材料體積與 CDB 匯出。
+  本次檢查前後皆產生 317,910 個節點及 231,195 個元素，CDB 的 SHA-256 皆為
+  `94020591c1f0a094ac4ac7634b756677c55063c18e6da27c87db89da3ddb989d`。
+
+```sh
+PYTHONPATH=src venv/bin/python -m unittest \
+  tests.unit.mesh2d.test_adapter_fem_regression tests.integration.mesh25d.test_case1_tolerance
+```
+
+此基準包含工作區原有的 unit 平滑。Case1 和提交 `8b534a8` 的元素連接表相同，
+但有 8,724 個節點移位，最大位移 75 µm。舊案的物理結果應以交付時封存的網格、
+求解器設定及測點結果為比對基準。
+
+密集轉接也需要檢查形狀品質。在專案的 dense benchmark 中，`element_size=1000`、
+`small_element_size=10`、`max_transition_count=1000` 產生的 Quad4 四角 Jacobian 都為正，
+但最小 scaled Jacobian 只有 0.00922，`MeshQualityChecker` 在預設容差下將 54 個新增元素
+標記為退化。同一輸入使用預設轉接上限 20 時，這項計數為零。

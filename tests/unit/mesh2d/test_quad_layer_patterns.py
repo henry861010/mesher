@@ -247,7 +247,8 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
                 self.assert_atomic_error(mesh, outline, patterns, code="numeric_range_exceeded")
 
     def test_malformed_patterns_have_typed_atomic_errors(self):
-        cases = (None, [[0., 0.], [1., 0.]], [[[0., 0.], [1.]]],
+        cases = (None, [[0., 0.], [1., 0.]], [[[0., 0.], [1.]]], [[], []],
+                 np.empty((1, 2, 0)), np.array([[[1. + 2j, 4.], [2., 4.]]]),
                  [[[0., 0.], [10**400, 0.]]], [[[0., 0.], [np.inf, 0.]]])
         for patterns in cases:
             with self.subTest(patterns=patterns):

@@ -83,6 +83,23 @@ class BoundaryMappingTests(unittest.TestCase):
             self.assertAlmostEqual(record['target'][0], x)
             self.assertIsNone(record['target_node'])
 
+    def test_fixed_dense_interfaces_can_exceed_the_transition_cap(self):
+        mesh, outline, target = dense_fixture([100., 110.])
+        result = generate_layer_adaptive_mesh(mesh, outline, 50., outline_o=target,
+                                              fixed_outer_boundary=True, small_element_size=10.,
+                                              max_transition_count=1, min_size_ratio=1., max_size_ratio=1.)
+        self.assert_exact_interface(mesh, result, target)
+        dense_ids = {s['section_id'] for s in result.diagnostics['dense_sections']}
+        self.assertEqual(len(dense_ids), 2)
+        for detail in result.diagnostics['section_details']:
+            if detail['kind'] != 'LINE':
+                continue
+            self.assertFalse(detail['size_band_active'])
+            if detail['section_id'] in dense_ids:
+                self.assertEqual(detail['max_actual_transition_count'], 2)
+                self.assertAlmostEqual(detail['min_outer_spacing'], 10.)
+                self.assertAlmostEqual(detail['max_outer_spacing'], 10.)
+
     def test_rotation_scale_start_and_target_winding_preserve_mapping_ids(self):
         reference = None
         for rotation in range(4):

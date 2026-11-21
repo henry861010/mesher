@@ -5,8 +5,7 @@ from collections import Counter
 
 import numpy as np
 
-from mesher.mesh2d.adapter.layer._geometry import BoxIndex
-from mesher.mesh2d.adapter.layer._old_mesh import edge_membership, edge_owner_count, old_edge_keys
+from mesher.mesh2d.adapter.layer._old_mesh import edge_membership, old_edge_keys
 
 
 class OldMeshEdgeTests(unittest.TestCase):
@@ -21,6 +20,8 @@ class OldMeshEdgeTests(unittest.TestCase):
             data = {}
             keys = old_edge_keys(elements, data)
             np.testing.assert_array_equal(keys, sorted(counts))
+            np.testing.assert_array_equal(old_edge_keys(elements, data, boundary_only=True),
+                                          sorted(edge for edge, count in counts.items() if count == 1))
             self.assertIs(old_edge_keys(elements, data), keys)
             query = np.array([[0, 1], [0, 4], [4, 5], [5, 6]], dtype=np.int64) + offset
             np.testing.assert_array_equal(edge_membership(query, keys),
@@ -29,15 +30,11 @@ class OldMeshEdgeTests(unittest.TestCase):
         self.assertEqual(empty.shape, (0, 2))
         self.assertFalse(edge_membership([[0, 1]], empty)[0])
 
-    def test_target_query_counts_edges_not_diagonals_or_nearby_coordinates(self):
-        xy = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [2, 0], [2, 1],
-                       [0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
+    def test_boundary_query_excludes_shared_edges_and_diagonals(self):
         elements = np.array([[0, 1, 2, 3], [2, 5, 4, 1], [6, 7, 8, 9]])
-        cells = xy[elements]
-        index = BoxIndex(cells.min(axis=1), cells.max(axis=1), 1e-10)
-        for key, expected in (((0, 1), 1), ((1, 2), 2), ((0, 2), 0), ((6, 7), 1)):
-            with self.subTest(key=key):
-                self.assertEqual(edge_owner_count(key, elements, xy, index, 1e-10), expected)
+        boundary = old_edge_keys(elements, {}, boundary_only=True)
+        np.testing.assert_array_equal(edge_membership([[0, 1], [1, 2], [0, 2], [6, 7]], boundary),
+                                      [True, False, False, True])
 
 
 if __name__ == "__main__":

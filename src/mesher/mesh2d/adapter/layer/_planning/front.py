@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .._geometry import BoxIndex, area, on_segment, point_location, segment_contacts
+from .._geometry import BoxIndex, area, area_epsilon, on_segment, point_location, segment_contacts
 from .._types import QuadLayerError, UnmeshableDirectQuadLayout
 from .source import _fail, _input_loop, _simple_loop
 
@@ -12,6 +12,10 @@ def _expansion_distances(data):
     """Plan supports and pattern distances before any front can collapse."""
     chains, normals = data["chains"], data["normals"]
     tol, expand_h = data["tol"], data["expand_h"]
+    reach = expand_h * data["ratio"]
+    # The range controls the thickness of the entire side. Allow arithmetic
+    # roundoff at equality, independently of the physical contact tolerance.
+    roundoff = min(tol, data["numeric_tol"] + 8 * np.finfo(float).eps * reach)
     supports, distances, snapped = [], [], []
     for chain, normal, tangent in zip(chains, normals, data["directions"]):
         support = float(np.max(chain @ normal))
@@ -27,8 +31,7 @@ def _expansion_distances(data):
             distance = float(pattern.support * normal[1 - pattern.axis]) - support
             if tol < distance < nearest:
                 nearest, pattern_id = distance, j
-        distance = (nearest if np.isfinite(nearest)
-                    and nearest <= expand_h * data["ratio"] + tol else expand_h)
+        distance = nearest if np.isfinite(nearest) and nearest - reach <= roundoff else expand_h
         supports.append(support + distance)
         distances.append(distance)
         snapped.append(pattern_id if distance == nearest else None)
@@ -43,6 +46,12 @@ def _front(data):
                                        np.asarray((supports[i - 1], supports[i])))
                         for i in range(len(chains))])
     _validate_front(data, front)
+    with np.errstate(over="ignore", invalid="ignore"):
+        world_front = front * data["scale"] + data["origin"]
+    if not np.all(np.isfinite(world_front)):
+        raise UnmeshableDirectQuadLayout("expanded front exceeds the world coordinate range",
+                                         stage="world_coordinates")
+    data["tolerance"].check_resolution(world_front, stage="world_coordinates", source="layer_front")
 
 
 def _validate_front(data, front):
@@ -89,7 +98,7 @@ def _normalize_outline_o(outline_o, data):
     except QuadLayerError as error:
         error.context.update(context)
         raise
-    if abs(area(points)) <= data["numeric_tol"]:
+    if abs(area(points)) <= area_epsilon(points, data["numeric_tol"]):
         _fail("outline_o has zero area", **context)
     return ids, points
 

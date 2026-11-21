@@ -75,6 +75,43 @@ class AuditFixTests(unittest.TestCase):
             expand_size=.00200000005, tolerance=.001, repair_slots=False))
         self.assertEqual(error.code, 'feature_below_resolution')
 
+    def test_source_attachment_requires_one_old_owner_per_edge(self):
+        for owners in (0, 2):
+            with self.subTest(owners=owners):
+                mesh = square()
+                outline = [0, 3, 2, 1]
+                if owners == 0:
+                    outline = target(mesh, mesh.nodes[outline, :2] + [10., 0.])
+                else:
+                    mesh.elements = np.vstack((mesh.elements, mesh.elements))
+                error = self.atomic_error(mesh, lambda: layer(mesh, outline, .5))
+                self.assertEqual(error.code, 'topology_change')
+                self.assertEqual(error.context['parameter'], 'outline_i')
+                self.assertTrue(set(error.context['edge']).issubset(outline))
+
+    def test_generated_front_must_resolve_tolerance_in_world_coordinates(self):
+        for operation in (plan, layer):
+            with self.subTest(operation=operation.__name__):
+                mesh = square(4.)
+                mesh.nodes[:, 0] += 2.**41 - 4.25
+                # Growing another .5 crosses a float64 exponent boundary.
+                error = self.atomic_error(mesh, lambda: operation(mesh, [0, 3, 2, 1], .5))
+                self.assertEqual(error.code, 'numeric_resolution_exceeded')
+                self.assertEqual(error.context['stage'], 'world_coordinates')
+
+    def test_snap_search_range_is_not_extended_by_geometry_tolerance(self):
+        for gap, expected in ((1., 1.), (1.0005, .5)):
+            with self.subTest(gap=gap):
+                mesh = square(4.)
+                outline = [0, 3, 2, 1]
+                pattern = [[[1., 4. + gap], [2., 4. + gap]]]
+                kwargs = dict(pattern_lines=pattern, expand_ratio=2., tolerance=.001)
+                preview = plan(mesh, outline, .5, **kwargs)
+                result = layer(mesh, outline, .5, **kwargs)
+                self.assertEqual(preview.edge_expansion[1], expected)
+                self.assertEqual(result.diagnostics['edge_expansion'][1], expected)
+                self.assertEqual(mesh.nodes[result.outline, 1].max(), 4. + expected)
+
     def test_world_rounding_cannot_close_existing_mesh_clearance(self):
         mesh = square(.006, 1e9)
         right, tol = 1e9 + .01, .0010001

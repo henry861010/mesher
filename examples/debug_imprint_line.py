@@ -27,10 +27,13 @@ COW_TO_STIFFENER = 3000
 STIFFENER_WIDTH = 4000
 STIFFENER_TO_SBT = 200
 
-def _get_cow_outline():
+def _get_die_boxes():
     with open(JSON_PATH, 'r', encoding='utf-8') as file:
         data = json.load(file)
-    die_boxes = [value for value in data.values()]
+    return [value for value in data.values()]
+
+def _get_cow_outline():
+    die_boxes = _get_die_boxes()
     
     pkg_x1, pkg_y1, pkg_x2, pkg_y2 = 100000, 100000, -100000, -100000
     for die_box in die_boxes:
@@ -45,10 +48,7 @@ def _get_cow_outline():
     return [[pkg_x1, pkg_y1], [pkg_x1, pkg_y2], [pkg_x2, pkg_y2], [pkg_x2, pkg_y1]]
     
 def _find_pair_td_corner(cow_outline):
-    # find the die coordinates: read the json directly
-    with open(JSON_PATH, 'r', encoding='utf-8') as file:
-        data = json.load(file)
-    die_boxes = [value for value in data.values()]
+    die_boxes = _get_die_boxes()
 
     areas = get_mm2_control_area(die_boxes, corner_extent=25, max_gap=260)
 
@@ -91,6 +91,17 @@ def _find_pair_fillet(cow_outline):
 def cow_mesh():
     cow_outline = _get_cow_outline()
     
+    # die pattern
+    die_boxes = _get_die_boxes()
+    pattern_lines = []
+    for x1, y1, x2, y2 in die_boxes:
+        pattern_lines.extend([
+            ((x1, y1), (x2, y1)),
+            ((x2, y1), (x2, y2)),
+            ((x2, y2), (x1, y2)),
+            ((x1, y2), (x1, y1)),
+        ])
+    
     td_corner_pair = _find_pair_td_corner(cow_outline=cow_outline)
     fillet_pair = _find_pair_fillet(cow_outline=cow_outline)
     
@@ -99,6 +110,7 @@ def cow_mesh():
     mesh = imprint_lines(
         element_size = GLOBAL_ELEMENT_SIZE, 
         line_pairs = line_pairs, 
+        pattern_lines = pattern_lines,
         outer_outline = cow_outline,
         min_transition_size = 20, 
         pattern_snap_distance=0
@@ -182,7 +194,8 @@ def build_connected_mesh() -> Mesh2D:
         small_element_size=30,
         max_transition_count=20,
         dense_mapping_angle=30,
-        min_size_ratio=0.01
+        min_size_ratio=0.9,
+        max_size_ratio=1.25
     )
     generate_layer_adaptive_mesh(
         mesh=working,

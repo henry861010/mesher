@@ -127,15 +127,16 @@ used by existing elements; shared edges must remain conforming and manifold.
 Source normalization preserves every frozen node, segment and input direction,
 and groups cyclic signed-cardinal runs into logical edges. Callers guarantee
 complete, attachable source boundary edges and existing mesh on the right:
-clockwise exteriors, counterclockwise holes. Growth is always to the left;
-source ownership is not checked and winding is not corrected.
+clockwise exteriors, counterclockwise holes. Both planning and construction
+grow to the left in the supplied winding. The geometric preview assumes valid
+source edges. Construction verifies their ownership before committing.
 Staged repairs keep their semantic chains internally;
 complete public result and prepared-source outlines are flat loops. The editor's
 `outlines()` returns oriented loops without performing logical-edge grouping.
 
 Old-edge geometry uses a lazy, sorted unique NumPy edge-ID inventory per
-prepared mesh, without a global ownership table. Shared target edges count
-owners only in nearby old cells. New layer and repair cells retain local
+prepared mesh. The same sort identifies the single-owner edges for source
+and target attachment checks. New layer and repair cells retain local
 directed-incidence validation. Repair outlines combine surviving source edges
 with boundaries extracted from actual new repair cells; they do not re-extract
 the full mesh boundary. Original and repaired meshes have separate inventories.
@@ -171,7 +172,10 @@ checks in `_planning/mapping.py` reject crossing or out-of-band connectors.
 Numerical geometric tolerance is retained; `dense_region_tolerance` is removed.
 Diagnostics include mapped/skipped dense endpoints and chosen corner contacts.
 
-Dense runs remain ordinary LINE sections and use the existing sampling,
+Fully dense LINE sections use the transition cap for resampling and retain
+`element_size` as a spacing preference. Their outer spacing may fall below or
+above the ratio band. Ordinary sections and sections mixing dense and
+non-dense source edges use both ratios. All share the
 seam-parity solver, unit builders, and element-budget preflight. Diagnostics
 record their section/source/seam IDs, without new section kinds or fake pattern
 IDs. The full orchestrator exports dense seam contacts as global front anchors
@@ -286,7 +290,7 @@ element-budget parameter and makes no budget-feasibility promise.
 LINE construction pairs the ordered source and outer boundaries. It tries
 placing movable outer points at source projections, with a bounded density
 distribution available when required anchors or segment-count constraints
-prevent exact projection. Ordinary outer spacing lies in
+prevent exact projection. Ordinary and mixed LINE outer spacing lies in
 `[min_size_ratio * element_size, max_size_ratio * element_size]`. Adjacent
 mandatory anchors closer than the minimum form one unsplit interval. Each outer
 segment has a source assignment bounded by `max_transition_count`.

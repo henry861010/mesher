@@ -182,7 +182,8 @@ class QuadLayerLimitTests(unittest.TestCase):
                                   outer_boundary=outer[:, :2], left_seam=0, right_seam=1)
         plan = SimpleNamespace(sections=(section,), seams=(
             SimpleNamespace(points=left[:, :2]), SimpleNamespace(points=right[:, :2])))
-        preflight_element_limit(plan, {"max_added_elements": 1, "tol": 1e-10, "h": 1.})
+        preflight_element_limit(plan, {"max_added_elements": 1, "tol": 1e-10, "h": 1.},
+                                dense_section_ids=set())
 
     def test_invalid_limits_are_input_errors_and_leave_mesh_unchanged(self):
         for value in (True, np.bool_(False), None, 0, -1, 1.0, "10", float("inf")):

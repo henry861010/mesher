@@ -28,6 +28,7 @@ class _ProjectedLine:
         self.x = sampling.source_positions.copy()
         self.n = len(self.x) - 1
         self.h, self.tol, self.cap = sampling.h, sampling.tol, sampling.max_transition_count
+        self.size_band_active = sampling.size_band_active
         self.low, self.high = sampling.h_min, sampling.h_max
         self.x[0], self.x[-1] = self.contacts[[0, -1]]
         # An original anchor within coordinate tolerance owns that coordinate.
@@ -183,6 +184,14 @@ class _ProjectedLine:
         below = floor(target)
         below -= (below - parity) % 2
         candidates = {n for n in (below, below + 2) if 2 <= n <= self.n}
+        if not self.size_band_active:
+            # A short dense front can need many more edges than length / h.
+            # Try balanced source groups at the cap floor before greedy cuts.
+            minimum = (self.n + self.cap - 1) // self.cap
+            if minimum > 1 and target < minimum:
+                count = minimum + (parity - minimum) % 2
+                if count <= self.n:
+                    candidates.add(count)
         for count in sorted(candidates, key=lambda n: (abs(length / n - self.h), n)):
             # One exterior edge; internal sides each have one edge.
             parities = [left % 2, *([1] * (count - 2)), right % 2]
@@ -319,11 +328,12 @@ def _fit_cuts(profile, sampled, cuts):
 
 
 def plan_resampled(source, anchors, left, right, h, tol, cap, min_ratio, max_ratio,
-                   *, cache=None, max_added_elements=None):
+                   *, cache=None, max_added_elements=None, size_band_active=True):
     """Yield (outer XYZ, ordered cut pairs) without constructing any elements."""
     cache = {} if cache is None else cache
     if "sampling" not in cache:
-        cache["sampling"] = LineSampling(source, anchors, h, tol, cap, min_ratio, max_ratio)
+        cache["sampling"] = LineSampling(source, anchors, h, tol, cap, min_ratio, max_ratio,
+                                         size_band_active=size_band_active)
     sampling = cache["sampling"]
     count_args = (len(source) - 1, len(left), len(right), max_added_elements)
     demand_counts = sampling.counts(len(left), len(right))
@@ -373,11 +383,16 @@ def plan_resampled(source, anchors, left, right, h, tol, cap, min_ratio, max_rat
         sampled, _ = sampling.sample(count)
         for cuts in fixed_cut_plans(source, sampled, left, right, tol, cap):
             points = _fit_cuts(profile, sampled, cuts)
-            if usable(points, cuts):
-                mean, peak = alignment_metrics(source, points, cuts[1:-1], tol)
-                gaps = np.linalg.norm(np.diff(points[:, :2], axis=0), axis=1)
-                size_error = float(np.mean((gaps / h - 1) ** 2))
-                alternatives.append(((peak, mean, size_error, count), points, cuts))
+            if not usable(points, cuts):
+                # Slanted end seams can project several source cuts onto one
+                # mandatory contact. The original density sample stays ordered.
+                if size_band_active or not usable(sampled, cuts):
+                    continue
+                points = sampled
+            mean, peak = alignment_metrics(source, points, cuts[1:-1], tol)
+            gaps = np.linalg.norm(np.diff(points[:, :2], axis=0), axis=1)
+            size_error = float(np.mean((gaps / h - 1) ** 2))
+            alternatives.append(((peak, mean, size_error, count), points, cuts))
     for _, points, cuts in sorted(alternatives, key=lambda option: option[0]):
         yield points, cuts
     if not tried and limit_error is not None:

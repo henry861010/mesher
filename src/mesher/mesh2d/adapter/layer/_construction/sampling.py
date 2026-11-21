@@ -11,17 +11,25 @@ from .._types import QuadLayerError
 from .._line_policy import DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT
 
 
+_MAX_SEGMENT_COUNT = int(np.iinfo(np.intp).max) - 1
+
+
 def _infeasible(message: str, **context):
     return QuadLayerError(message, code="line_constraints_infeasible", **context)
 
 
-def _interval_bounds(lengths, h, tol, ratio, max_ratio=DEFAULT_MAX_SIZE_RATIO):
+def _spacing_limits(lengths, h, min_ratio, max_ratio, size_band_active):
+    if size_band_active:
+        return float(min_ratio) * float(h), float(max_ratio) * float(h)
+    # Exact anchors and forward ordering already bound each gap by the
+    # length of its anchor interval. This envelope imposes no size policy.
+    return 0.0, max(lengths, default=0.0)
+
+
+def _interval_bounds(lengths, tol, h_min, h_max):
     minimum, maximum, forced = [], [], []
-    h_min = float(ratio) * float(h)
-    h_max = float(max_ratio) * float(h)
     # Smaller positive ratios can underflow, or imply a count no NumPy front
     # can represent. Keep the bound finite without dividing by that tiny gap.
-    max_count = int(np.iinfo(np.intp).max) - 1
     for index, length in enumerate(lengths):
         if not np.isfinite(length) or length <= tol:
             raise _infeasible("LINE anchor intervals must have positive length",
@@ -31,8 +39,8 @@ def _interval_bounds(lengths, h, tol, ratio, max_ratio=DEFAULT_MAX_SIZE_RATIO):
         low = 1 if length <= h_max else subdivision_count(float(length), h_max)
         if short:
             high = 1
-        elif h_min == 0 or float(length) >= max_count * h_min:
-            high = max_count
+        elif h_min == 0 or float(length) >= _MAX_SEGMENT_COUNT * h_min:
+            high = _MAX_SEGMENT_COUNT
         else:
             high = subdivision_count(float(length), h_min, rounding="floor")
         if low > high:
@@ -47,16 +55,18 @@ def _interval_bounds(lengths, h, tol, ratio, max_ratio=DEFAULT_MAX_SIZE_RATIO):
 
 def line_count_bounds(lengths, source_segments, h, tol,
                       max_transition_count=DEFAULT_MAX_TRANSITION_COUNT, min_size_ratio=0.5,
-                      max_size_ratio=DEFAULT_MAX_SIZE_RATIO):
+                      max_size_ratio=DEFAULT_MAX_SIZE_RATIO, *, size_band_active=True):
     """Count-only feasibility, usable before allocating any sampled points."""
-    minimum, maximum, _ = _interval_bounds(lengths, h, tol, min_size_ratio, max_size_ratio)
+    lengths = tuple(lengths)
+    limits = _spacing_limits(lengths, h, min_size_ratio, max_size_ratio, size_band_active)
+    minimum, maximum, _ = _interval_bounds(lengths, tol, *limits)
     return _count_limits(minimum, maximum, source_segments, max_transition_count)
 
 
 def _count_limits(minimum, maximum, source_segments, max_transition_count):
     lower = max(sum(minimum),
                 (source_segments + max_transition_count - 1) // max_transition_count)
-    upper = sum(maximum)
+    upper = min(sum(maximum), _MAX_SEGMENT_COUNT)
     if not minimum or lower > upper:
         raise _infeasible("LINE transition limit and size band cannot both be satisfied",
                           minimum_count=lower, maximum_count=upper)
@@ -90,18 +100,19 @@ class LineSampling:
     """
 
     def __init__(self, source, anchors, h, tol, max_transition_count=DEFAULT_MAX_TRANSITION_COUNT,
-                 min_size_ratio=0.5, max_size_ratio=DEFAULT_MAX_SIZE_RATIO):
+                 min_size_ratio=0.5, max_size_ratio=DEFAULT_MAX_SIZE_RATIO, *, size_band_active=True):
         self.source = np.asarray(source, dtype=float).copy()
         self.anchors = np.asarray(anchors, dtype=float).copy()
         self.h, self.tol = float(h), float(tol)
         self.max_transition_count = int(max_transition_count)
         self.min_size_ratio = float(min_size_ratio)
         self.max_size_ratio = float(max_size_ratio)
-        self.h_min = self.min_size_ratio * self.h
-        self.h_max = self.max_size_ratio * self.h
+        self.size_band_active = size_band_active
         self.lengths = np.linalg.norm(np.diff(self.anchors[:, :2], axis=0), axis=1)
+        self.h_min, self.h_max = _spacing_limits(
+            self.lengths, h, min_size_ratio, max_size_ratio, size_band_active)
         self._minimum, self._maximum, self._forced = _interval_bounds(
-            self.lengths, h, tol, min_size_ratio, max_size_ratio)
+            self.lengths, tol, self.h_min, self.h_max)
         self.lower_count, self.upper_count = _count_limits(
             self._minimum, self._maximum, len(self.source) - 1, max_transition_count)
         delta = self.anchors[-1, :2] - self.anchors[0, :2]
@@ -139,6 +150,7 @@ class LineSampling:
     def diagnostics(self):
         return {
             "line_sampling": "source_density",
+            "size_band_active": self.size_band_active,
             "max_transition_count": self.max_transition_count,
             "min_size_ratio": self.min_size_ratio,
             "max_size_ratio": self.max_size_ratio,
@@ -201,11 +213,12 @@ class LineSampling:
         cursor = 0
         for i, n in enumerate(counts):
             length = float(self.lengths[i])
-            raw = quantiles[cursor:cursor + n + 1] - self.anchor_positions[i]
-            max_gap = min(self.h_max, length)
-            forward = _forward_sweep(raw, length, self.h_min, max_gap)
-            backward = length - _forward_sweep(length - raw[::-1], length, self.h_min, max_gap)[::-1]
-            positions = (forward + backward) / 2
+            positions = quantiles[cursor:cursor + n + 1] - self.anchor_positions[i]
+            if self.size_band_active:
+                max_gap = min(self.h_max, length)
+                forward = _forward_sweep(positions, length, self.h_min, max_gap)
+                backward = length - _forward_sweep(length - positions[::-1], length, self.h_min, max_gap)[::-1]
+                positions = (forward + backward) / 2
             start, end = self.anchors[i:i + 2]
             sampled[cursor:cursor + n + 1] = start + (end - start) * (positions / length)[:, None]
             # Mandatory anchors are copied exactly, independent of roundoff.
@@ -261,10 +274,14 @@ def spacing_error(points, h):
             + 32 * np.finfo(float).eps * h)
 
 
-def validate_spacing(points, h, ratio, forced, max_ratio=DEFAULT_MAX_SIZE_RATIO):
-    """Check actual spacing; only exact mandatory intervals can be short."""
+def validate_spacing(points, h, ratio, forced, max_ratio=DEFAULT_MAX_SIZE_RATIO, *, size_band_active=True):
+    """Measure committed gaps and enforce the active size band and its anchor exceptions."""
     points = np.asarray(points)[:, :2]
     gaps = np.hypot.reduce(np.diff(points, axis=0), axis=1)
+    if not np.all(np.isfinite(gaps)) or np.any(gaps <= 0):
+        raise _infeasible("committed LINE spacing must be finite and positive")
+    if not size_band_active:
+        return gaps
     margin = spacing_error(points, h)
     if np.any(gaps > float(h) * max_ratio + margin):
         raise _infeasible("committed LINE spacing exceeds maximum size",

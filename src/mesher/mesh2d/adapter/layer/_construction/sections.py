@@ -8,6 +8,7 @@ import numpy as np
 from .corners import plan_corner
 from .line import plan_line
 from .sampling import validate_spacing
+from .smoothing import quad_shape
 from .strip import alignment_metrics
 from .._planning.mapping import dense_angle
 from .._limits import ElementLimitExceeded, check_element_limit, preflight_element_limit
@@ -94,14 +95,7 @@ def _source_ids(section):
 
 
 def _quality_summary(nodes, quads):
-    cells = nodes[quads, :2]
-    vectors = np.roll(cells, -1, axis=1) - cells
-    vectors /= np.max(np.abs(vectors), axis=(1, 2))[:, None, None]
-    lengths = np.linalg.norm(vectors, axis=2)
-    next_vectors = np.roll(vectors, -1, axis=1)
-    scaled = (vectors[..., 0] * next_vectors[..., 1] - vectors[..., 1] * next_vectors[..., 0])
-    scaled /= lengths * np.roll(lengths, -1, axis=1)
-    aspect = lengths.max(axis=1) / lengths.min(axis=1)
+    aspect, scaled = quad_shape(nodes[quads, :2])
     return {"max_aspect_ratio": float(aspect.max()),
             "min_scaled_jacobian": float(scaled.min()),
             "worst_score": float(max(aspect.max(), 1.0 / scaled.min()))}
@@ -112,7 +106,8 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
     tol, h = data["tol"], data["h"]
     limit = data.get("max_added_elements")
     fixed_outer_boundary = data.get("fixed_outer_boundary", False)
-    preflight_element_limit(plan, data)
+    dense_section_ids = {record["section_id"] for record in plan.diagnostics["dense_sections"]}
+    preflight_element_limit(plan, data, dense_section_ids)
     states = {seam.id: seam_states(seam, tol) for seam in plan.seams}
     candidates = []
     line_stats = {}
@@ -141,6 +136,7 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                                             max_transition_count=data.get("max_transition_count", DEFAULT_MAX_TRANSITION_COUNT),
                                             min_size_ratio=data.get("min_size_ratio", .5),
                                             max_size_ratio=data.get("max_size_ratio", DEFAULT_MAX_SIZE_RATIO),
+                                            size_band_active=section.id not in dense_section_ids,
                                             _sampling_cache=sampling_cache)
                     else:
                         corner = np.r_[plan.front[section.corner], 0.0]
@@ -279,6 +275,8 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                           "element_start": offset + record["element_start"],
                           "element_end": offset + record["element_end"],
                           "_polygon_ids": mapping[record["_polygon_ids"]].tolist()})
+            if "_fixed_interior" in record:
+                units[-1]["_fixed_interior"] = mapping[record["_fixed_interior"]].tolist()
         offset += len(quads)
     index = _PointIndex(pool, front_ids)
     outline = [index.on_segment(a, b) for a, b in zip(plan.front, np.roll(plan.front, -1, axis=0))]
@@ -301,15 +299,10 @@ def finalize_diagnostics(world_nodes, nodes, quads, diagnostics, plan, data, *, 
     """Validate final LINE spacing and report geometry by its committed IDs."""
     for seam in diagnostics["seam_states"]:
         seam["points"] = world_nodes[seam["node_ids"], :2].tolist()
-    cells = nodes[quads, :2]
-    vectors = np.roll(cells, -1, axis=1) - cells
-    vectors /= np.max(np.abs(vectors), axis=(1, 2))[:, None, None]
-    lengths = np.linalg.norm(vectors, axis=2)
-    following = np.roll(vectors, -1, axis=1)
-    scaled = (vectors[..., 0] * following[..., 1] - vectors[..., 1] * following[..., 0])
-    scaled /= lengths * np.roll(lengths, -1, axis=1)
-    scores = np.maximum(lengths.max(axis=1) / lengths.min(axis=1), 1 / scaled.min(axis=1))
+    aspect, scaled = quad_shape(nodes[quads, :2])
+    scores = np.maximum(aspect, 1 / scaled)
     for record in [*diagnostics["section_details"], *diagnostics["units"]]:
+        record.pop("_fixed_interior", None)
         record["polygon"] = world_nodes[record.pop("_polygon_ids"), :2].tolist()
         record["quality"] = float(scores[record["element_start"] - element_offset:
                                          record["element_end"] - element_offset].max())
@@ -319,16 +312,19 @@ def finalize_diagnostics(world_nodes, nodes, quads, diagnostics, plan, data, *, 
             mean, peak = alignment_metrics(source, outer, record["internal_cuts"], data["tol"])
             record.update(alignment_error=mean, max_connector_shear=peak,
                           max_alignment_angle=float(np.degrees(np.arctan(peak))))
-        if "line_sampling" in record:
-            points = world_nodes[record["outer_ids"], :2]
+        if "_forced_interval_ids" in record:
             record["forced_short_intervals"] = [
                 {"start": world_nodes[a, :2].tolist(), "end": world_nodes[b, :2].tolist(),
                  "length": float(np.hypot.reduce(world_nodes[b, :2] - world_nodes[a, :2]))}
                 for a, b in record.pop("_forced_interval_ids")]
-            gaps = validate_spacing(points, data["h"] * data["scale"], data["min_size_ratio"],
-                                    record["forced_short_intervals"], data["max_size_ratio"])
+        if record.get("kind") == "LINE":
+            points = world_nodes[record["outer_ids"], :2]
+            h = data["h"] * data["scale"]
+            gaps = validate_spacing(points, h, data["min_size_ratio"],
+                                    record.get("forced_short_intervals", ()), data["max_size_ratio"],
+                                    size_band_active=record["size_band_active"])
             record.update(min_outer_spacing=float(gaps.min()), max_outer_spacing=float(gaps.max()),
-                          size_error=float(np.mean((gaps / (data["h"] * data["scale"]) - 1) ** 2)))
+                          size_error=float(np.mean((gaps / h - 1) ** 2)))
     details = diagnostics["section_details"]
     diagnostics["outer_size_error"] = sum(d["size_error"] for d in details)
     diagnostics["line_alignment_error"] = sum(d.get("alignment_error", 0.) for d in details)
