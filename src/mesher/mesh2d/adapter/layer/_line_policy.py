@@ -9,6 +9,7 @@ import numpy as np
 from ._types import QuadLayerError
 
 DEFAULT_MAX_TRANSITION_COUNT = 20
+DEFAULT_MAX_SIZE_RATIO = 1.25
 
 
 def validate_dense_parameters(small_element_size, dense_mapping_angle):
@@ -33,7 +34,7 @@ def validate_dense_parameters(small_element_size, dense_mapping_angle):
     return tuple(values)
 
 
-def validate_line_parameters(max_transition_count, min_size_ratio):
+def validate_line_parameters(max_transition_count, min_size_ratio, max_size_ratio=DEFAULT_MAX_SIZE_RATIO):
     """Return normalized policy values, reporting typed input errors early."""
     if (isinstance(max_transition_count, (bool, np.bool_))
             or not isinstance(max_transition_count, (int, np.integer))
@@ -41,19 +42,20 @@ def validate_line_parameters(max_transition_count, min_size_ratio):
         raise QuadLayerError("max_transition_count must be a positive integer",
                              code="invalid_input", stage="input_validation",
                              parameter="max_transition_count")
-    if (isinstance(min_size_ratio, (bool, np.bool_))
-            or not isinstance(min_size_ratio, (int, float, np.integer, np.floating))):
-        raise QuadLayerError("min_size_ratio must be a finite real number in (0, 1]",
-                             code="invalid_input", stage="input_validation",
-                             parameter="min_size_ratio")
-    try:
-        ratio = float(min_size_ratio)
-    except (ValueError, TypeError, OverflowError) as error:
-        raise QuadLayerError("min_size_ratio must be a finite real number in (0, 1]",
-                             code="invalid_input", stage="input_validation",
-                             parameter="min_size_ratio") from error
-    if not math.isfinite(ratio) or not 0 < ratio <= 1:
-        raise QuadLayerError("min_size_ratio must be a finite real number in (0, 1]",
-                             code="invalid_input", stage="input_validation",
-                             parameter="min_size_ratio")
-    return int(max_transition_count), ratio
+    ratios = []
+    for name, value, domain in (("min_size_ratio", min_size_ratio, "(0, 1]"),
+                                ("max_size_ratio", max_size_ratio, "[1, infinity)")):
+        message = f"{name} must be a finite real number in {domain}"
+        valid_type = (not isinstance(value, (bool, np.bool_))
+                      and isinstance(value, (int, float, np.integer, np.floating)))
+        try:
+            ratio = float(value) if valid_type else float("nan")
+        except (ValueError, TypeError, OverflowError) as error:
+            raise QuadLayerError(message, code="invalid_input", stage="input_validation",
+                                 parameter=name) from error
+        in_range = 0 < ratio <= 1 if name == "min_size_ratio" else ratio >= 1
+        if not math.isfinite(ratio) or not in_range:
+            raise QuadLayerError(message, code="invalid_input", stage="input_validation",
+                                 parameter=name)
+        ratios.append(ratio)
+    return int(max_transition_count), ratios[0], ratios[1]

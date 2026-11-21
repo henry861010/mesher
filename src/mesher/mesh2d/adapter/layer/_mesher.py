@@ -14,8 +14,8 @@ from ._fixed_boundary import (fixed_boundary_nodes, prepare_fixed_boundary,
                               restore_fixed_boundary)
 from ._geometry import area
 from ._limits import check_element_limit
-from ._line_policy import (DEFAULT_MAX_TRANSITION_COUNT, validate_dense_parameters,
-                           validate_line_parameters)
+from ._line_policy import (DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT,
+                           validate_dense_parameters, validate_line_parameters)
 from ._planning.front import (_expansion_distances, _front, _normalize_outline_o,
                               _specified_front)
 from ._planning.source import _fail, _prepare, _validate_old_patterns
@@ -246,6 +246,7 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
                       max_added_elements: int = 1_000_000,
                       max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
                       min_size_ratio: float = 0.5,
+                      max_size_ratio: float = DEFAULT_MAX_SIZE_RATIO,
                       repair_slots: bool = True,
                       repair_max_element_size: float | None = None,
                       small_element_size: float | None = None,
@@ -293,8 +294,8 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     ``fixed_outer_boundary=True`` requires ``outline_o`` and preserves its complete
     node-ID cycle and edges without adding, dropping, or moving boundary nodes.
     Interior nodes may still be created. LINE and corner outer resampling are
-    disabled, as are the ``max_transition_count`` and ``min_size_ratio`` policies;
-    both parameters are still validated. The element budget remains active.
+    disabled. LINE transition and spacing parameters are validated but inactive.
+    The element budget remains active.
     Free OUTER corner contacts use the nearest usable nodes on the corresponding
     target edges, excluding that corner itself. Conflicting corner assignments
     try further candidates without an angle cap. Pattern contacts must already
@@ -338,13 +339,15 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     ``max_transition_count`` is a positive Python or NumPy integer, default 20.
     Each resampled LINE outer segment may receive at most this many source
     segments; reverse refinement is unrestricted. ``min_size_ratio`` is finite
-    and in (0, 1], default 0.5. LINE outer spacing lies between
-    ``min_size_ratio * element_size`` and ``element_size``, within numerical roundoff.
+    and in (0, 1], default 0.5. ``max_size_ratio`` is finite and at least 1,
+    default 1.25. Outer spacing lies between the two ratios times
+    ``element_size``, within numerical roundoff.
     Adjacent mandatory anchors closer than that minimum remain one unsplit
     segment and are recorded as an exception; the transition cap still applies.
     These constraints do not change layer thickness, source edges, corner
-    sections, or repair interiors. Density-based sampling and bounded local
-    pairing favor source alignment without searching for a globally best mesh.
+    sections, or repair interiors. LINE units favor normal projections of their
+    source nodes and share single full-height edges. The first and last units
+    absorb the exact endpoint seam chains.
 
     Corners are reserved before straight LINE sections. Finite patterns may
     follow boundaries or form complete source-to-front section interfaces;
@@ -374,6 +377,7 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
         max_added_elements=max_added_elements, repair_slots=repair_slots,
         repair_max_element_size=repair_max_element_size,
         max_transition_count=max_transition_count, min_size_ratio=min_size_ratio,
+        max_size_ratio=max_size_ratio,
         small_element_size=small_element_size, dense_mapping_angle=dense_mapping_angle)
 
 
@@ -386,6 +390,7 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                                  max_added_elements: int = 1_000_000,
                                  max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
                                  min_size_ratio: float = 0.5,
+                                 max_size_ratio: float = DEFAULT_MAX_SIZE_RATIO,
                                  repair_slots: bool = True,
                                  repair_max_element_size: float | None = None,
                                  fixed_outer_boundary: bool = False,
@@ -398,8 +403,8 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
     again. Their exact world coordinates survive the normalized construction.
     """
     start = perf_counter()
-    max_transition_count, min_size_ratio = validate_line_parameters(
-        max_transition_count, min_size_ratio)
+    max_transition_count, min_size_ratio, max_size_ratio = validate_line_parameters(
+        max_transition_count, min_size_ratio, max_size_ratio)
     if not isinstance(fixed_outer_boundary, (bool, np.bool_)):
         _fail("fixed_outer_boundary must be a boolean", stage="input_validation",
               parameter="fixed_outer_boundary")
@@ -422,6 +427,7 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                               _dense_seam_targets=_dense_seam_targets)
     data["max_transition_count"] = max_transition_count
     data["min_size_ratio"] = min_size_ratio
+    data["max_size_ratio"] = max_size_ratio
     working = data["_source_mesh"]
     repair_count = len(working.elements) - len(mesh.elements)
     data["max_added_elements"] = max_added_elements - repair_count
@@ -473,6 +479,7 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                    "max_added_elements": max_added_elements,
                    "max_transition_count": max_transition_count,
                    "min_size_ratio": min_size_ratio,
+                   "max_size_ratio": max_size_ratio,
                    "fixed_outer_boundary": bool(fixed_outer_boundary),
                    "line_policy_active": not fixed_outer_boundary,
                    "edge_expansion": [d * data["scale"] for d in data["expansion"]],

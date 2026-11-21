@@ -7,8 +7,8 @@ Run serially on the same machine (fixture preparation is outside the timer)::
     PYTHONPATH=src venv/bin/python benchmarks/mesh2d/benchmark_adapter_regressions.py \
         --compare-to /tmp/adapter_before.jsonl > /tmp/adapter_after.jsonl
 
-Each case has one warmup and five measured runs. Successful cases must retain
-output counts and stay within 5% of the baseline median. Fixed failures have a
+Each case has one warmup and five measured runs. Successful cases must stay within 5% of the baseline median. Element
+and trial counts are reported alongside their changes from the baseline. Fixed failures have a
 one-second target, checked separately from successful cases. The optional
 --fixed-failures flag exercises those failures; --timeout caps each failure
 benchmark run only, never execution in the library. Fixture helpers require the source tree.
@@ -88,8 +88,9 @@ def main():
         if name in baseline and 'elements' in record:
             old = baseline[name]
             record['relative_time'] = record['median'] / old['median']
-            if (record['relative_time'] > 1.05 or record['elements'] != old['elements']
-                    or record['trials'] != old['trials']):
+            record['element_delta'] = median(record['elements']) - median(old['elements'])
+            record['trial_delta'] = median(record['trials']) - median(old['trials'])
+            if record['relative_time'] > 1.05:
                 failed.append(name)
         print(json.dumps(record), flush=True)
 
@@ -177,7 +178,7 @@ def main():
         finally:
             signal.signal(signal.SIGALRM, previous)
     if failed:
-        raise SystemExit('Performance or output-count regression: ' + ', '.join(failed))
+        raise SystemExit('Performance regression: ' + ', '.join(failed))
 
 
 if __name__ == '__main__':

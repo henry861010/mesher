@@ -8,7 +8,7 @@ import numpy as np
 from mesher import Mesh2D
 from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from mesher.mesh2d.adapter.layer import _mesher
-from mesher.mesh2d.adapter.layer._construction import line
+from mesher.mesh2d.adapter.layer._construction import aligned
 from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh, generate_rectilinear_mesh_optimal
 from tests.unit.mesh2d.test_extend_quad_layer import _polyomino, _target_ids
@@ -71,7 +71,7 @@ class FixedLayerBoundaryTests(unittest.TestCase):
         self.assertGreater(len(target), sum(len(s.outer_boundary) - 1 for s in plan.sections))
         old_nodes, old_elements = mesh.nodes.copy(), mesh.elements.copy()
         original_target = target.copy()
-        with patch.object(line, "sample_outer", side_effect=AssertionError("fixed target was sampled")):
+        with patch.object(aligned, "LineSampling", side_effect=AssertionError("fixed target was sampled")):
             result = _mesher._generate_layer_adaptive_mesh(
                 mesh, outline, 2, outline_o=target, pattern_lines=patterns,
                 expand_ratio=1.5, fixed_outer_boundary=True)

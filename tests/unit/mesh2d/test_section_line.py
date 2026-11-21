@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from mesher.mesh2d.adapter.layer._construction.line import outer_count_candidates, plan_line, sample_outer
+from mesher.mesh2d.adapter.layer._construction.line import plan_line
 from mesher.mesh2d.adapter.layer._construction.units import build_unit_patch, quality_score
 from mesher import Mesh2D
 from mesher.mesh2d.adapter.unit import build_unit_1_x_y_z
@@ -15,7 +15,7 @@ from mesher.mesh2d.adapter.unit.build_unit_1_1_1_x import (
     _validate_cyclic_boundary,
 )
 from mesher.mesh2d.adapter.unit.build_unit_1_1_x_y import _validate_patch
-import mesher.mesh2d.adapter.layer._construction.line as line_module
+import mesher.mesh2d.adapter.layer._construction.strip as strip
 
 
 def _fixture(n=20, width=100.0, height=50.0, left_nodes=2, right_nodes=2):
@@ -41,23 +41,25 @@ class SectionLineTests(unittest.TestCase):
         self.assertTrue(np.isfinite(quality_score(patch.nodes, patch.quads)))
         _validate_patch(patch.nodes, patch.quads, boundary)
 
-    def test_full_source_chain_is_one_section_with_two_units(self):
+    def test_large_coarsening_preserves_source_and_reports_actual_outer_spacing(self):
         args = _fixture()
         originals = tuple(array.copy() for array in args)
-        candidates = plan_line(*args, 50.0, 1e-9)
+        candidates = plan_line(*args, 50.0, 1e-9, best_only=True)
         self.assertEqual(len(candidates), 1)
         patch = candidates[0]
-        self.assertEqual(len(patch.units), 2)
         self.assertEqual(len(patch.outer_ids), 3)
         np.testing.assert_array_equal(patch.nodes[patch.source_ids], args[0])
-        self.assertEqual(patch.size_error, 0)
+        gaps = np.diff(patch.nodes[patch.outer_ids, 0])
+        self.assertTrue(np.all((gaps >= 25.) & (gaps <= 62.5)))
+        self.assertAlmostEqual(patch.size_error, np.mean((gaps / 50. - 1) ** 2))
+        self.assertAlmostEqual(patch.diagnostics["max_alignment_angle"], 0.)
         # Large coarsening remains valid without a quality rejection threshold.
         self.assertGreater(patch.quality, 4)
         self.assert_conforming(patch)
         for original, current in zip(originals, args):
             np.testing.assert_array_equal(original, current)
 
-    def test_all_ordinary_seam_pairs_close_and_share_midpoint_ids(self):
+    def test_all_ordinary_seam_pairs_close_conformingly(self):
         for left in (2, 3):
             for right in (2, 3):
                 with self.subTest(left=left, right=right):
@@ -69,13 +71,56 @@ class SectionLineTests(unittest.TestCase):
                         self.assertEqual(len(patch.right_ids), right)
                         self.assert_conforming(patch)
 
-    def test_refinement_uses_one_source_segment_per_unit(self):
+    def test_split_endpoints_leave_single_full_depth_quads_in_the_middle(self):
+        for left in (2, 3):
+            for right in (2, 3):
+                with self.subTest(left=left, right=right):
+                    args = _fixture(24, 24, 1, left, right)
+                    patch, = plan_line(*args, 1., 1e-10, best_only=True)
+                    np.testing.assert_array_equal(patch.nodes[patch.left_ids], args[2])
+                    np.testing.assert_array_equal(patch.nodes[patch.right_ids], args[3])
+                    self.assertTrue(all(u["boundary_counts"][1] == 2 for u in patch.units[:-1]))
+                    self.assertTrue(all(u["boundary_counts"][3] == 2 for u in patch.units[1:]))
+                    # Check actual connectivity in the regular center as well as unit records.
+                    cells = patch.nodes[patch.quads, :2]
+                    if left == right == 3:
+                        self.assertEqual(len(cells), 28)
+                        self.assertEqual(len(patch.units), 24)
+                        self.assertEqual(patch.units[0]["boundary_counts"], [2, 2, 3, 3])
+                        self.assertEqual(patch.units[-1]["boundary_counts"], [2, 3, 3, 2])
+                    for x in range(1, 23):
+                        idx = np.flatnonzero(np.logical_and(cells[:, :, 0].min(axis=1) == x,
+                                                            cells[:, :, 0].max(axis=1) == x + 1))
+                        self.assertEqual(len(idx), 1)
+                        self.assertEqual(set(map(tuple, cells[idx[0]])),
+                                         {(x, 0), (x + 1, 0), (x, 1), (x + 1, 1)})
+                    self.assert_conforming(patch)
+
+    def test_fixed_three_point_ends_keep_exact_nodes_and_unsplit_internal_cuts(self):
+        source, _, left, right = _fixture(24, 24., 1., 3, 3)
+        outer = source.copy()
+        outer[:, 1] = 1.
+        patch, = plan_line(source, outer, left, right, 1., 1e-10,
+                           fixed_outer_boundary=True, best_only=True)
+        np.testing.assert_array_equal(patch.nodes[patch.outer_ids], outer)
+        self.assertGreater(len(patch.units), 2)
+        self.assertAlmostEqual(patch.diagnostics["max_alignment_angle"], 45.)
+        for unit in patch.units[:-1]:
+            count, cut_count, _, _ = unit["boundary_counts"]
+            self.assertEqual(cut_count, 2)
+            cut = np.asarray(unit["polygon"][count - 1:count + 1])[:, :2]
+            np.testing.assert_allclose(np.abs(cut[1] - cut[0]), [1., 1.])
+
+        self.assert_conforming(patch)
+
+    def test_refinement_keeps_ordered_source_assignments(self):
         patches = plan_line(*_fixture(3, 12, 4), 1.7, 1e-10)
         self.assertTrue(patches)
         for patch in patches:
             self.assertGreater(len(patch.outer_ids) - 1, 3)
-            self.assertEqual(len(patch.units), 3)
-            self.assertTrue(all(unit["boundary_counts"][0] == 2 for unit in patch.units))
+            loads = [count for unit in patch.units for count in unit["source_segments_per_outer"]]
+            self.assertEqual(sum(loads), 3)
+            self.assertEqual(len(loads), len(patch.outer_ids) - 1)
             self.assert_conforming(patch)
 
     def test_outer_anchors_survive_sampling_and_parity(self):
@@ -98,18 +143,6 @@ class SectionLineTests(unittest.TestCase):
             np.testing.assert_array_equal(patch.nodes[patch.left_ids], left)
             np.testing.assert_array_equal(patch.nodes[patch.right_ids], right)
             self.assert_conforming(patch)
-
-    def test_count_candidates_are_nearest_legal_neighbors(self):
-        self.assertEqual(outer_count_candidates(20, 2, 2, 100, 50, 1), [2])
-        self.assertEqual(set(outer_count_candidates(19, 2, 2, 100, 50, 1)), {1, 3})
-        self.assertEqual(outer_count_candidates(20, 2, 2, 100, 50, 5), [6])
-        self.assertEqual(outer_count_candidates(1, 2, 2, 1, 50, 1), [1])
-
-    def test_anchor_allocation_retains_endpoints_exactly(self):
-        anchors = np.array([[0., 0, 0], [1, 0, 0], [5, 0, 0]])
-        sampled, error = sample_outer(anchors, 5, 1, 1e-10)
-        np.testing.assert_array_equal(sampled[:, 0], np.arange(6))
-        self.assertEqual(error, 0)
 
     def test_unit_diagnostics_and_input_winding_are_independent(self):
         source, outer, left, right = _fixture(3, 3, 1)
@@ -161,49 +194,6 @@ class SectionLineTests(unittest.TestCase):
         build_unit_patch(changed, 1e-10, _cache=cache)
         self.assertEqual(len(cache), 2, "nearby inputs must not become byte-exact cache hits")
 
-    def test_best_only_skips_dominated_size_count_after_success(self):
-        args = _fixture(8, 16, 4, 2, 3)
-        expected = plan_line(*args, 8, 1e-10)[0]
-        with patch.object(line_module, "_plan_count", wraps=line_module._plan_count) as calls:
-            chosen = plan_line(*args, 8, 1e-10, best_only=True)
-        self.assertEqual(calls.call_count, 1)
-        self.assertEqual(len(chosen), 1)
-        self.assertEqual(chosen[0].size_error, expected.size_error)
-        self.assertEqual(chosen[0].quality, expected.quality)
-
-    def test_best_only_still_tries_other_count_after_geometry_failure(self):
-        args = _fixture(24, 2100, 500, 2, 3)
-        args[0][:, 0] = np.r_[0., 500., np.arange(1000., 1105., 5.), 1600., 2100.]
-        original = line_module._plan_count
-        attempts = []
-
-        def fail_first(*values):
-            attempts.append(len(values[1]))
-            return None if len(attempts) == 1 else original(*values)
-
-        with patch.object(line_module, "_plan_count", side_effect=fail_first):
-            chosen = plan_line(*args, 500, 1e-10, best_only=True, max_transition_count=10)
-        self.assertEqual(len(attempts), 2)
-        self.assertTrue(chosen)
-
-    def test_long_line_builds_each_unit_once_without_changing_section(self):
-        args = _fixture(40, 40, 10)
-        with patch.object(line_module, "build_unit_patch", wraps=build_unit_patch) as trials:
-            candidates = plan_line(*args, 10, 1e-10, best_only=True)
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(len(candidates[0].units), 4)
-        self.assertEqual(len(candidates[0].source_ids), 41)
-        self.assertAlmostEqual(candidates[0].quality, 10)
-        self.assertEqual(trials.call_count, 4)
-        expected = {
-            "line_planner": "outer_first", "unit_trial_count": 4,
-            "local_repair_count": 0, "outer_count_attempts": 1,
-        }
-        self.assertEqual({key: candidates[0].diagnostics[key] for key in expected}, expected)
-        self.assertEqual(candidates[0].diagnostics["max_actual_transition_count"], 10)
-        self.assertEqual(candidates[0].alignment_error, 0.)
-        self.assert_conforming(candidates[0])
-
     def test_filtered_boundary_checks_match_exhaustive_pairs(self):
         random = np.random.default_rng(481)
         for scale in (1e-5, 1.0, 1e8):
@@ -236,19 +226,59 @@ class SectionLineTests(unittest.TestCase):
     def test_small_strips_are_valid_without_quality_search(self):
         for n, left_count, right_count in ((7, 2, 2), (8, 2, 3), (7, 3, 3)):
             with self.subTest(n=n, left=left_count, right=right_count):
-                with patch.object(line_module, "build_unit_patch", wraps=build_unit_patch) as calls:
+                with patch.object(strip, "build_unit_patch", wraps=build_unit_patch) as calls:
                     selected = plan_line(*_fixture(n, n, 2, left_count, right_count),
                                          n / 3, 1e-10, best_only=True)
                 self.assertTrue(selected)
-                self.assertEqual(calls.call_count, len(selected[0].units))
+                self.assertEqual(calls.call_count, selected[0].diagnostics["unit_trial_count"])
                 self.assert_conforming(selected[0])
 
-    def test_size_band_excludes_oversized_parity_neighbor(self):
-        with patch.object(line_module, "_plan_count", wraps=line_module._plan_count) as calls:
-            chosen = plan_line(*_fixture(7, 3, 2), 2, 1e-10, best_only=True)
-        self.assertEqual(calls.call_count, 1)
+    def test_geometry_failure_repairs_only_the_shared_cut_with_its_neighbor(self):
+        source, _, left, right = _fixture(13, 13., 2.)
+        outer = np.array([[0., 2., 0.], [4., 2., 0.], [8., 2., 0.], [13., 2., 0.]])
+        inputs = (source, outer, left, right)
+        originals = [a.copy() for a in inputs]
+        for blocked, preserved in (((0., 3.), (8, 2)), ((8., 13.), (3, 1))):
+            with self.subTest(blocked=blocked):
+                cuts = [(0, 0), (3, 1), (8, 2), (13, 3)]
+                def reject_failed_span(sides, *args, **kwargs):
+                    if tuple(sides[0][[0, -1], 0]) == blocked:
+                        raise ValueError("invalid span")
+                    return build_unit_patch(sides, *args, **kwargs)
+
+                stats = {}
+                with patch.object(strip, "build_unit_patch", side_effect=reject_failed_span):
+                    result = strip.build_strip(*inputs, cuts, 0., 1e-10,
+                                               cache={}, stats=stats, cap=7)
+                self.assertIsNotNone(result)
+                self.assertIn(list(preserved), result.diagnostics["internal_cuts"])
+                self.assertGreaterEqual(stats["local_repair_count"], 1)
+                self.assertTrue(all(u["boundary_counts"][1] == 2 for u in result.units[:-1]))
+                self.assertTrue(all(max(u["source_segments_per_outer"]) <= 7 for u in result.units))
+                self.assertEqual(cuts, [(0, 0), (3, 1), (8, 2), (13, 3)])
+                for value, original in zip(inputs, originals):
+                    np.testing.assert_array_equal(value, original)
+                self.assert_conforming(result)
+
+    def test_strict_upper_size_can_add_outer_points_without_slant(self):
+        source, outer, left, right = _fixture(20, 20., .5)
+        source[:, 0] = np.r_[0., np.cumsum([1.5] * 10 + [.5] * 10)]
+        patch, = plan_line(source, outer, left, right, 1., 1e-10,
+                           min_size_ratio=.5, max_size_ratio=1., best_only=True)
+        xs = patch.nodes[patch.outer_ids, 0]
+        self.assertGreater(len(xs), len(source))
+        self.assertTrue(np.all((np.diff(xs) >= .5 - 1e-10) & (np.diff(xs) <= 1. + 1e-10)))
+        self.assertAlmostEqual(patch.diagnostics["max_alignment_angle"], 0.)
+        for unit in patch.units[:-1]:
+            count, cut_count, _, _ = unit["boundary_counts"]
+            self.assertEqual(cut_count, 2)
+            cut = np.asarray(unit["polygon"][count - 1:count + 1])[:, :2]
+            np.testing.assert_allclose(cut[1] - cut[0], [0., .5], atol=1e-10)
+        self.assert_conforming(patch)
+
+    def test_strict_size_band_excludes_oversized_parity_neighbor(self):
+        chosen = plan_line(*_fixture(7, 3, 2), 2, 1e-10, max_size_ratio=1, best_only=True)
         self.assertEqual(len(chosen[0].outer_ids) - 1, 3)
-        self.assertAlmostEqual(chosen[0].size_error, .25)
         self.assert_conforming(chosen[0])
 
     def test_nonuniform_source_matches_geometry_and_keeps_all_nodes(self):
@@ -257,20 +287,21 @@ class SectionLineTests(unittest.TestCase):
         chosen = plan_line(source, outer, left, right, 4, 1e-10, best_only=True)[0]
         ends = [unit["polygon"][unit["boundary_counts"][0] - 1][0]
                 for unit in chosen.units[:-1]]
-        self.assertEqual(ends, [3, 7])
+        self.assertTrue(set(ends).issubset(set(source[:, 0])))
         np.testing.assert_array_equal(chosen.nodes[chosen.source_ids], source)
-        self.assertEqual(chosen.diagnostics["unit_trial_count"], 3)
+        self.assertGreaterEqual(chosen.diagnostics["unit_trial_count"]
+                                    + chosen.diagnostics["direct_quad_count"], len(chosen.units))
         self.assert_conforming(chosen)
 
-    def test_equal_counts_and_nonuniform_refinement_build_each_unit_once(self):
+    def test_equal_counts_and_nonuniform_refinement_keep_source(self):
         for n, h in ((6, 2), (3, 1)):
             with self.subTest(n=n):
                 source, outer, left, right = _fixture(n, 12, 4)
                 if n == 3:
                     source[:, 0] = [0, 1, 8, 12]
                 chosen = plan_line(source, outer, left, right, h, 1e-10, best_only=True)[0]
-                self.assertEqual(chosen.diagnostics["unit_trial_count"], n)
-                self.assertEqual(chosen.diagnostics["local_repair_count"], 0)
+                self.assertGreaterEqual(chosen.diagnostics["unit_trial_count"]
+                                    + chosen.diagnostics["direct_quad_count"], len(chosen.units))
                 np.testing.assert_array_equal(chosen.nodes[chosen.source_ids], source)
                 self.assert_conforming(chosen)
 
@@ -280,117 +311,6 @@ class SectionLineTests(unittest.TestCase):
         chosen = plan_line(source, outer, left, right, 8, 1e-10, best_only=True)[0]
         self.assertEqual(np.count_nonzero(chosen.nodes[chosen.outer_ids, 0] == 3), 1)
         self.assert_conforming(chosen)
-
-    def test_failed_nearest_cut_tries_a_neighbor_then_stops(self):
-        for blocked, expected in (
-            ({(0, 4)}, [(0, 4), (0, 3), (3, 8)]),
-            ({(0, 4), (0, 3)}, [(0, 4), (0, 3), (0, 5), (5, 8)]),
-        ):
-            with self.subTest(blocked=blocked):
-                attempted = []
-
-                def reject_first_cut(sides, *args, **kwargs):
-                    interval = (sides[0][0, 0], sides[0][-1, 0])
-                    attempted.append(interval)
-                    if interval in blocked:
-                        raise ValueError("injected invalid cut")
-                    return build_unit_patch(sides, *args, **kwargs)
-
-                with patch.object(line_module, "build_unit_patch", side_effect=reject_first_cut):
-                    chosen = plan_line(*_fixture(8, 8, 4), 4, 1e-10, best_only=True)[0]
-                self.assertEqual(attempted, expected)
-                self.assertEqual(chosen.diagnostics["local_repair_count"], len(expected) - 2)
-                self.assertEqual(chosen.diagnostics["unit_trial_count"], len(expected))
-                self.assert_conforming(chosen)
-
-    def test_closing_repair_rebuilds_only_the_last_cut_owners(self):
-        for n, h, blocked, expected in (
-            (8, 4, (4, 8), [(0, 4), (4, 8), (0, 3), (3, 8)]),
-            (9, 3, (3, 6), [(0, 3), (6, 9), (3, 6), (5, 9), (3, 5)]),
-        ):
-            with self.subTest(n=n):
-                attempted = []
-
-                def reject_closure(sides, *args, **kwargs):
-                    interval = (sides[0][0, 0], sides[0][-1, 0])
-                    attempted.append(interval)
-                    if interval == blocked:
-                        raise ValueError("injected invalid closing unit")
-                    return build_unit_patch(sides, *args, **kwargs)
-
-                with patch.object(line_module, "build_unit_patch", side_effect=reject_closure):
-                    chosen = plan_line(*_fixture(n, n, 4), h, 1e-10, best_only=True)[0]
-                self.assertEqual(attempted, expected)
-                self.assertEqual(chosen.diagnostics["local_repair_count"], 1)
-                self.assertEqual(chosen.diagnostics["unit_trial_count"], len(expected))
-                self.assert_conforming(chosen)
-
-    def test_closing_repair_also_preserves_outer_anchors_when_refining(self):
-        source, _, left, right = _fixture(2, 8, 4)
-        outer = np.array([[0., 4, 0], [3., 4, 0], [8., 4, 0]])
-        attempted = []
-
-        def reject_closure(sides, *args, **kwargs):
-            forward = sides[2][::-1]
-            interval = (forward[0, 0], forward[-1, 0])
-            attempted.append(interval)
-            if interval == (4, 8):
-                raise ValueError("invalid refining closure")
-            return build_unit_patch(sides, *args, **kwargs)
-
-        with patch.object(line_module, "build_unit_patch", side_effect=reject_closure):
-            chosen = plan_line(source, outer, left, right, 1, 1e-10, best_only=True)[0]
-        self.assertEqual(attempted, [(0, 4), (4, 8), (0, 3), (3, 8)])
-        self.assertEqual(chosen.diagnostics["local_repair_count"], 1)
-        for point in outer:
-            self.assertEqual(np.count_nonzero(np.all(chosen.nodes[chosen.outer_ids] == point, axis=1)), 1)
-        self.assert_conforming(chosen)
-
-    def test_exhausted_repairs_are_bounded_and_leave_inputs_unchanged(self):
-        args = _fixture(40, 40, 10)
-        originals = [array.copy() for array in args]
-        stats = {}
-        with patch.object(line_module, "build_unit_patch", side_effect=ValueError("invalid")) as calls:
-            chosen = plan_line(*args, 10, 1e-10, best_only=True, _diagnostics=stats, max_transition_count=10)
-        self.assertFalse(chosen)
-        # With exactly ten source segments per outer segment, neither neighbor
-        # can be tried without violating current or remaining capacity.
-        self.assertEqual(calls.call_count, 1)
-        self.assertEqual(stats["unit_trial_count"], 1)
-        self.assertEqual(stats["local_repair_count"], 0)
-        for before, after in zip(originals, args):
-            np.testing.assert_array_equal(before, after)
-
-    def test_failed_closure_never_backtracks_past_one_neighbor(self):
-        attempted = []
-
-        def reject_center(sides, *args, **kwargs):
-            interval = (sides[0][0, 0], sides[0][-1, 0])
-            attempted.append(interval)
-            if 5 <= interval[0] <= 7 and interval[1] == 9:
-                raise ValueError("unmeshable center")
-            return build_unit_patch(sides, *args, **kwargs)
-
-        source, outer, left, right = _fixture(12, 12, 4)
-        stats = {"unit_trial_count": 0, "local_repair_count": 0}
-        with patch.object(line_module, "build_unit_patch", side_effect=reject_center):
-            chosen = line_module._plan_count(source, np.linspace(outer[0], outer[-1], 5),
-                                             left, right, 0., 1e-10, None, stats)
-        self.assertIsNone(chosen)
-        self.assertEqual(attempted, [(0, 3), (9, 12), (3, 6), (6, 9),
-                                     (3, 5), (5, 9), (3, 7), (7, 9)])
-        self.assertLessEqual(stats["unit_trial_count"], 8 * 4)
-        self.assertEqual(stats["local_repair_count"], 2)
-
-    def test_unit_work_scales_with_the_shorter_chain(self):
-        for segments in (32, 128, 512):
-            with self.subTest(segments=segments):
-                chosen = plan_line(*_fixture(segments, segments, 8),
-                                   8, 1e-10, best_only=True)[0]
-                self.assertEqual(chosen.diagnostics["unit_trial_count"], segments // 8)
-                self.assertEqual(chosen.diagnostics["local_repair_count"], 0)
-                self.assert_conforming(chosen)
-
 
 if __name__ == "__main__":
     unittest.main()

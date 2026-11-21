@@ -8,16 +8,17 @@ import numpy as np
 from .....tolerance import subdivision_count
 
 from .._types import QuadLayerError
-from .._line_policy import DEFAULT_MAX_TRANSITION_COUNT
+from .._line_policy import DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT
 
 
 def _infeasible(message: str, **context):
     return QuadLayerError(message, code="line_constraints_infeasible", **context)
 
 
-def _interval_bounds(lengths, h, tol, ratio):
+def _interval_bounds(lengths, h, tol, ratio, max_ratio=DEFAULT_MAX_SIZE_RATIO):
     minimum, maximum, forced = [], [], []
     h_min = float(ratio) * float(h)
+    h_max = float(max_ratio) * float(h)
     # Smaller positive ratios can underflow, or imply a count no NumPy front
     # can represent. Keep the bound finite without dividing by that tiny gap.
     max_count = int(np.iinfo(np.intp).max) - 1
@@ -27,7 +28,7 @@ def _interval_bounds(lengths, h, tol, ratio):
                               interval=index)
         arithmetic_margin = 32 * np.finfo(float).eps * max(float(length), h_min)
         short = length < h_min - arithmetic_margin
-        low = 1 if short else max(1, subdivision_count(float(length), h))
+        low = 1 if length <= h_max else subdivision_count(float(length), h_max)
         if short:
             high = 1
         elif h_min == 0 or float(length) >= max_count * h_min:
@@ -45,9 +46,14 @@ def _interval_bounds(lengths, h, tol, ratio):
 
 
 def line_count_bounds(lengths, source_segments, h, tol,
-                      max_transition_count=DEFAULT_MAX_TRANSITION_COUNT, min_size_ratio=0.5):
+                      max_transition_count=DEFAULT_MAX_TRANSITION_COUNT, min_size_ratio=0.5,
+                      max_size_ratio=DEFAULT_MAX_SIZE_RATIO):
     """Count-only feasibility, usable before allocating any sampled points."""
-    minimum, maximum, _ = _interval_bounds(lengths, h, tol, min_size_ratio)
+    minimum, maximum, _ = _interval_bounds(lengths, h, tol, min_size_ratio, max_size_ratio)
+    return _count_limits(minimum, maximum, source_segments, max_transition_count)
+
+
+def _count_limits(minimum, maximum, source_segments, max_transition_count):
     lower = max(sum(minimum),
                 (source_segments + max_transition_count - 1) // max_transition_count)
     upper = sum(maximum)
@@ -84,54 +90,50 @@ class LineSampling:
     """
 
     def __init__(self, source, anchors, h, tol, max_transition_count=DEFAULT_MAX_TRANSITION_COUNT,
-                 min_size_ratio=0.5):
+                 min_size_ratio=0.5, max_size_ratio=DEFAULT_MAX_SIZE_RATIO):
         self.source = np.asarray(source, dtype=float).copy()
         self.anchors = np.asarray(anchors, dtype=float).copy()
         self.h, self.tol = float(h), float(tol)
         self.max_transition_count = int(max_transition_count)
         self.min_size_ratio = float(min_size_ratio)
+        self.max_size_ratio = float(max_size_ratio)
         self.h_min = self.min_size_ratio * self.h
+        self.h_max = self.max_size_ratio * self.h
         self.lengths = np.linalg.norm(np.diff(self.anchors[:, :2], axis=0), axis=1)
-        self.lower_count, self.upper_count = line_count_bounds(
-            self.lengths, len(self.source) - 1, h, tol,
-            max_transition_count, min_size_ratio)
         self._minimum, self._maximum, self._forced = _interval_bounds(
-            self.lengths, h, tol, min_size_ratio)
+            self.lengths, h, tol, min_size_ratio, max_size_ratio)
+        self.lower_count, self.upper_count = _count_limits(
+            self._minimum, self._maximum, len(self.source) - 1, max_transition_count)
         delta = self.anchors[-1, :2] - self.anchors[0, :2]
-        self._tangent = delta / np.linalg.norm(delta)
-        self._anchor_positions = (self.anchors[:, :2] - self.anchors[0, :2]) @ self._tangent
-        source_positions = (self.source[:, :2] - self.anchors[0, :2]) @ self._tangent
-        if (np.any(np.diff(source_positions) <= tol)
-                or np.any(np.diff(self._anchor_positions) <= tol)):
+        self.tangent = delta / np.linalg.norm(delta)
+        self.anchor_positions = (self.anchors[:, :2] - self.anchors[0, :2]) @ self.tangent
+        self.source_positions = (self.source[:, :2] - self.anchors[0, :2]) @ self.tangent
+        if (np.any(np.diff(self.source_positions) <= tol)
+                or np.any(np.diff(self.anchor_positions) <= tol)):
             raise _infeasible("LINE nodes must be strictly ordered along the line axis")
-        if np.any(np.abs(np.diff(self._anchor_positions) - self.lengths) > tol):
+        if np.any(np.abs(np.diff(self.anchor_positions) - self.lengths) > tol):
             raise _infeasible("LINE outer anchors must be collinear")
-        self._build_density(source_positions)
+        self._build_density(self.source_positions)
         # Both arrays are sorted; interpolation walks the density intervals.
-        self._anchor_mass = np.interp(self._anchor_positions, self._positions, self._mass)
+        self._anchor_mass = np.interp(self.anchor_positions, self._positions, self._mass)
         self._demands = np.diff(self._anchor_mass)
         self.demand = float(self._mass[-1])
         self._samples: dict[int, tuple[np.ndarray, float]] = {}
 
     def _build_density(self, source_positions):
-        length = self._anchor_positions[-1]
+        length = self.anchor_positions[-1]
         interior = source_positions[(source_positions > 0) & (source_positions < length)]
         self._positions = np.concatenate(([0.0], interior, [length]))
-        mass = np.empty(len(self._positions))
-        mass[0] = 0.0
-        index = int(np.searchsorted(source_positions, 0.0, side="right")) - 1
-        baseline = 1.0 / self.h
-        inverse_limit = 1 / self.max_transition_count
-        for interval, (start, end) in enumerate(zip(self._positions[:-1],
-                                                    self._positions[1:])):
-            while index + 1 < len(source_positions) and source_positions[index + 1] <= start:
-                index += 1
-            rate = baseline
-            if 0 <= index < len(source_positions) - 1:
-                gap = source_positions[index + 1] - source_positions[index]
-                rate = max(rate, inverse_limit / gap)
-            mass[interval + 1] = mass[interval] + (end - start) * rate
-        self._mass = mass
+        # Only the first interval can start partway through a source segment.
+        # Interior breakpoints are source nodes, so its successors advance by
+        # one index each. The two tails outside the source use the nominal rate.
+        first = int(np.searchsorted(source_positions, 0., side="right")) - 1
+        indices = first + np.arange(len(self._positions) - 1)
+        inside = (indices >= 0) & (indices < len(source_positions) - 1)
+        rate = np.full(len(indices), 1. / self.h)
+        widths = np.diff(source_positions)[indices[inside]]
+        rate[inside] = np.maximum(rate[inside], (1 / self.max_transition_count) / widths)
+        self._mass = np.r_[0., np.cumsum(np.diff(self._positions) * rate)]
 
     @property
     def diagnostics(self):
@@ -139,6 +141,7 @@ class LineSampling:
             "line_sampling": "source_density",
             "max_transition_count": self.max_transition_count,
             "min_size_ratio": self.min_size_ratio,
+            "max_size_ratio": self.max_size_ratio,
             "density_demand": self.demand,
             "forced_short_intervals": [
                 {"start": self.anchors[i, :2].tolist(),
@@ -198,10 +201,10 @@ class LineSampling:
         cursor = 0
         for i, n in enumerate(counts):
             length = float(self.lengths[i])
-            raw = quantiles[cursor:cursor + n + 1] - self._anchor_positions[i]
-            forward = _forward_sweep(raw, length, self.h_min, self.h)
-            backward = length - _forward_sweep(length - raw[::-1], length,
-                                               self.h_min, self.h)[::-1]
+            raw = quantiles[cursor:cursor + n + 1] - self.anchor_positions[i]
+            max_gap = min(self.h_max, length)
+            forward = _forward_sweep(raw, length, self.h_min, max_gap)
+            backward = length - _forward_sweep(length - raw[::-1], length, self.h_min, max_gap)[::-1]
             positions = (forward + backward) / 2
             start, end = self.anchors[i:i + 2]
             sampled[cursor:cursor + n + 1] = start + (end - start) * (positions / length)[:, None]
@@ -221,17 +224,17 @@ class LineSampling:
         if (sampled.ndim != 2 or sampled.shape[1] != 3 or len(sampled) < 2
                 or not np.all(np.isfinite(sampled))):
             raise _infeasible("LINE sampling produced invalid coordinates")
-        projected = (sampled[:, :2] - self.anchors[0, :2]) @ self._tangent
-        residual = sampled[:, :2] - self.anchors[0, :2] - projected[:, None] * self._tangent
+        projected = (sampled[:, :2] - self.anchors[0, :2]) @ self.tangent
+        residual = sampled[:, :2] - self.anchors[0, :2] - projected[:, None] * self.tangent
         if np.any(np.linalg.norm(residual, axis=1) > self.tol):
             raise _infeasible("LINE sampling moved points off the outer line")
         gaps = np.linalg.norm(np.diff(sampled[:, :2], axis=0), axis=1)
         margin = spacing_error(sampled[:, :2], self.h)
-        if np.any(np.diff(projected) <= 0) or np.any(gaps > self.h + margin):
+        if np.any(np.diff(projected) <= 0) or np.any(gaps > self.h_max + margin):
             raise _infeasible("LINE sampling violates ordering or maximum size")
         short = gaps < self.h_min - margin
         index, anchor_indices = 0, []
-        for position, anchor in zip(self._anchor_positions, self.anchors):
+        for position, anchor in zip(self.anchor_positions, self.anchors):
             while index < len(sampled) and projected[index] < position - self.tol:
                 index += 1
             if index == len(sampled) or not np.array_equal(sampled[index], anchor):
@@ -258,14 +261,14 @@ def spacing_error(points, h):
             + 32 * np.finfo(float).eps * h)
 
 
-def validate_spacing(points, h, ratio, forced):
+def validate_spacing(points, h, ratio, forced, max_ratio=DEFAULT_MAX_SIZE_RATIO):
     """Check actual spacing; only exact mandatory intervals can be short."""
     points = np.asarray(points)[:, :2]
     gaps = np.hypot.reduce(np.diff(points, axis=0), axis=1)
     margin = spacing_error(points, h)
-    if np.any(gaps > h + margin):
+    if np.any(gaps > float(h) * max_ratio + margin):
         raise _infeasible("committed LINE spacing exceeds maximum size",
-                          maximum_spacing=float(gaps.max()), element_size=h)
+                          maximum_spacing=float(gaps.max()), element_size=h, max_size_ratio=max_ratio)
     short = gaps < ratio * h - margin
     exceptions = {(tuple(interval["start"]), tuple(interval["end"])) for interval in forced}
     for i in np.flatnonzero(short):

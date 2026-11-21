@@ -82,6 +82,7 @@ assert result.diagnostics['added_elements'] > 0
 | `max_added_elements` | `1_000_000` | 正的 Python／NumPy 整數 | 本次 repair 與轉接新增 Quad4 的共同上限；等於上限可接受 |
 | `max_transition_count` | `20` | 正的 Python／NumPy 整數 | 一般 LINE 外框一段最多對應幾個 source 邊段；固定模式停用 |
 | `min_size_ratio` | `0.5` | 有限數值，`0 < value ≤ 1` | 一般 LINE 外框取樣間距下限相對 `element_size` 的比例；固定模式停用 |
+| `max_size_ratio` | `1.25` | 有限數值，`value ≥ 1` | 一般 LINE 外框取樣間距上限相對 `element_size` 的比例；設為 1 可維持原尺寸上限 |
 | `repair_slots` | `True` | Python／NumPy boolean | 先修補受擴展覆蓋的支援槽口與孤立階梯轉角 |
 | `repair_max_element_size` | `None` | 有限正長度或 `None` | repair 內部目標尺寸上限；不是所有邊長的硬上限 |
 | `small_element_size` | `None` | 有限正長度或 `None` | 辨識短邊密集段的門檻；`None` 關閉額外密集段切分 |
@@ -105,7 +106,7 @@ assert result.diagnostics['added_elements'] > 0
 | --- | --- | --- |
 | 自動外框 | 未提供 `outline_o` 時，依擴展基準與 pattern 決定 | 不適用，必須提供外框 |
 | 已提供 `outline_o` | 使用指定外框，pattern 不會吸附或移動它 | 相同，並鎖定完整節點與邊段 |
-| `max_transition_count`／`min_size_ratio` | 約束重採樣的 LINE 外框 | 數值仍驗證，但不施加這兩項限制 |
+| `max_transition_count`／`min_size_ratio`／`max_size_ratio` | 約束重採樣的 LINE 外框 | 數值仍驗證，但不施加這些限制 |
 | 密集段接點不存在 | 可建立合法法線投影點 | 只略過該端的額外分界 |
 | 必要 pattern 接點不存在 | 可依一般規則建立新外框接點 | 報錯，不以附近 node 取代 |
 | 元素預算、幾何、拓撲及 Quad4 驗證 | 全部適用 | 全部適用 |
@@ -118,8 +119,10 @@ assert result.diagnostics['added_elements'] > 0
 `expand_ratio` 與 pattern。repair 完成後才以 `outline_o` 建立轉接；不相容時直接失敗，
 不會因指定外框再重做一次 repair。
 
-一般 LINE 的外框取樣間距位於
-`[min_size_ratio × element_size, element_size]`。
+一般 LINE 優先參照內框接點的法向投影來決定外框節點。可多加外點，也可讓
+個別間距略大於目標，範圍為 `[min_size_ratio × element_size, max_size_ratio × element_size]`。
+相鄰 unit 之間只用兩點接線。頭尾接線有三點或更多必要節點時，端部 unit 會容納這些點。
+粗細轉接仍可能在單一 unit 內部產生節點。
 已存在的相鄰必要接點若比下限更近，保留為一段並記錄例外，轉接數量上限仍適用。
 這些規則不限制 corner、repair 內部或每一條內部元素邊的長度。
 
@@ -209,7 +212,7 @@ assert set(outline_o).issubset(result.outline)
 這個範例允許增加外框節點。只給矩形四角通常不足以在固定模式下形成合法轉角分區。
 
 `plan_quad_sections()` 接受相同的幾何、repair、固定外框與密集段參數；不接受
-`max_added_elements`、`max_transition_count`、`min_size_ratio`。
+`max_added_elements`、`max_transition_count`、`min_size_ratio`、`max_size_ratio`。
 它預覽分區、共用接線、外框及實際擴展距離，不保證後續建構能符合預算或找到 Quad4 配對。
 固定模式的預覽另會檢查外框接點與邊界節點數的奇偶相容性。
 
@@ -298,7 +301,7 @@ repair 邊界取樣以既有邊段長度中位數為目標，並以 `element_siz
 | --- | --- |
 | `fixed_outer_boundary` | 本次是否鎖定外框 |
 | `line_policy_active` | LINE 重採樣的尺寸／轉接數限制是否生效；固定模式為 `False` |
-| `max_transition_count`、`min_size_ratio` | 傳入並驗證後的值；是否有效須搭配 `line_policy_active` |
+| `max_transition_count`、`min_size_ratio`、`max_size_ratio` | 傳入並驗證後的值；是否有效須搭配 `line_policy_active` |
 | `small_element_size`、`dense_mapping_angle` | 密集段門檻與角度設定 |
 | `dense_sections`、`dense_seams` | 成功形成的完整密集分區與新增分界；單端切分可能留下混合 LINE |
 | `dense_mappings` | 每個額外端點的 `endpoint`、`status`、`reason`；採用時另含 target ID／座標、角度及 seam ID |
@@ -306,6 +309,7 @@ repair 邊界取樣以既有邊段長度中位數為目標，並以 `element_siz
 | `added_nodes`、`added_elements` | 本次新增總量，包含 repair |
 | `repair_added_elements`、`expand_added_elements` | repair 與後續轉接各自新增量 |
 | `edge_expansion`、`snapped_patterns` | 實際厚度與自動擴展採用的 pattern；指定外框時後者皆為 `None` |
+| `section_details[].max_alignment_angle` | LINE 內部接線相對外框法線的最大偏角，單位為度 |
 | `quality` | 新元素最差長寬比、最小 scaled Jacobian 等品質資訊 |
 
 `dense_mappings.status` 為 `mapped` 或 `skipped`。
@@ -329,7 +333,7 @@ repair 邊界取樣以既有邊段長度中位數為目標，並以 `element_siz
 | source 與固定外框奇偶數不合 | 調整上游網格的邊界分段；僅增加內部節點不能修正邊界奇偶數 |
 | 無法找到合法轉角分區 | 檢查外框對應邊是否有可用的非轉角 node、間距及附近分區 |
 | `unmeshable_section_layout`／`unmeshable_seam_assignment`／`unmeshable_direct_quad_layout` | 依 context 檢查分區及局部 Quad4 配對；合法預覽不代表一定可建構 |
-| `line_constraints_infeasible` | 一般模式的尺寸帶與轉接數上限衝突；調整 `element_size`、`min_size_ratio` 或 `max_transition_count` |
+| `line_constraints_infeasible` | 一般模式的尺寸帶與轉接數上限衝突；調整 `element_size`、尺寸比例或 `max_transition_count` |
 | `element_limit_exceeded` | 檢查 `limit`、`required_elements`，調整預算或上游尺寸設定 |
 | `topology_change` | 外框穿過 source、接到已佔用區域，或形成懸掛節點／非流形接合 |
 | `numeric_range_exceeded` | 檢查 pattern 範圍與座標尺度 |

@@ -90,7 +90,7 @@ class AuditFixTests(unittest.TestCase):
         mesh = square()
         ids = target(mesh, [[-1, -1], [-.0008, -1], [2, -1], [2, 2], [-1, 2]])
         error = self.atomic_error(mesh, lambda: layer(mesh, [0, 3, 2, 1], 1,
-            outline_o=ids, min_size_ratio=1, tolerance=.001, repair_slots=False))
+            outline_o=ids, min_size_ratio=1, max_size_ratio=1, tolerance=.001, repair_slots=False))
         self.assertEqual(error.code, 'line_constraints_infeasible')
 
     def test_mapped_anchor_diagnostics_use_committed_coordinates(self):
@@ -104,7 +104,7 @@ class AuditFixTests(unittest.TestCase):
             gaps = np.linalg.norm(np.diff(mesh.nodes[record['outer_ids'], :2], axis=0), axis=1)
             self.assertEqual(record['min_outer_spacing'], gaps.min())
             self.assertEqual(record['max_outer_spacing'], gaps.max())
-            self.assertLessEqual(gaps.max(), 1 + 1e-13)
+            self.assertLessEqual(gaps.max(), 1.25 + 1e-13)
         for record in result.diagnostics['seam_states']:
             np.testing.assert_array_equal(record['points'], mesh.nodes[record['node_ids'], :2])
 

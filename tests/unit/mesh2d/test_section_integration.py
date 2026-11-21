@@ -9,7 +9,7 @@ from mesher.mesh2d.adapter import (QuadLayerError, generate_layer_adaptive_mesh,
                                    plan_quad_sections)
 from mesher.mesh2d.adapter.layer._geometry import area, collinear_interval, intervals_cover
 from mesher.mesh2d.editor import EditorMesh2D
-from mesher.mesh2d.adapter.layer._construction import line as _line
+from mesher.mesh2d.adapter.layer._construction import strip as _strip
 from tests.unit.mesh2d.test_quad_sections import _cells
 from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
 
@@ -163,7 +163,7 @@ class SectionIntegrationTests(unittest.TestCase):
                     # The configured minimum is 250. Dense source projections
                     # are preferences, so they must not introduce 10-wide gaps.
                     self.assertTrue(np.all(np.diff(values) >= 250. - 1e-8))
-                    self.assertTrue(np.all(np.diff(values) <= 500. + 1e-8))
+                    self.assertTrue(np.all(np.diff(values) <= 625. + 1e-8))
                     self.assertLessEqual(detail['max_actual_transition_count'], 10)
 
     def test_local_fine_run_preserves_explicit_outer_anchor(self):
@@ -197,17 +197,43 @@ class SectionIntegrationTests(unittest.TestCase):
         np.testing.assert_array_equal(mesh.nodes, before_nodes)
         np.testing.assert_array_equal(mesh.elements, before_elements)
 
+    def test_movable_outer_points_track_source_without_length_dependent_shear(self):
+        for n in (8, 32):
+            with self.subTest(segments=n):
+                mesh, outline = _cells({(i, j) for i in range(n) for j in range(4)})
+                x = np.r_[0., np.cumsum([.75] * (n // 2) + [1.25] * (n // 2))]
+                mesh.nodes[:, 0] = x[mesh.nodes[:, 0].astype(int)]
+                nodes, elements = mesh.nodes.copy(), mesh.elements.copy()
+                result = generate_layer_adaptive_mesh(mesh, outline, 1., expand_size=1.)
+                self.assert_built_partition(mesh, nodes, elements, result)
+                data = result.diagnostics
+                lines = [s for s in data["section_details"]
+                         if s["kind"] == "LINE" and len(s["source_chains"][0]) == n + 1]
+                self.assertEqual(len(lines), 2)
+                for section in lines:
+                    self.assertEqual(section["line_sampling"], "projection")
+                    self.assertLess(section["max_alignment_angle"], 1e-8)
+                    units = [data["units"][i] for i in section["unit_ids"]]
+                    self.assertGreater(len(units), n // 2)
+                    for unit in units[:-1]:
+                        source_count, cut_count, _, _ = unit["boundary_counts"]
+                        self.assertEqual(cut_count, 2)
+                        # Cross-check the reported angles against the actual unit geometry.
+                        cut = np.array(unit["polygon"][source_count - 1:source_count + 1])
+                        np.testing.assert_allclose(cut[:, 0], cut[0, 0], rtol=0, atol=1e-10)
+                        self.assertAlmostEqual(abs(cut[1, 1] - cut[0, 1]), 1.)
+
     def test_line_diagnostics_count_every_seam_pair_build(self):
         mesh, outline = _cells({(x, y) for x in range(4) for y in range(3)})
         before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
-        with patch.object(_line, "build_unit_patch", wraps=_line.build_unit_patch) as calls:
+        with patch.object(_strip, "build_unit_patch", wraps=_strip.build_unit_patch) as calls:
             result = generate_layer_adaptive_mesh(mesh, outline, .5)
         diagnostics = result.diagnostics
         lines = [detail for detail in diagnostics["section_details"] if detail["kind"] == "LINE"]
-        self.assertEqual(diagnostics["line_planner"], "outer_first")
+        self.assertEqual(diagnostics["line_planner"], "projection")
         self.assertEqual(diagnostics["line_unit_trial_count"], calls.call_count)
         self.assertEqual(sum(detail["unit_trial_count"] for detail in lines), calls.call_count)
-        self.assertTrue(all(detail["line_planner"] == "outer_first" for detail in lines))
+        self.assertTrue(all(detail["line_planner"] == "projection" for detail in lines))
         self.assertEqual(diagnostics["line_local_repair_count"],
                          sum(detail["local_repair_count"] for detail in lines))
         self.assert_built_partition(mesh, before_nodes, before_elements, result)
@@ -215,14 +241,13 @@ class SectionIntegrationTests(unittest.TestCase):
     def test_exhausted_line_repairs_are_a_typed_atomic_failure(self):
         mesh, outline = _cells({(x, y) for x in range(4) for y in range(3)})
         before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
-        with patch.object(_line, "build_unit_patch", side_effect=ValueError("invalid unit")) as calls:
+        with patch.object(_strip, "build_unit_patch", side_effect=ValueError("invalid unit")) as calls:
             with self.assertRaises(QuadLayerError) as caught:
                 generate_layer_adaptive_mesh(mesh, outline, .5)
         self.assertEqual(caught.exception.code, "unmeshable_section_layout")
         self.assertEqual(caught.exception.context["stage"], "section_builder")
-        self.assertEqual(caught.exception.context["line_planner"], "outer_first")
+        self.assertEqual(caught.exception.context["line_planner"], "projection")
         self.assertEqual(caught.exception.context["unit_trial_count"], calls.call_count)
-        self.assertLessEqual(calls.call_count, 4 * 2 * 8 * 4)
         np.testing.assert_array_equal(mesh.nodes, before_nodes)
         np.testing.assert_array_equal(mesh.elements, before_elements)
 

@@ -332,6 +332,7 @@ result = generate_full_adaptive_mesh(
     pattern_lines=[],
     max_transition_count=20,
     min_size_ratio=0.5,
+    max_size_ratio=1.25,
 )
 assert result.mesh is mesh
 final_outer_node_ids = result.outer_outline  # Clockwise, implicit closure.
@@ -346,11 +347,10 @@ and elements remain unchanged; only matching interface nodes are shared.
 All calls are staged on a private mesh, with one final commit. Any failure
 leaves the caller's arrays unchanged.
 
-`max_transition_count` and `min_size_ratio` apply the LINE rules below to
-ordinary intermediate layers. The final transition preserves the global
-generator's fixed interface and does not apply either constraint. The parameters
-are validated even for a one-layer call. Full-result diagnostics record both
-settings and whether an ordinary layer uses the policy (`line_policy_active`).
+`max_transition_count`, `min_size_ratio`, and `max_size_ratio` apply to resampled
+LINE sections in ordinary intermediate layers. The final transition preserves
+the global generator's fixed interface. Full-result diagnostics record all three
+settings and whether an ordinary layer uses them (`line_policy_active`).
 
 Input cells must be strictly convex CCW Quad4s with Z=0. Each source boundary
 must have an even number of segments, since a preserved odd cycle cannot bound
@@ -462,8 +462,8 @@ Set `fixed_outer_boundary=True` to connect to an existing mesh interface. This
 requires `outline_o` and preserves its complete node-ID cycle, coordinates, and
 edges; only the interior may receive new nodes. The option is also available in
 `plan_quad_sections()`. Both LINE and corner outer resampling are disabled.
-`max_transition_count` and `min_size_ratio` are still validated but do not constrain
-the fixed interface; `max_added_elements` remains active. Free outer-corner
+`max_transition_count`, `min_size_ratio`, and `max_size_ratio` are validated for
+the fixed interface. Its supplied spacing takes precedence. `max_added_elements` remains active. Free outer-corner
 contacts search existing nodes on the corresponding target edges, nearest first,
 without an angle cap. Conflicting assignments try further candidates. Required
 pattern contacts must already be target nodes, and source/target boundary counts
@@ -584,23 +584,21 @@ so extending a guide's remote tails does not reduce precision near the mesh.
    calls. Ordinary seams use 2 or 3 nodes, meaning 1 or 2 segments. Mandatory
    seam points are preserved, and neighboring sections share the same node IDs.
 
-For a `LINE`, the outer edge is sampled **before pairing**: endpoints, supplied
-`outline_o` points, and finite pattern intersections stay fixed. Additional
-nodes use these keyword parameters:
+For a `LINE`, the planner projects source nodes onto the outer edge and uses
+their positions to pair the section boundaries. Endpoints, supplied `outline_o`
+nodes, and finite pattern intersections stay fixed. Where an end seam has extra
+nodes, the end unit absorbs them. Every cut shared by two LINE units connects
+the source directly to the outer edge. Local refinement and coarsening units
+may contain interior nodes.
 
-- `max_transition_count=20`: a positive Python or NumPy integer. Each outer
-  segment receives at most this many source **segments**, not nodes. Set `10`
-  explicitly to retain the earlier cap; `1→N` refinement is unrestricted.
-- `min_size_ratio=0.5`: a finite real number in `(0, 1]`. Ordinary resampled
-  outer spacing is between `min_size_ratio * element_size` and `element_size`,
-  within geometric tolerance. When adjacent mandatory anchors are already
-  closer than the minimum, their interval remains exactly one segment and is
-  recorded as an exception. The transition cap still applies to that interval.
-
-These constraints apply only to resampled LINE boundaries. They do not change
-source edges, layer expansion thickness, corner sections, repair interiors, or
-the full-mesh final fixed interface. Boolean values are rejected for both
-parameters. Conflicting constraints or infeasible parity fail atomically.
+- `max_transition_count=20` caps the number of source segments assigned to
+  each outer segment. One source segment may refine into multiple outer segments.
+- `min_size_ratio=0.5` and `max_size_ratio=1.25` define the allowed outer spacing
+  as multiples of `element_size`. The upper ratio must be finite and at least 1.
+  Set it to 1 to use `element_size` as a strict upper bound. Additional outer
+  nodes can keep cross-band connections closer to the normal.
+- Two mandatory anchors closer than the minimum define a single unsplit
+  interval. Its coordinates and transition limit still apply.
 
 All three adapter entry points (`plan_quad_sections`, `generate_layer_adaptive_mesh`,
 and `generate_full_adaptive_mesh`) accept optional dense-run partitioning:
@@ -644,30 +642,12 @@ PYTHONPATH=src python examples/dense_adaptive_sections.py --no-show --plot /tmp/
 
 ![Dense LINE partition comparison](docs/images/dense-adaptive-sections.png)
 
-For a source projection interval of length `d`, sampling demand per unit length
-is `max(1 / element_size, 1 / (max_transition_count * d))`. Outside the source
-projection it is `1 / element_size`. Integrated demand selects at most two
-nearest parity-compatible counts within the legal spacing and transition bounds.
-An integer allocation heap distributes the counts among mandatory-anchor
-intervals. Density quantiles supply initial positions; one forward and one
-backward bounded sweep enforce spacing while retaining the endpoints, and their
-average removes directional bias. No mesh is built during this allocation.
-
-Provisional nearest-node pairing ranks the two configurations by normalized
-source-alignment error, distance from total demand, size error, then count.
-The first feasible configuration is accepted. From alternating ends, each
-segment on the shorter chain is paired with the nearest allowed node on the
-longer chain along the main axis. Coarsening cut bounds enforce both the current
-transition cap and sufficient capacity for all remaining units. Internal
-connectors contain one or two segments to keep each unit's boundary count even.
-
-A valid unit is accepted immediately. Only an invalid unit tries the adjacent
-`-1` and `+1` cut indices. If the center cannot close, the last committed cut
-may move by one node, rebuilding only its two neighboring units. There is no
-recursive backtracking or global LINE quality search. Exhausting these repairs
-and the other legal outer count reports a layout error; this does not prove
-that every possible quadrangulation is infeasible.
-The final closing unit and any local repair also obey the transition cap.
+When mandatory anchors or parity prevent an exactly projected pairing, the
+planner may group several segments into a local transition unit. Candidate
+layouts are compared using the angular deviation of their internal connectors
+from the outer-edge normal. A compatible set of seam states must close around
+the complete section ring. A fixed outer boundary uses its supplied nodes for
+pairing and can enforce a nonzero connector angle.
 
 `plan_quad_sections()` is an optional read-only preview of the section level,
 importable from `mesher.mesh2d.adapter`. It is not a required step before
@@ -719,20 +699,13 @@ new mouth contacts become mandatory shared nodes. Such chords divide the repair
 into conforming Quad4 faces before expansion. The same restrictions on internal
 endpoints, T/X junctions, and closed loops apply to the repair phase.
 
-Among the constructed section candidates, the seam solver first minimizes
-the sum of active LINE sections' alignment errors: the mean squared ratio of
-along-edge source/outer displacement to normal separation. It next minimizes
-the sum of sections' mean squared normalized outer-edge size errors:
-each section averages `(edge_length / element_size - 1)²`.
-For equal alignment and size errors, it minimizes the worst `max(edge_aspect_ratio,
-1 / corner_scaled_jacobian)` across new cells. Edge aspect ratio is a cell's
-longest edge divided by its shortest; the corner scaled Jacobian is the
-normalized cross product of consecutive edge vectors. A score closer to 1 is
-better. Fixed-interface and repair calls retain their existing size-first
-objective. These comparisons never trigger additional LINE trials. There is no new
-aspect-ratio or scaled-Jacobian rejection threshold.
-Large coarsening can therefore retain thin cells or multiple transition rows
-inside a unit, while the separate whole-layer thin collar has been removed.
+Among compatible section candidates, the seam solver minimizes the largest
+angle between an internal LINE cut and the outer-edge normal. Ties are decided
+by the sum of sections' mean squared tangent-to-normal displacement ratios,
+then by their mean squared relative outer-spacing errors, and finally by the
+worst cell quality score. The cell quality score is the larger of the edge
+aspect ratio and the inverse corner scaled Jacobian. Large transitions can
+require thin cells within an individual unit.
 
 Input cells must be nondegenerate convex Quad4
 cells (either orientation), and all nodes must have Z=0. Corner
@@ -765,22 +738,13 @@ layer exceeds the budget, and the target size is never automatically increased.
 This is an output-count guard, not a time or memory guarantee: transient builder
 data and alternative candidates can exceed the final output size.
 
-For each sampled outer configuration and seam pair, LINE uses at most
-`8 * min(source_segments, outer_segments)` unit trials; ordinary cases build
-each unit once. This bounds trial construction, while runtime still includes
-the generated cells and geometric validation. A long LINE remains one geometric
-section. `diagnostics.elapsed_seconds` measures the extension call, including
-validation, but excludes the separate preview call and rendering.
-`line_planner` is `outer_first`; `line_unit_trial_count` and
-`line_local_repair_count` include all attempted seam pairs and outer counts,
-including rejected configurations. LINE section details expose
-`unit_trial_count`, `local_repair_count`, and `outer_count_attempts`.
-Repair counts measure attempted alternative cut positions, including failures.
-Layer diagnostics also record `max_transition_count`, `min_size_ratio`, and
-`line_policy_active`; LINE section diagnostics report forced short anchor
-intervals. Density and point sampling are linear scans; count allocation costs
-`O(m log A)` for `m` outer segments and `A` mandatory-anchor intervals. Sampled
-positions and density information are reused across seam candidates.
+A long LINE remains one geometric section. LINE diagnostics identify the
+`projection` planner. Each LINE section reports `max_alignment_angle` in degrees
+from the outer-edge normal and its actual outer spacing where the sizing policy
+applies. Unit records report `source_segments_per_outer`. The layer's
+`line_unit_trial_count` includes trials for rejected seam states.
+`diagnostics.elapsed_seconds` includes extension and validation.
+
 The [LINE benchmark](benchmarks/mesh2d/benchmark_adapter_line.py) reports unit
 trial counts, runtime, memory, and final quality for configurable source counts
 and seam states. Use `--timeout-seconds 30` to bound exploratory measurements.

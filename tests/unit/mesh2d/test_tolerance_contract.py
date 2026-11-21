@@ -123,7 +123,9 @@ class PhysicalToleranceTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "ambiguous_geometry")
 
     def test_line_counts_do_not_spend_geometric_tolerance_on_rounding(self):
-        self.assertEqual(line_count_bounds([1.0005], 1, 1., .001), (2, 2))
+        self.assertEqual(line_count_bounds([1.0005], 1, 1., .001, max_size_ratio=1), (2, 2))
+        self.assertEqual(line_count_bounds([1.2505], 1, 1., .001), (2, 2))
+        self.assertEqual(line_count_bounds([1.2495], 1, 1., .001), (1, 2))
         self.assertEqual(line_count_bounds([.9995], 1, 1., .001), (1, 1))
         self.assertEqual(line_count_bounds([.1 + .2], 1, .1, .001), (3, 6))
 

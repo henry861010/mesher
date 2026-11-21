@@ -48,7 +48,7 @@ class ExpandSizeTests(unittest.TestCase):
             points = mesh.nodes[section["outer_ids"], :2]
             spacing = np.linalg.norm(np.diff(points, axis=0), axis=1)
             self.assertTrue(np.all(spacing >= .5 * element_size - 1e-9), spacing)
-            self.assertTrue(np.all(spacing <= element_size + 1e-9), spacing)
+            self.assertTrue(np.all(spacing <= result.diagnostics["max_size_ratio"] * element_size + 1e-9), spacing)
 
     def test_omitted_none_and_equal_size_preserve_both_api_outputs(self):
         baseline = None

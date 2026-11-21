@@ -13,7 +13,7 @@ from .....tolerance import subdivision_count
 from ...unit.build_unit_1_1_x_y import _validate_patch
 from .._geometry import area, area_epsilon, cross
 from .._limits import ElementLimitExceeded, check_element_limit
-from .._construction.line import _plan_count
+from .strip import build_repair_strip
 from .._construction.units import CoordinatePool, UnitPlan, merge_unit_plans, quality_score
 
 
@@ -116,10 +116,9 @@ def _ring(sides, inner, tol, limit, cache):
         units, total = [], 0
         for index, (outer_side, inner_side) in enumerate(zip(sides, inner)):
             try:
-                patch = _plan_count(outer_side, inner_side, seams[index],
-                                    seams[(index + 1) % len(seams)], 0., tol,
-                                    build_cache=cache,
-                                    max_added_elements=None if limit is None else limit - total)
+                patch = build_repair_strip(
+                    outer_side, inner_side, seams[index], seams[(index + 1) % len(seams)],
+                    tol, build_cache=cache, max_added_elements=None if limit is None else limit - total)
             except ElementLimitExceeded as error:
                 if limit is not None:
                     error.context.update(limit=limit,
@@ -196,8 +195,8 @@ def _core(sides, tol, limit, cache, legacy):
             ordered = sides[rotation:] + sides[:rotation]
             bottom, right, top, left = ordered
             try:
-                patch = _plan_count(bottom, top[::-1], left[::-1], right, 0., tol,
-                                    build_cache=cache, max_added_elements=limit)
+                patch = build_repair_strip(bottom, top[::-1], left[::-1], right, tol,
+                                           build_cache=cache, max_added_elements=limit)
             except ElementLimitExceeded as error:
                 errors.append(error)
                 continue

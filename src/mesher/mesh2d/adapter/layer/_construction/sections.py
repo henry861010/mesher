@@ -8,11 +8,12 @@ import numpy as np
 from .corners import plan_corner
 from .line import plan_line
 from .sampling import validate_spacing
+from .strip import alignment_metrics
 from .._planning.mapping import dense_angle
 from .._limits import ElementLimitExceeded, check_element_limit, preflight_element_limit
 from .._registry import _NodePool, _PointIndex
 from .._types import QuadLayerError
-from .._line_policy import DEFAULT_MAX_TRANSITION_COUNT
+from .._line_policy import DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT
 
 
 def _xyz(points):
@@ -33,33 +34,57 @@ def seam_states(seam, tol):
 
 
 def solve_section_ring(sections, states, candidates):
-    """Minimize LINE alignment error, size error, then worst cell quality."""
+    """Minimize the worst LINE cut angle of a closed ring, then additive errors."""
     for section, following in zip(sections, sections[1:] + sections[:1]):
         if section.right_seam != following.left_seam:
             raise QuadLayerError("sections do not form a shared-seam ring",
                                  code="unmeshable_section_layout", section_id=section.id)
-    solutions = []
-    for initial in sorted(states[sections[0].left_seam]):
-        current = {initial: (0.0, 0.0, 0.0, ())}
-        for section, options in zip(sections, candidates):
+    first_states = sorted(states[sections[0].left_seam])
+    # A later, larger angle can mask an earlier peak. Determine the feasible
+    # bottleneck first, then optimize the additive costs under that limit.
+    peak_limit = float("inf")
+    for initial in first_states:
+        peaks = {initial: 0.0}
+        for options in candidates:
             following = {}
-            for (left, right), candidate in sorted(options.items()):
-                if left not in current:
-                    continue
-                alignment, error, quality, path = current[left]
-                score = (alignment + getattr(candidate, "alignment_error", 0.0),
-                         error + candidate.size_error, max(quality, candidate.quality),
-                         path + ((left, right),))
-                if right not in following or score < following[right]:
-                    following[right] = score
-            current = following
-        if initial in current:
-            solutions.append(current[initial])
-    if not solutions:
+            for (left, right), patch in options.items():
+                if left in peaks:
+                    angle = getattr(patch, "diagnostics", {}).get("max_alignment_angle", 0.0)
+                    peak = max(peaks[left], angle)
+                    following[right] = min(following.get(right, float("inf")), peak)
+            peaks = following
+        peak_limit = min(peak_limit, peaks.get(initial, float("inf")))
+    if not np.isfinite(peak_limit):
         raise QuadLayerError("no compatible seam states close the section ring",
                              code="unmeshable_seam_assignment", stage="seam_solver",
                              section_ids=[section.id for section in sections])
-    return min(solutions)[-1]
+
+    solutions = []
+    for initial in first_states:
+        current = {initial: (0.0, 0.0, 0.0)}
+        parents = []
+        for options in candidates:
+            following, previous = {}, {}
+            for (left, right), patch in sorted(options.items()):
+                if (left not in current or
+                        getattr(patch, "diagnostics", {}).get("max_alignment_angle", 0.0) > peak_limit):
+                    continue
+                alignment, error, quality = current[left]
+                score = (alignment + getattr(patch, "alignment_error", 0.0),
+                         error + patch.size_error, max(quality, patch.quality))
+                if right not in following or score < following[right]:
+                    following[right], previous[right] = score, left
+            current = following
+            parents.append(previous)
+        if initial in current:
+            path = []
+            right = initial
+            for previous in reversed(parents):
+                left = previous[right]
+                path.append((left, right))
+                right = left
+            solutions.append((current[initial], tuple(reversed(path))))
+    return min(solutions)[1]
 
 
 def _source_ids(section):
@@ -101,8 +126,9 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
         constraint_errors = []
         sampling_cache = {}
         if section.kind == "LINE":
-            line_stats[section.id] = {"line_planner": "outer_first", "unit_trial_count": 0,
-                                      "local_repair_count": 0, "outer_count_attempts": 0}
+            line_stats[section.id] = {"line_planner": "projection", "unit_trial_count": 0,
+                                      "local_repair_count": 0, "outer_count_attempts": 0,
+                                      "direct_quad_count": 0}
         for left_count, left in states[section.left_seam].items():
             for right_count, right in states[section.right_seam].items():
                 attempt_stats = {}
@@ -114,6 +140,7 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                                             fixed_outer_boundary=fixed_outer_boundary,
                                             max_transition_count=data.get("max_transition_count", DEFAULT_MAX_TRANSITION_COUNT),
                                             min_size_ratio=data.get("min_size_ratio", .5),
+                                            max_size_ratio=data.get("max_size_ratio", DEFAULT_MAX_SIZE_RATIO),
                                             _sampling_cache=sampling_cache)
                     else:
                         corner = np.r_[plan.front[section.corner], 0.0]
@@ -125,10 +152,10 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                             check_element_limit(len(candidate.quads), limit,
                                                 stage="section_builder", section_id=section.id)
                         options[left_count, right_count] = min(
-                            patches, key=lambda patch: (patch.alignment_error,
-                                                         patch.size_error, patch.quality))
+                            patches, key=lambda patch: (patch.diagnostics.get("max_alignment_angle", 0.),
+                                                        patch.alignment_error, patch.size_error, patch.quality))
                     else:
-                        counts = "fixed outer count" if fixed_outer_boundary else "nearest legal outer counts"
+                        counts = "fixed outer count" if fixed_outer_boundary else "bounded projection candidates"
                         rejected.append(f"{left_count}/{right_count}: {counts} "
                                         "have no valid unit assembly")
                 except ElementLimitExceeded as error:
@@ -143,7 +170,7 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                     rejected.append(f"{left_count}/{right_count}: {error}")
                 finally:
                     if section.kind == "LINE":
-                        for key in ("unit_trial_count", "local_repair_count", "outer_count_attempts"):
+                        for key in ("unit_trial_count", "local_repair_count", "outer_count_attempts", "direct_quad_count"):
                             line_stats[section.id][key] += attempt_stats.get(key, 0)
         if not options:
             if section_limit_errors:
@@ -174,9 +201,6 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
         boundary_ids = np.union1d(source_ids, data["outline_anchor_ids"])
     pool = _NodePool(nodes, boundary_ids, tol)
 
-    def world(points):
-        return (np.asarray(points)[:, :2] * data["scale"] + data["origin"]).tolist()
-
     seam_ids, seam_details = {}, []
     for section, (left, right) in zip(plan.sections, selected):
         for seam_id, count in ((section.left_seam, left), (section.right_seam, right)):
@@ -188,7 +212,7 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
             ids = np.asarray([pool.boundary_node(point[:2]) for point in points], dtype=np.int64)
             seam_ids[seam_id] = ids
             seam_details.append({"seam_id": seam_id, "node_count": count,
-                                 "node_ids": ids.tolist(), "points": world(points),
+                                 "node_ids": ids.tolist(),
                                  "owners": list(plan.seams[seam_id].owners),
                                  "pattern_ids": list(plan.seams[seam_id].pattern_ids)})
 
@@ -214,14 +238,11 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
         quads = mapping[patch.quads]
         patches.append(quads)
         front_ids.extend(mapping[patch.outer_ids].tolist())
-        polygon = np.vstack((patch.nodes[patch.source_ids],
-                             patch.nodes[patch.right_ids[1:]],
-                             patch.nodes[patch.outer_ids[::-1][1:]],
-                             patch.nodes[patch.left_ids[::-1][1:]]))
         sampling_details = {}
-        if "line_sampling" in patch.diagnostics:
+        if section.kind == "LINE":
             sampling_details = {key: value for key, value in patch.diagnostics.items()
                                 if key not in line_stats[section.id]}
+        if "line_sampling" in sampling_details:
             forced_ids = []
             forced = patch.diagnostics["forced_short_intervals"]
             if forced:
@@ -236,9 +257,6 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                         raise QuadLayerError("a mandatory LINE interval lost its endpoint",
                                              code="invalid_section_boundary", section_id=section.id) from error
             sampling_details["_forced_interval_ids"] = forced_ids
-            spacing = np.linalg.norm(np.diff(patch.nodes[patch.outer_ids, :2], axis=0), axis=1)
-            sampling_details.update(min_outer_spacing=float(spacing.min()) * data["scale"],
-                                    max_outer_spacing=float(spacing.max()) * data["scale"])
         details.append({"section_id": section.id, "kind": section.kind,
                         "source_edge": section.source_edge, "corner": section.corner,
                         "pattern_ids": list(section.pattern_ids),
@@ -251,7 +269,6 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                         "outer_ids": mapping[patch.outer_ids].tolist(),
                         "unit_ids": list(range(len(units), len(units) + len(patch.units))),
                         "element_start": offset, "element_end": offset + len(quads),
-                        "polygon": world(polygon),
                         "_polygon_ids": mapping[np.concatenate((patch.source_ids, patch.right_ids[1:],
                                                 patch.outer_ids[::-1][1:], patch.left_ids[::-1][1:]))].tolist(),
                         "size_error": patch.size_error,
@@ -261,7 +278,6 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
             units.append({**record, "unit_id": len(units), "section_id": section.id,
                           "element_start": offset + record["element_start"],
                           "element_end": offset + record["element_end"],
-                          "polygon": world(record["polygon"]),
                           "_polygon_ids": mapping[record["_polygon_ids"]].tolist()})
         offset += len(quads)
     index = _PointIndex(pool, front_ids)
@@ -274,12 +290,10 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                    "seam_states": sorted(seam_details, key=lambda s: s["seam_id"]),
                    "units": units, "unit_count": len(units),
                    "unit_builders": dict(Counter(unit["method"] for unit in units)),
-                   "line_planner": "outer_first",
+                   "line_planner": "projection",
                    "line_unit_trial_count": sum(s["unit_trial_count"] for s in line_stats.values()),
-                   "line_local_repair_count": sum(s["local_repair_count"] for s in line_stats.values()),
-                   "outer_size_error": sum(detail["size_error"] for detail in details),
-                   "line_alignment_error": sum(detail.get("alignment_error", 0.0) for detail in details),
-                   "quality": _quality_summary(result_nodes, result_quads)}
+                   "line_direct_quad_count": sum(s["direct_quad_count"] for s in line_stats.values()),
+                   "line_local_repair_count": sum(s["local_repair_count"] for s in line_stats.values())}
     return result_nodes, result_quads, outline, diagnostics
 
 
@@ -299,6 +313,12 @@ def finalize_diagnostics(world_nodes, nodes, quads, diagnostics, plan, data, *, 
         record["polygon"] = world_nodes[record.pop("_polygon_ids"), :2].tolist()
         record["quality"] = float(scores[record["element_start"] - element_offset:
                                          record["element_end"] - element_offset].max())
+        if "internal_cuts" in record:
+            source = nodes[record["source_chains"][0]]
+            outer = nodes[record["outer_ids"]]
+            mean, peak = alignment_metrics(source, outer, record["internal_cuts"], data["tol"])
+            record.update(alignment_error=mean, max_connector_shear=peak,
+                          max_alignment_angle=float(np.degrees(np.arctan(peak))))
         if "line_sampling" in record:
             points = world_nodes[record["outer_ids"], :2]
             record["forced_short_intervals"] = [
@@ -306,10 +326,13 @@ def finalize_diagnostics(world_nodes, nodes, quads, diagnostics, plan, data, *, 
                  "length": float(np.hypot.reduce(world_nodes[b, :2] - world_nodes[a, :2]))}
                 for a, b in record.pop("_forced_interval_ids")]
             gaps = validate_spacing(points, data["h"] * data["scale"], data["min_size_ratio"],
-                                    record["forced_short_intervals"])
+                                    record["forced_short_intervals"], data["max_size_ratio"])
             record.update(min_outer_spacing=float(gaps.min()), max_outer_spacing=float(gaps.max()),
                           size_error=float(np.mean((gaps / (data["h"] * data["scale"]) - 1) ** 2)))
-    diagnostics["outer_size_error"] = sum(d["size_error"] for d in diagnostics["section_details"])
+    details = diagnostics["section_details"]
+    diagnostics["outer_size_error"] = sum(d["size_error"] for d in details)
+    diagnostics["line_alignment_error"] = sum(d.get("alignment_error", 0.) for d in details)
+    diagnostics["max_alignment_angle"] = max(d.get("max_alignment_angle", 0.) for d in details)
     seams = {record["seam_id"]: record for record in diagnostics["seam_states"]}
     mapped_dense = {}
     for record in plan.diagnostics.get("dense_seams", ()):

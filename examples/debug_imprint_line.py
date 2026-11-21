@@ -177,12 +177,12 @@ def build_connected_mesh() -> Mesh2D:
     first_layer = generate_layer_adaptive_mesh(
         mesh=working,
         outline_i=cow_boundary,
-        element_size=GLOBAL_ELEMENT_SIZE,
-        expand_size=20 * FOCUS_ELEMENT_SIZE,
+        element_size=0.8 * GLOBAL_ELEMENT_SIZE,
+        expand_size=40 * FOCUS_ELEMENT_SIZE,
         small_element_size=30,
-        max_transition_count=10,
+        max_transition_count=20,
         dense_mapping_angle=30,
-        min_size_ratio=0.001
+        min_size_ratio=0.01
     )
     generate_layer_adaptive_mesh(
         mesh=working,

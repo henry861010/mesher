@@ -20,8 +20,8 @@ from ._full_geometry import (complement_domains, discover_boundaries,
 from .layer import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from .layer._errors import layer_error
 from .layer._geometry import BoxIndex, area, cross
-from .layer._line_policy import (DEFAULT_MAX_TRANSITION_COUNT, validate_dense_parameters,
-                                 validate_line_parameters)
+from .layer._line_policy import (DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT,
+                                 validate_dense_parameters, validate_line_parameters)
 from .layer._mesher import _generate_layer_adaptive_mesh
 from .layer._validation import _check_edge_geometry, _check_overlaps
 
@@ -211,6 +211,7 @@ def generate_full_adaptive_mesh(
     pattern_lines=(),
     max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
     min_size_ratio: float = 0.5,
+    max_size_ratio: float = DEFAULT_MAX_SIZE_RATIO,
     tolerance: GeometryTolerance | float | None = None,
     small_element_size: float | None = None,
     dense_mapping_angle: float = 30.0,
@@ -237,11 +238,11 @@ def generate_full_adaptive_mesh(
     canonical support identity within this distance. Ambiguous merges and
     collapsed required edges fail; existing source coordinates stay exact.
 
-    ``max_transition_count`` and ``min_size_ratio`` have the single-layer
-    API's LINE constraints and defaults (20 and 0.5). They apply to ordinary
+    ``max_transition_count``, ``min_size_ratio`` and ``max_size_ratio`` have the
+    single-layer LINE defaults of 20, 0.5 and 1.25. They apply to ordinary
     intermediate layers only. The final transition preserves the global
     generator's complete fixed interface, without imposing these constraints.
-    Both arguments are validated even when there is only one, fixed layer.
+    The arguments are validated even when there is only one, fixed layer.
 
     ``small_element_size`` and ``dense_mapping_angle`` have the single-layer
     semantics and defaults (None and 30 degrees). The size threshold uses world
@@ -254,8 +255,8 @@ def generate_full_adaptive_mesh(
     includes zero-based layer/boundary/global-region indices when applicable.
     """
     started = perf_counter()
-    max_transition_count, min_size_ratio = validate_line_parameters(
-        max_transition_count, min_size_ratio)
+    max_transition_count, min_size_ratio, max_size_ratio = validate_line_parameters(
+        max_transition_count, min_size_ratio, max_size_ratio)
     small_element_size, dense_mapping_angle = validate_dense_parameters(
         small_element_size, dense_mapping_angle)
     sizes, ratio, patterns = _call(lambda: _inputs(element_sizes, expand_ratio, pattern_lines),
@@ -278,7 +279,8 @@ def generate_full_adaptive_mesh(
                             tolerance=policy,
                             expand_ratio=ratio, pattern_lines=patterns,
                             max_transition_count=max_transition_count,
-                            min_size_ratio=min_size_ratio, small_element_size=small_element_size,
+                            min_size_ratio=min_size_ratio, max_size_ratio=max_size_ratio,
+                            small_element_size=small_element_size,
                             dense_mapping_angle=dense_mapping_angle),
                 stage="layer_construction", layer_index=layer_index, boundary_index=boundary_index)
             current.append(result.outline)
@@ -367,6 +369,7 @@ def generate_full_adaptive_mesh(
         "element_sizes": sizes,
         "max_transition_count": max_transition_count,
         "min_size_ratio": min_size_ratio,
+        "max_size_ratio": max_size_ratio,
         "small_element_size": small_element_size,
         "dense_mapping_angle": dense_mapping_angle,
         "line_policy_active": len(sizes) > 1,

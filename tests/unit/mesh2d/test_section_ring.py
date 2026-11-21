@@ -17,8 +17,9 @@ def _ring(count=3):
     return sections, states
 
 
-def _candidate(error=0.0, quality=1.0, alignment=0.0):
-    return SimpleNamespace(size_error=error, quality=quality, alignment_error=alignment)
+def _candidate(error=0.0, quality=1.0, alignment=0.0, angle=0.0):
+    return SimpleNamespace(size_error=error, quality=quality, alignment_error=alignment,
+                           diagnostics={"max_alignment_angle": angle})
 
 
 class SectionRingTests(unittest.TestCase):
@@ -47,6 +48,19 @@ class SectionRingTests(unittest.TestCase):
         options = [{(2, 2): _candidate(0, 1, alignment=.2),
                     (3, 3): _candidate(.1, 2, alignment=.01)} for _ in sections]
         self.assertEqual(solve_section_ring(sections, states, options), ((3, 3),) * 3)
+
+    def test_later_peak_allows_lower_total_error_prefix_to_win(self):
+        sections, states = _ring(4)
+        options = [
+            {(2, 2): _candidate(error=2, angle=5), (2, 3): _candidate(angle=10)},
+            {(2, 2): _candidate(), (3, 2): _candidate()},
+            {(2, 2): _candidate(angle=20)},
+            {(2, 2): _candidate()},
+        ]
+        self.assertEqual(solve_section_ring(sections, states, options),
+                         ((2, 3), (3, 2), (2, 2), (2, 2)))
+        options[2] = {(2, 2): _candidate(angle=7)}
+        self.assertEqual(solve_section_ring(sections, states, options), ((2, 2),) * 4)
 
     def test_solver_matches_exhaustive_objective_and_is_deterministic(self):
         sections, states = _ring(4)

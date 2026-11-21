@@ -57,6 +57,9 @@ class LinePolicyInputTests(unittest.TestCase):
                           None, "0.5", [0.5], np.array(0.5), 0.5 + 0j):
                 with self.subTest(full=full, value=repr(value)):
                     self.assert_invalid_atomic("min_size_ratio", value, full=full)
+            for value in (0.9, -1, np.nan, np.inf, True, None, "1.25", [1.25]):
+                with self.subTest(full=full, maximum=repr(value)):
+                    self.assert_invalid_atomic("max_size_ratio", value, full=full)
             error = self.assert_invalid_atomic("min_size_ratio", 10 ** 1000, full=full)
             self.assertIsInstance(error.__cause__, OverflowError)
 
@@ -64,7 +67,8 @@ class LinePolicyInputTests(unittest.TestCase):
         for count, ratio in ((np.int64(7), np.float32(0.5)), (np.uint64(3), 1),
                              (10 ** 1000, np.nextafter(0.0, 1.0))):
             with self.subTest(count_type=type(count), ratio=ratio):
-                actual_count, actual_ratio = validate_line_parameters(count, ratio)
+                actual_count, actual_ratio, maximum = validate_line_parameters(count, ratio)
+                self.assertEqual(maximum, 1.25)
                 self.assertEqual(actual_count, count)
                 self.assertEqual(actual_ratio, ratio)
                 self.assertIs(type(actual_count), int)
@@ -94,6 +98,7 @@ class LinePolicyInputTests(unittest.TestCase):
         result = generate_layer_adaptive_mesh(mesh, outline, 0.5)
         self.assertEqual(result.diagnostics["max_transition_count"], 20)
         self.assertEqual(result.diagnostics["min_size_ratio"], 0.5)
+        self.assertEqual(result.diagnostics["max_size_ratio"], 1.25)
 
     def test_full_forwards_only_to_intermediate_layers(self):
         mesh, _ = self.fixture()
@@ -103,10 +108,13 @@ class LinePolicyInputTests(unittest.TestCase):
                            wraps=_full._generate_layer_adaptive_mesh) as fixed):
             result = generate_full_adaptive_mesh(
                 mesh, [0.5, 0.5], outer_outline=[[-3, -3], [5, -3], [5, 5], [-3, 5]],
-                max_transition_count=np.int32(3), min_size_ratio=np.float64(0.6))
+                max_transition_count=np.int32(3), min_size_ratio=np.float64(0.6),
+                max_size_ratio=np.float32(1.125))
         ordinary.assert_called_once()
         self.assertEqual(ordinary.call_args.kwargs["max_transition_count"], 3)
         self.assertEqual(ordinary.call_args.kwargs["min_size_ratio"], 0.6)
+        self.assertEqual(ordinary.call_args.kwargs["max_size_ratio"], 1.125)
+        self.assertEqual(result.diagnostics["max_size_ratio"], 1.125)
         fixed.assert_called_once()
         self.assertIs(fixed.call_args.kwargs["fixed_outer_boundary"], True)
         self.assertNotIn("max_transition_count", fixed.call_args.kwargs)

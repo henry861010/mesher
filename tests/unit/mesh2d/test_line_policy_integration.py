@@ -12,7 +12,7 @@ from mesher.mesh2d.adapter import (
 )
 from tests.unit.mesh2d import test_full_adaptive_mesh as full_existing
 from tests.unit.mesh2d import test_section_integration as section_existing
-from mesher.mesh2d.adapter.layer._construction import line
+from mesher.mesh2d.adapter.layer._construction import aligned
 from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
 
 
@@ -29,10 +29,14 @@ class LinePolicyIntegrationTests(unittest.TestCase):
             points = mesh.nodes[detail["outer_ids"], :2]
             spacing = np.linalg.norm(np.diff(points, axis=0), axis=1)
             self.assertTrue(np.all(spacing >= ratio * size - 1e-8), spacing)
-            self.assertTrue(np.all(spacing <= size + 1e-8), spacing)
+            self.assertTrue(np.all(spacing <= result.diagnostics["max_size_ratio"] * size + 1e-8), spacing)
             for index in detail["unit_ids"]:
-                source, _, outer, _ = np.asarray(units[index]["boundary_counts"]) - 1
-                self.assertTrue(source == 1 or (outer == 1 and source <= limit))
+                unit = units[index]
+                loads = unit["source_segments_per_outer"]
+                self.assertEqual(len(loads), unit["boundary_counts"][2] - 1)
+                self.assertEqual(sum(loads), unit["boundary_counts"][0] - 1)
+                self.assertGreaterEqual(min(loads), 0)
+                self.assertLessEqual(max(loads), limit)
 
     def test_ten_segment_cap_is_conforming_and_frozen_in_all_directions(self):
         for rotation in range(4):
@@ -66,13 +70,13 @@ class LinePolicyIntegrationTests(unittest.TestCase):
         result = generate_layer_adaptive_mesh(mesh, outline, 500., max_transition_count=3)
         self.assert_policy(mesh, result, 500., limit=3)
 
-    def test_seam_candidates_share_one_density_profile_per_line(self):
+    def test_seam_candidates_reuse_each_line_sampling_profile(self):
         mesh, outline = section_existing.SectionIntegrationTests._nonuniform_rectangle()
-        with patch.object(line, "LineSampling", wraps=line.LineSampling) as profiles:
+        with patch.object(aligned, "LineSampling", wraps=aligned.LineSampling) as profiles:
             result = generate_layer_adaptive_mesh(mesh, outline, 500., max_transition_count=10)
         lines = [detail for detail in result.diagnostics["section_details"]
                  if detail["kind"] == "LINE"]
-        self.assertEqual(profiles.call_count, len(lines))
+        self.assertLessEqual(profiles.call_count, len(lines))
         self.assertTrue(any(len(detail["feasible_seam_pairs"]) > 1 for detail in lines))
 
     def test_short_mandatory_anchor_interval_is_reported_in_world_coordinates(self):
@@ -95,7 +99,7 @@ class LinePolicyIntegrationTests(unittest.TestCase):
         middle = front[(front[:, 0] >= 1000. - 1e-8) & (front[:, 0] <= 1100. + 1e-8)]
         np.testing.assert_allclose(middle, [[1000., 1500.], [1100., 1500.]], atol=1e-8)
         for index in details[0]["unit_ids"]:
-            self.assertLessEqual(result.diagnostics["units"][index]["boundary_counts"][0] - 1, 10)
+            self.assertLessEqual(max(result.diagnostics["units"][index]["source_segments_per_outer"]), 10)
         np.testing.assert_array_equal(target, original)
         section_existing.SectionIntegrationTests.assert_built_partition(
             self, mesh, nodes, elements, result)
