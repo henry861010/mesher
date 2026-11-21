@@ -982,6 +982,26 @@ targets; layer completion events report the targets actually constructed.
 
 ## Optional tools
 
+Inspect a list of 2D boxes on a grid cut at every box boundary:
+
+```python
+from mesher.mesh2d.visualization import plot_pattern2d
+import matplotlib.pyplot as plt
+
+fig, ax = plot_pattern2d([[0, 0, 3, 2], [2, 1, 5, 4]])
+fig.savefig("pattern.png")
+plt.show()
+```
+
+Covered cells (including overlaps) share one color; uncovered cells are white.
+All horizontal and vertical grid lines remain visible across both regions.
+The axes use equal XY scales with Y increasing upward. Pass `ax=...` to draw
+in an existing axes. Empty input gives a blank plot; reversed box endpoints
+are normalized, while zero-area boxes and nonfinite coordinates are rejected.
+Coordinates are not merged using a tolerance. This helper requires only
+Matplotlib (`python -m pip install matplotlib`), without PyVista. See
+[`examples/pattern2d.py`](examples/pattern2d.py) for an editable example.
+
 Launch the 2D quality GUI with:
 
 ```bash

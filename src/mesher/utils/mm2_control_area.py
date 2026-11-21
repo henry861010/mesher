@@ -5,9 +5,60 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from mesher.mesh2d.imprint_line import BoxPairSpec
+
+
+def group_lines(group_size: float, lines: list) -> list[BoxPairSpec]:
+    """Group parallel segments with identical spans into box controls.
+
+    Endpoint order and duplicate segments are immaterial. A gap between
+    consecutive lines splits a group when it is at least `group_size`.
+    An isolated line raises ValueError because it cannot form a rectangle.
+    Horizontal lines supply Y samples in x_points, verticals X in y_points.
+    """
+    if not np.isfinite(group_size) or group_size <= 0:
+        raise ValueError("group_size must be finite and positive")
+
+    offsets: dict[tuple[str, float, float], set[float]] = {}
+    for index, line in enumerate(lines):
+        endpoints = np.asarray(line, dtype=float)
+        if endpoints.shape != (2, 2) or not np.isfinite(endpoints).all():
+            raise ValueError(f"lines[{index}] requires two finite XY endpoints")
+        (x1, y1), (x2, y2) = endpoints.tolist()
+        if y1 == y2 and x1 != x2:
+            key = ("horizontal", min(x1, x2), max(x1, x2))
+            offset = y1
+        elif x1 == x2 and y1 != y2:
+            key = ("vertical", min(y1, y2), max(y1, y2))
+            offset = x1
+        else:
+            raise ValueError(f"lines[{index}] must be a nonzero axis-aligned segment")
+        offsets.setdefault(key, set()).add(offset)
+
+    result: list[BoxPairSpec] = []
+    for (orientation, low, high), values in sorted(offsets.items()):
+        positions = sorted(values)
+        start = 0
+        for stop in range(1, len(positions) + 1):
+            if stop < len(positions) and positions[stop] - positions[stop - 1] < group_size:
+                continue
+            first, last = positions[start], positions[stop - 1]
+            if stop - start == 1:
+                raise ValueError(
+                    f"isolated {orientation} line at offset {first} with span [{low}, {high}]"
+                )
+            if orientation == "horizontal":
+                result.append(BoxPairSpec(box=[low, first, high, last],
+                                          x_points=[[low, y] for y in positions[start:stop]]))
+            else:
+                result.append(BoxPairSpec(box=[first, low, last, high],
+                                          y_points=[[x, low] for x in positions[start:stop]]))
+            start = stop
+    return result
+
 
 def get_mm2_control_area(
-    boxes: ArrayLike, *, corner_extent: float = 25.0
+    boxes: ArrayLike, *, corner_extent: float = 25.0, max_gap: float | None = None
 ) -> NDArray[np.float64]:
     """Return the rectangular union of local corner/gap control areas.
 
@@ -19,6 +70,8 @@ def get_mm2_control_area(
     and no intervening die in the visible portion of that overlap. Its closed
     transverse span must contain the source corner. Only gaps incident to the
     source die participate; extended patches do not discover further gaps.
+    A finite nonnegative ``max_gap`` limits the edge-to-edge distance along
+    each axis (inclusive). Zero disables gap extension. None allows any width.
 
     X and Y extensions at the same corner combine into one rectangle, filling
     crossed gaps between four dies. Unrelated distant corner bands never
@@ -40,6 +93,13 @@ def get_mm2_control_area(
             coordinates also raise ValueError.
     """
     dies, extent = _validate(boxes, corner_extent)
+    if max_gap is not None:
+        raw_gap = np.asarray(max_gap)
+        if raw_gap.ndim != 0 or raw_gap.dtype.kind not in "iuf":
+            raise ValueError("max_gap must be a finite nonnegative scalar or None")
+        max_gap = float(raw_gap)
+        if not np.isfinite(max_gap) or max_gap < 0:
+            raise ValueError("max_gap must be a finite nonnegative scalar or None")
     if len(dies) == 0:
         return np.empty((0, 4), dtype=np.float64)
 
@@ -56,7 +116,7 @@ def get_mm2_control_area(
     patches = np.concatenate([lower, upper], axis=2)
 
     for axis in (0, 1):
-        _extend_across_gaps(dies, corners, patches, extent, axis)
+        _extend_across_gaps(dies, corners, patches, extent, axis, max_gap)
 
     return _rectangular_union(patches.reshape(-1, 4))
 
@@ -92,7 +152,7 @@ def _validate(boxes: ArrayLike, corner_extent: float) -> tuple[NDArray, float]:
     return dies, extent
 
 
-def _extend_across_gaps(dies, corners, patches, extent, axis):
+def _extend_across_gaps(dies, corners, patches, extent, axis, max_gap):
     """Sweep transverse slabs; consecutive dies are the visible neighbors."""
     transverse = 1 - axis
     levels = np.unique(dies[:, [transverse, transverse + 2]])
@@ -107,7 +167,7 @@ def _extend_across_gaps(dies, corners, patches, extent, axis):
                 raise ValueError(
                     f"boxes[{first}] and boxes[{second}] have overlapping interiors"
                 )
-            if end == start:
+            if end == start or (max_gap is not None and float(start) - float(end) > max_gap):
                 continue
 
             # Include slab endpoints: gap ends are precisely where corners lie.

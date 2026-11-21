@@ -22,7 +22,9 @@ negative axis direction. `corner_extent` adjusts that distance in model units.
 A gap requires positive overlap between opposing die sides and no intervening
 die in the visible portion. If its transverse span contains a corner of either
 participating die, that corner's patch extends across the gap and another
-`corner_extent` past the opposite side. There is no maximum gap width.
+`corner_extent` past the opposite side. Set `max_gap` to the largest
+edge-to-edge distance to bridge (inclusive, in model units). Its default
+of `None` allows any width. Use `max_gap=0` for corner squares only.
 Corner endpoints count; point-only overlap between die sides does not.
 Touching dies have no positive-width gap. With partial obstruction, a corner
 only uses the gap visible next to it, rather than a farther die behind a blocker.

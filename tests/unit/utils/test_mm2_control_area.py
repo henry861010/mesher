@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from mesher.utils import get_mm2_control_area
+from mesher.utils import get_mm2_control_area, group_lines
 
 
 def product_boxes(xs, ys):
@@ -50,6 +50,20 @@ class ControlAreaTests(unittest.TestCase):
             order = [1, 0, 3, 2] if transpose else [0, 1, 2, 3]
             with self.subTest(transpose=transpose):
                 self.assert_region(get_mm2_control_area(dies[:, order]), expected[:, order])
+
+    def test_max_gap_includes_threshold_in_both_orientations(self):
+        dies = np.array([[0, 0, 100, 100], [180, 0, 280, 100]])
+        for order in ([0, 1, 2, 3], [1, 0, 3, 2]):
+            oriented = dies[:, order]
+            separate = np.concatenate([get_mm2_control_area([die]) for die in oriented])
+            self.assert_region(get_mm2_control_area(oriented, max_gap=79), separate)
+            self.assert_region(get_mm2_control_area(oriented, max_gap=80),
+                               get_mm2_control_area(oriented))
+
+    def test_invalid_max_gap(self):
+        for limit in (-1, np.nan, np.inf, [25]):
+            with self.subTest(limit=limit), self.assertRaisesRegex(ValueError, "max_gap"):
+                get_mm2_control_area([], max_gap=limit)
 
     def test_four_dies_include_entire_crossed_gap(self):
         dies = product_boxes([(0, 100), (180, 280)], [(0, 100), (180, 280)])
@@ -152,6 +166,21 @@ class ControlAreaTests(unittest.TestCase):
                             ([1e16, 1e16, 1e16 + 10, 1e16 + 10], .1)):
             with self.subTest(extent=extent), self.assertRaisesRegex(ValueError, "represented"):
                 get_mm2_control_area([box], corner_extent=extent)
+
+
+class GroupLinesTests(unittest.TestCase):
+    def test_multiple_groups(self):
+        lines = [[[10, y], [0, y]] for y in (4, 0, 5, 1)]
+        self.assertEqual(group_lines(3, lines), [
+            {"box": [0, 0, 10, 1], "x_points": [[0, 0], [0, 1]]},
+            {"box": [0, 4, 10, 5], "x_points": [[0, 4], [0, 5]]},
+        ])
+
+    def test_isolated_line_after_valid_group(self):
+        lines = [[[x, 0], [x, 10]] for x in (0, 1, 4)]
+        lines.append(lines[-1][::-1])
+        with self.assertRaisesRegex(ValueError, "isolated vertical line"):
+            group_lines(3, lines)
 
 
 if __name__ == "__main__":

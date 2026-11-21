@@ -38,7 +38,8 @@ class ReservedDomain(OrthogonalDomain):
                 axis = 1 - transition.axis
                 if p[axis] != q[axis]:
                     levels = [v for v in transition.splits if min(p[axis], q[axis]) < v < max(p[axis], q[axis])]
-                    for value in sorted(levels, reverse=p[axis] > q[axis]):
+                    # Python 3.11 parses reverse as an integer; use a native bool.
+                    for value in sorted(levels, reverse=bool(p[axis] > q[axis])):
                         xy = p.copy()
                         xy[axis] = value
                         points.append(xy)

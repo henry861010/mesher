@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -20,16 +20,20 @@ class Patterns(tuple):
         return result
 
 
-class BoxPairSpec(TypedDict):
+class _BoxPairRequired(TypedDict):
+    box: ArrayLike
+
+
+class BoxPairSpec(_BoxPairRequired, total=False):
     """Box bounds and optional directional samples in absolute XY coordinates.
 
     Presence of x_points/y_points enables that pair, including an empty list.
     X pairs use the Y components; Y pairs use the X components.
     """
 
-    box: ArrayLike
-    x_points: NotRequired[ArrayLike]
-    y_points: NotRequired[ArrayLike]
+    # Inheritance keeps box required without Python 3.11's NotRequired.
+    x_points: ArrayLike
+    y_points: ArrayLike
 
 
 class LinePair(TypedDict):
