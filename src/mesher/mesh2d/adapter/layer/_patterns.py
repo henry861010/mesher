@@ -46,6 +46,33 @@ class AxisPattern:
         return self.point(self.lo) - tol, self.point(self.hi) + tol
 
 
+def union_patterns(patterns, tol):
+    """Coalesce touching finite guides, retaining the IDs of each connected interval."""
+    groups = []
+    for pattern in sorted(patterns, key=lambda p: (p.axis, p.support, p.lo, p.hi)):
+        if (not groups or pattern.axis != groups[-1][0].axis
+                or pattern.support - groups[-1][0].support > tol):
+            groups.append([])
+        groups[-1].append(pattern)
+    result = []
+    for group in groups:
+        # Supports have already been grouped. Sort along the guide before
+        # comparing endpoints so disjoint intervals cannot bridge an empty gap.
+        ordered = sorted(group, key=lambda p: (p.lo, p.hi))
+        first = ordered[0]
+        lo, hi, support, ids = first.lo, first.hi, first.support, set(first.ids)
+        for pattern in ordered[1:]:
+            if pattern.lo > hi + tol:
+                result.append(AxisPattern(first.axis, support, lo, hi, tuple(sorted(ids))))
+                lo, hi, support, ids = pattern.lo, pattern.hi, pattern.support, set(pattern.ids)
+            else:
+                hi = max(hi, pattern.hi)
+                support = min(support, pattern.support)
+                ids.update(pattern.ids)
+        result.append(AxisPattern(first.axis, support, lo, hi, tuple(sorted(ids))))
+    return result
+
+
 def _finite(values):
     if not np.all(np.isfinite(values)):
         raise QuadLayerError("pattern geometry exceeds the supported numeric range",

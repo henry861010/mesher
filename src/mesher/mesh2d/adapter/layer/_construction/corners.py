@@ -46,13 +46,21 @@ def _outer_candidates(outer, source_segments, left_count, right_count, h, tol,
         def cost(index, count):
             return count * (lengths[index] / (count * h) - 1.0) ** 2
 
-        heap = [(cost(i, 2) - cost(i, 1), i) for i in range(len(lengths))]
+        # Only split an arm when its new segments can remain distinct.
+        # An unusable higher-count candidate must not discard a coarser corner.
+        heap = [(cost(i, 2) - cost(i, 1), i) for i in range(len(lengths))
+                if lengths[i] / 2 > tol]
         heapq.heapify(heap)
         for _ in range(total - minimum):
+            if not heap:
+                break
             _, i = heapq.heappop(heap)
             parts[i] += 1
             n = int(parts[i])
-            heapq.heappush(heap, (cost(i, n + 1) - cost(i, n), i))
+            if lengths[i] / (n + 1) > tol:
+                heapq.heappush(heap, (cost(i, n + 1) - cost(i, n), i))
+        if sum(parts) != total:
+            continue
         points = [outer[0]]
         for a, b, count in zip(outer, outer[1:], parts):
             points.extend(
@@ -89,7 +97,7 @@ def plan_corner(kind: str, source_chains: tuple[np.ndarray, ...], outer: np.ndar
                 left: np.ndarray, right: np.ndarray, corner_front: np.ndarray,
                 h: float, tol: float, *,
                 max_added_elements: int | None = None,
-                fixed_outer_boundary: bool = False) -> list[SectionPatch]:
+                fixed_outer_boundary: bool = False, validate_unit=None) -> list[SectionPatch]:
     """Produce feasible concrete patches for one fixed seam-state pair."""
     if kind not in {"OUTER", "INNER", "INNER_LEFT", "INNER_RIGHT", "INNER_BOTH"}:
         raise ValueError("unknown corner section kind")
@@ -101,13 +109,15 @@ def plan_corner(kind: str, source_chains: tuple[np.ndarray, ...], outer: np.ndar
                                             max_added_elements, limit_errors,
                                             fixed_outer_boundary=fixed_outer_boundary):
         matches = np.flatnonzero(np.linalg.norm(sampled[:, :2] - corner_front[:2], axis=1) <= tol)
-        if len(matches) != 1:
+        if not len(matches):
             raise ValueError("corner front point must remain a mandatory anchor")
+        if len(matches) > 1:
+            continue
         split = int(matches[0])
         try:
             sides = (_outer_sides(source, sampled, left, right, split) if kind == "OUTER"
                      else _inner_sides(source_chains, sampled, left, right, split, kind))
-            units = _four_sided_units(sides, tol, max_added_elements)
+            units = _four_sided_units(sides, tol, max_added_elements, validate_unit=validate_unit)
             results.append(assemble_section(units, source, sampled, left, right, error, tol))
         except ElementLimitExceeded as error:
             limit_errors.append(error)

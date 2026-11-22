@@ -354,8 +354,8 @@ All calls are staged on a private mesh, with one final commit. Any failure
 leaves the caller's arrays unchanged.
 
 `max_transition_count` applies to all resampled LINE sections in intermediate
-layers. `min_size_ratio` and `max_size_ratio` bound outer spacing in ordinary
-and mixed LINE sections. The final transition preserves
+layers. Both size ratios default to `None`. The example sets both explicitly
+to bound outer spacing in ordinary and mixed LINE sections. The final transition preserves
 the global generator's fixed interface. Full-result diagnostics record all three
 settings and whether an ordinary layer uses them (`line_policy_active`).
 
@@ -600,12 +600,13 @@ may contain interior nodes.
 
 - `max_transition_count=20` caps the number of input segments assigned to
   each output segment within one strip. One input segment may refine into multiple output segments.
-- `min_size_ratio=0.5` and `max_size_ratio=1.25` define the allowed outer spacing
-  in ordinary and mixed LINE sections as multiples of `element_size`.
-  The upper ratio must be finite and at least 1.
-  Set it to 1 to use `element_size` as a strict upper bound. Additional outer
-  nodes can keep cross-band connections closer to the normal.
-- Where a size band applies, two mandatory anchors closer than the minimum
+- `element_size` is the target outer spacing. In ordinary and mixed LINE sections,
+  `min_size_ratio` and `max_size_ratio` independently set a lower or upper bound
+  as a multiple of that target. Each defaults to `None`, leaving that side
+  unrestricted. A supplied minimum must be finite and in `(0, 1]`. A supplied
+  maximum must be finite and at least 1. For example, `max_size_ratio=1` alone caps
+  spacing at `element_size`.
+- When a minimum is set, two mandatory anchors closer than the minimum
   define a single unsplit interval.
 
 All three adapter entry points (`plan_quad_sections`, `generate_layer_adaptive_mesh`,
@@ -616,27 +617,43 @@ result = generate_layer_adaptive_mesh(
     mesh, outline_i, element_size=1000,
     max_transition_count=20,       # Each strip can coarsen up to 20 input edges per output edge.
     small_element_size=10,         # Opt in; default None preserves the partition.
+    small_element_group_count=2,   # Require at least 3 consecutive short source edges.
     dense_mapping_angle=30.0,      # Degrees; outward-only dense endpoint mapping.
+    dense_min_gap_ratio=0.5,       # Minimum fraction of the ordinary gap between dense runs.
 )
 ```
 
-Consecutive source edges strictly shorter than `small_element_size` form a
-maximal dense run. Its endpoints become shared source-to-front seams, leaving
+Within each LINE, a run is dense when more than `small_element_group_count`
+consecutive source edges are strictly shorter than `small_element_size`. The
+count threshold is a nonnegative integer and defaults to 0, so a single short
+edge qualifies by default. Dense run endpoints become shared source-to-front seams, leaving
 ordinary LINE sections on either side. Corners and pattern seams remain fixed.
 `dense_mapping_angle` is finite and in `[0, 90)` degrees, default 30. From the
 outward normal (0°), begin endpoints search backward in `[-angle, 0]` and end
 endpoints search forward in `[0, angle]`. Each endpoint selects the first usable
-contact in increasing absolute-angle order, within its current LINE. Ordinary
-mode falls back to a normal projection when valid; fixed mode skips only the
-unmatched optional endpoint. One matched endpoint can still split the LINE.
-A single short edge qualifies; an entirely dense LINE needs no additional seams.
+contact in increasing absolute-angle order, within its current LINE. On a
+resampled front, each unmatched endpoint moves outward along the front by
+`d * tan(angle)` from its normal projection, where `d` is its normal distance
+to the front. A blocked endpoint uses its legal normal projection. At 0° this
+is also the placement for every new endpoint. Fixed mode skips unmatched
+optional endpoints. One matched endpoint can still split the LINE.
+For neighboring dense runs, the planner compares the proposed outer gap with
+the source gap along the LINE. If the remaining width is below
+`dense_min_gap_ratio` times the source width, both facing endpoints use normal
+contacts. Their other ends can still widen. Existing-node snaps count toward
+this check. On a fixed front, a protected endpoint needs an existing node on
+its normal. The ratio accepts finite values in `[0, 1]` and defaults to `0.5`.
+Use `0` for the previous mapping behavior or `1` to retain the full gap.
+An entirely dense LINE needs no additional seams.
 For a resampled LINE contained entirely in a dense run, `element_size` is a
 preferred spacing. Outer gaps can fall below the minimum or exceed the maximum.
 The transition cap, mandatory anchors, Quad4 parity and element budget still
-apply. A LINE with both short and ordinary source edges keeps the size band.
+apply. A LINE with both short and ordinary source edges uses any requested size bounds.
 Each fully dense resampled LINE has two equal-height sublayers. The first
 groups source edges onto the midline using the dense LINE planner. The second
 uses those exact midline edges as input and applies the same cap again.
+When either endpoint widens, retained source nodes keep their fractional
+positions along each sublayer's target interval. Mandatory outer nodes stay fixed.
 For example, with a cap of 10, a run of 37 source edges can coarsen to five
 midline edges and then to one final edge. When the shared seam midpoints force a
 parity conflict in an adjacent LINE, its longest outer gap is bisected.
@@ -647,10 +664,12 @@ The old `dense_region_tolerance` keyword has been removed without an alias.
 
 The full adapter sends these seam contacts to the global generator before the
 last layer, then reuses the saved canonical contacts in its fixed interface.
-Each LINE in `section_details` reports `size_band_active` and its actual
+Each LINE in `section_details` reports whether it applies at least one requested
+bound (`size_band_active`) and its actual
 `min_outer_spacing` and `max_outer_spacing` in world units.
 Diagnostics expose `dense_sections`, `dense_seams`, and `dense_mappings`, including
-source/target IDs, shared seam IDs, mapping angles, and reasons for skipped cuts. Dense partitioning bounds the transition's location; it does
+source/target IDs, shared seam IDs, mapping angles, the `gap_limited` flag,
+and reasons for skipped cuts. Dense partitioning bounds the transition's location; it does
 not guarantee good internal cell quality under extreme coarsening.
 
 [Dense-section example](examples/dense_adaptive_sections.py) compares the old
@@ -658,7 +677,7 @@ cap, the relaxed cap, and explicit dense sections on the same 5-versus-1000
 fixture. The last two cases use a cap of 1000. With the default cap of 20,
 each fully dense run of 60 source edges in this fixture coarsens to four
 midline edges and then to two outer edges across its 300-unit width.
-Ordinary sections keep their 500–1250 size band.
+The example sets ratios of 0.5 and 1.25 for a 500–1250 spacing range in ordinary sections.
 Run the illustrated comparison with the following command.
 
 ```sh

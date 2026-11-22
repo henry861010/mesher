@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import numpy as np
 from ....tolerance import within_distance
 
-from ._geometry import BoxIndex, area, cross, intervals_cover, segment_relations
+from ._geometry import BoxIndex, area, cross, intervals_cover, resolved_quad_turns, segment_relations
 from ._old_mesh import edge_membership, old_edge_keys
 from ._patterns import covered_intervals, occupied_intervals
 from ._types import QuadLayerError, UnmeshableDirectQuadLayout
@@ -136,6 +136,36 @@ def _check_patterns(patterns, new_cells, old_cells, new_cell_index, old_cell_ind
             _failure("a finite pattern cuts through a mesh element", pattern_index=i)
 
 
+def _check_attachment_fans(old_cells, new_cells, source_ids, target_ids):
+    """The incident cells at each joined node must form one open or closed fan."""
+    attachments = np.asarray(sorted(source_ids | target_ids), dtype=np.int64)
+    corners = defaultdict(list)
+    for cells in (old_cells, new_cells):
+        rows, cols = np.nonzero(np.isin(cells, attachments))
+        # Each CCW corner connects its two adjacent edges in the link of
+        # this vertex. Following those links visits a single chain or cycle.
+        for node, previous, following in zip(cells[rows, cols].tolist(),
+                                             cells[rows, (cols - 1) % 4].tolist(),
+                                             cells[rows, (cols + 1) % 4].tolist()):
+            corners[node].append((previous, following))
+    for node, links in corners.items():
+        successors = dict(links)
+        starts = set(successors)
+        ends = set(successors.values())
+        degree = len(starts ^ ends)
+        if len(starts) == len(ends) == len(links) and degree in (0, 2):
+            start = next(iter(starts - ends)) if degree else links[0][0]
+            while start in successors:
+                start = successors.pop(start)
+            if not successors:
+                continue
+        owners = Counter(neighbor for link in links for neighbor in link)
+        raise QuadLayerError("the layer would create a nonmanifold vertex",
+                             code="topology_change",
+                             parameter="outline_i" if node in source_ids else "outline_o",
+                             node_id=node, boundary_degree=sum(count == 1 for count in owners.values()))
+
+
 def validate_patch(mesh, nodes, quads, outline, data):
     """Certify a staged patch without mutating any input mesh or array."""
     tol = data["tol"]
@@ -151,11 +181,9 @@ def validate_patch(mesh, nodes, quads, outline, data):
             or np.any(np.diff(np.sort(quads, axis=1), axis=1) == 0)):
         _failure("every added element must be a Quad4 with four distinct valid node IDs")
     new_cells = nodes[quads, :2]
-    vectors = np.roll(new_cells, -1, axis=1) - new_cells
-    turns = cross(vectors, np.roll(vectors, -1, axis=1))
-    local_scale = np.ptp(new_cells, axis=1).max(axis=1)
-    threshold = 64.0 * np.finfo(float).eps * local_scale * local_scale
-    if np.any(turns <= threshold[:, None]):
+    world = data.get("_represented_world_nodes")
+    if not resolved_quad_turns(new_cells, None if world is None else world[quads, :2],
+                               data.get("scale", 1.)):
         _failure("added Quad4 cells must be nondegenerate, strictly convex, and CCW")
     new_used = np.unique(quads[quads >= original_count])
     if not np.array_equal(new_used, np.arange(original_count, len(nodes))):
@@ -206,7 +234,6 @@ def validate_patch(mesh, nodes, quads, outline, data):
         _failure("the layer omitted a source or front boundary segment")
 
     new_keys = np.asarray(sorted(incidence), dtype=np.int64).reshape(-1, 2)
-    world = data.get("_represented_world_nodes")
     represented = None
     if world is not None:
         represented = (world, data["origin"], data["scale"], data["tolerance"].absolute)
@@ -238,6 +265,7 @@ def validate_patch(mesh, nodes, quads, outline, data):
         raise QuadLayerError("the layer meets old mesh away from its source boundary",
                              code="topology_change", edge=min(unexpected_old_edges))
     source_ids = set(np.asarray(data["frozen"]).ravel().tolist())
+    _check_attachment_fans(mesh.elements, quads, source_ids, target_ids)
     old_nodes_used = set(quads[quads < original_count].tolist())
     if not old_nodes_used.issubset(source_ids | target_ids):
         _failure("new elements reference old nodes outside the source and target boundaries")

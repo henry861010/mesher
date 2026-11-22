@@ -20,7 +20,7 @@ from ._full_geometry import (complement_domains, discover_boundaries,
 from .layer import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
 from .layer._errors import layer_error
 from .layer._geometry import BoxIndex, area, cross
-from .layer._line_policy import (DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT,
+from .layer._line_policy import (DEFAULT_DENSE_MIN_GAP_RATIO, DEFAULT_MAX_TRANSITION_COUNT,
                                  validate_dense_parameters, validate_line_parameters)
 from .layer._mesher import _generate_layer_adaptive_mesh
 from .layer._validation import _check_edge_geometry, _check_overlaps
@@ -210,11 +210,13 @@ def generate_full_adaptive_mesh(
     expand_ratio: float = 1.5,
     pattern_lines=(),
     max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
-    min_size_ratio: float = 0.5,
-    max_size_ratio: float = DEFAULT_MAX_SIZE_RATIO,
+    min_size_ratio: float | None = None,
+    max_size_ratio: float | None = None,
     tolerance: GeometryTolerance | float | None = None,
     small_element_size: float | None = None,
+    small_element_group_count: int = 0,
     dense_mapping_angle: float = 30.0,
+    dense_min_gap_ratio: float = DEFAULT_DENSE_MIN_GAP_RATIO,
 ) -> FullAdaptiveMeshResult:
     """Fill an orthogonal domain around existing focus meshes with Quad4s.
 
@@ -239,16 +241,20 @@ def generate_full_adaptive_mesh(
     collapsed required edges fail; existing source coordinates stay exact.
 
     ``max_transition_count``, ``min_size_ratio`` and ``max_size_ratio`` have the
-    single-layer LINE defaults of 20, 0.5 and 1.25. In intermediate layers
-    the transition cap applies to every resampled LINE. The size ratios apply
-    to ordinary and mixed LINE sections. The final transition preserves the global
+    single-layer LINE defaults of 20, None and None. In intermediate layers
+    the transition cap applies to every resampled LINE. Each supplied size ratio
+    bounds the corresponding side of the outer spacing in ordinary and mixed
+    LINE sections. The final transition preserves the global
     generator's complete fixed interface, without imposing these constraints.
     The arguments are validated even when there is only one, fixed layer.
 
-    ``small_element_size`` and ``dense_mapping_angle`` have the single-layer
-    semantics and defaults (None and 30 degrees). The size threshold uses world
-    lengths; the angle is finite and in [0, 90). Dense seams are planned before
-    global meshing and retained in the final fixed interface, even if global
+    As in the single-layer API, ``small_element_size`` sets the short-edge
+    threshold in world units (default None). Only runs with more than
+    ``small_element_group_count`` consecutive short edges qualify (default 0).
+    ``dense_mapping_angle`` is in [0, 90) degrees and defaults to 30.
+    ``dense_min_gap_ratio`` is the minimum retained fraction of the gap between
+    dense runs, in [0, 1] and defaulting to 0.5. Zero disables the gap check. Dense seams
+    are planned before global meshing and retained in the final fixed interface, even if global
     meshing adds a closer node. ``dense_region_tolerance`` has been removed.
 
     All work is staged privately. Success updates and returns the original mesh;
@@ -258,8 +264,9 @@ def generate_full_adaptive_mesh(
     started = perf_counter()
     max_transition_count, min_size_ratio, max_size_ratio = validate_line_parameters(
         max_transition_count, min_size_ratio, max_size_ratio)
-    small_element_size, dense_mapping_angle = validate_dense_parameters(
-        small_element_size, dense_mapping_angle)
+    small_element_size, small_element_group_count, dense_mapping_angle, dense_min_gap_ratio = (
+        validate_dense_parameters(small_element_size, small_element_group_count,
+                                  dense_mapping_angle, dense_min_gap_ratio))
     sizes, ratio, patterns = _call(lambda: _inputs(element_sizes, expand_ratio, pattern_lines),
                                     stage="input_validation")
     policy = _call(lambda: resolve_tolerance(tolerance), stage="input_validation")
@@ -285,7 +292,8 @@ def generate_full_adaptive_mesh(
                             max_transition_count=max_transition_count,
                             min_size_ratio=min_size_ratio, max_size_ratio=max_size_ratio,
                             small_element_size=small_element_size,
-                            dense_mapping_angle=dense_mapping_angle),
+                            small_element_group_count=small_element_group_count,
+                            dense_mapping_angle=dense_mapping_angle, dense_min_gap_ratio=dense_min_gap_ratio),
                 stage="layer_construction", layer_index=layer_index, boundary_index=boundary_index)
             current.append(result.outline)
             diagnostics.append(result.diagnostics)
@@ -296,13 +304,14 @@ def generate_full_adaptive_mesh(
         layer_diagnostics.append(diagnostics)
 
     final_index, final_size = len(sizes) - 1, sizes[-1]
-    fronts, dense_targets = [], []
+    fronts, dense_targets, gap_limited = [], [], []
     for boundary_index, outline in enumerate(outlines):
         plan = _call(lambda: plan_quad_sections(working, outline, final_size,
                          tolerance=policy,
                          expand_ratio=ratio, pattern_lines=patterns,
                          small_element_size=small_element_size,
-                         dense_mapping_angle=dense_mapping_angle),
+                         small_element_group_count=small_element_group_count,
+                         dense_mapping_angle=dense_mapping_angle, dense_min_gap_ratio=dense_min_gap_ratio),
                      stage="final_layer_planning", layer_index=final_index,
                      boundary_index=boundary_index)
         fronts.append(_call(lambda: section_outline_points(plan), stage="final_layer_planning",
@@ -315,6 +324,8 @@ def generate_full_adaptive_mesh(
             nearest = int(np.argmin(np.linalg.norm(fronts[-1] - point, axis=1)))
             contacts[record["source_edge"], record["source_index"]] = nearest
         dense_targets.append(contacts)
+        gap_limited.append({(r["source_edge"], r["source_index"])
+                            for r in plan.diagnostics["dense_mappings"] if r["gap_limited"]})
     # Independent normalized frames can restore the same physical support as
     # adjacent floats. Give every generated front and seam anchor one identity
     # before any visibility cut adds points to a different boundary.
@@ -357,8 +368,10 @@ def generate_full_adaptive_mesh(
                             tolerance=policy,
                             pattern_lines=patterns, outline_o=target_ids, fixed_outer_boundary=True,
                             small_element_size=small_element_size,
-                            dense_mapping_angle=dense_mapping_angle,
-                            _dense_seam_targets=dense_targets[boundary_index]),
+                            small_element_group_count=small_element_group_count,
+                            dense_mapping_angle=dense_mapping_angle, dense_min_gap_ratio=dense_min_gap_ratio,
+                            _dense_seam_targets=dense_targets[boundary_index],
+                            _dense_gap_limited=gap_limited[boundary_index]),
                        stage="final_layer_construction", layer_index=final_index,
                        boundary_index=boundary_index)
         current.append(result.outline)
@@ -375,7 +388,9 @@ def generate_full_adaptive_mesh(
         "min_size_ratio": min_size_ratio,
         "max_size_ratio": max_size_ratio,
         "small_element_size": small_element_size,
+        "small_element_group_count": small_element_group_count,
         "dense_mapping_angle": dense_mapping_angle,
+        "dense_min_gap_ratio": dense_min_gap_ratio,
         "line_policy_active": len(sizes) > 1,
         "boundaries": [{"boundary_index": index, "parent_index": parent,
                         "kind": "exterior" if sign < 0 else "hole"}

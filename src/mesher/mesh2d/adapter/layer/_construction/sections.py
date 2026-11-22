@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from math import isclose, sqrt
 
 import numpy as np
 
@@ -10,11 +11,30 @@ from .line import plan_line
 from .sampling import validate_spacing
 from .smoothing import quad_shape
 from .strip import alignment_metrics
+from .._geometry import resolved_quad_turns
 from .._planning.mapping import dense_angle
 from .._limits import ElementLimitExceeded, check_element_limit, preflight_element_limit
 from .._registry import _NodePool, _PointIndex
 from .._types import QuadLayerError
-from .._line_policy import DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT
+from .._line_policy import DEFAULT_MAX_TRANSITION_COUNT
+
+
+_SCORE_EPS = 64 * np.finfo(float).eps
+
+
+def _prefer_ring_cost(candidate, incumbent):
+    """Compare split count, accumulated errors, and worst cell quality in order."""
+    if candidate[0] != incumbent[0]:
+        return candidate[0] < incumbent[0]
+    for i in (1, 2, 3):
+        a, b = candidate[i], incumbent[i]
+        # Alignment and spacing accumulate squared dimensionless residuals.
+        # Compare in residual units so roundoff near a perfect fit is a tie.
+        if i < 3:
+            a, b = sqrt(a), sqrt(b)
+        if not isclose(a, b, rel_tol=_SCORE_EPS, abs_tol=_SCORE_EPS):
+            return a < b
+    return False
 
 
 def _xyz(points):
@@ -73,33 +93,34 @@ def solve_section_ring(sections, states, candidates):
                              code="unmeshable_seam_assignment", stage="seam_solver",
                              section_ids=[section.id for section in sections])
 
-    solutions = []
+    best_cost, best_path = None, None
     for initial in first_states:
         current = {initial: (0, 0.0, 0.0, 0.0)}
         parents = []
         for options in candidates:
             following, previous = {}, {}
             for (left, right), patch in sorted(options.items()):
-                if (left not in current or
-                        getattr(patch, "diagnostics", {}).get("max_alignment_angle", 0.0) > peak_limit):
+                angle = patch.diagnostics.get("max_alignment_angle", 0.0)
+                if left not in current or (angle > peak_limit and not isclose(
+                        angle, peak_limit, rel_tol=_SCORE_EPS, abs_tol=np.degrees(_SCORE_EPS))):
                     continue
                 splits, alignment, error, quality = current[left]
                 score = (splits + ("parity_split_index" in patch.diagnostics),
                          alignment + getattr(patch, "alignment_error", 0.0),
                          error + patch.size_error, max(quality, patch.quality))
-                if right not in following or score < following[right]:
+                if right not in following or _prefer_ring_cost(score, following[right]):
                     following[right], previous[right] = score, left
             current = following
             parents.append(previous)
-        if initial in current:
+        if initial in current and (best_cost is None or _prefer_ring_cost(current[initial], best_cost)):
             path = []
             right = initial
             for previous in reversed(parents):
                 left = previous[right]
                 path.append((left, right))
                 right = left
-            solutions.append((current[initial], tuple(reversed(path))))
-    return min(solutions)[1]
+            best_cost, best_path = current[initial], tuple(reversed(path))
+    return best_path
 
 
 def _source_ids(section):
@@ -115,12 +136,32 @@ def _quality_summary(nodes, quads):
             "worst_score": float(max(aspect.max(), 1.0 / scaled.min()))}
 
 
+def _corner_validator(data):
+    """Check each proposed unit in the frame and fixed coordinates used at commit."""
+    fixed_ids = np.union1d(data["frozen"], data.get("outline_anchor_ids", np.empty(0, dtype=int)))
+    fixed = {tuple(data["xy"][i]): data["_source_mesh"].nodes[i, :2] for i in fixed_ids}
+
+    def validate(nodes, quads):
+        local = nodes[:, :2]
+        world = local * data["scale"] + data["origin"]
+        for i, point in enumerate(local):
+            anchor = fixed.get(tuple(point))
+            if anchor is not None:
+                world[i] = anchor
+        if not resolved_quad_turns(local[quads], world[quads], data["scale"]):
+            raise ValueError("corner unit has an unresolved turn in model coordinates")
+    return validate
+
+
 def fill_sections(nodes, plan, data, *, element_offset=0):
     """Stage a layer; no caller-owned mesh data is changed during candidate search."""
     tol, h = data["tol"], data["h"]
     limit = data.get("max_added_elements")
     fixed_outer_boundary = data.get("fixed_outer_boundary", False)
+    validate_corner = _corner_validator(data)
     dense_section_ids = {record["section_id"] for record in plan.diagnostics["dense_sections"]}
+    expanded_seams = {r["seam_id"] for r in plan.diagnostics["dense_mappings"]
+                      if r["reason"] == "expanded_contact"}
     preflight_element_limit(plan, data, dense_section_ids)
     dense_seams = {} if fixed_outer_boundary else {
         record[key]: record["section_id"] for record in plan.diagnostics["dense_sections"]
@@ -140,6 +181,8 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
         constraint_errors = []
         sampling_cache = {}
         if section.kind == "LINE":
+            widened = (section.id in dense_section_ids and
+                       (section.left_seam in expanded_seams or section.right_seam in expanded_seams))
             line_stats[section.id] = {"line_planner": "projection", "unit_trial_count": 0,
                                       "local_repair_count": 0, "outer_count_attempts": 0,
                                       "direct_quad_count": 0}
@@ -153,10 +196,11 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                                             max_added_elements=limit,
                                             fixed_outer_boundary=fixed_outer_boundary,
                                             max_transition_count=data.get("max_transition_count", DEFAULT_MAX_TRANSITION_COUNT),
-                                            min_size_ratio=data.get("min_size_ratio", .5),
-                                            max_size_ratio=data.get("max_size_ratio", DEFAULT_MAX_SIZE_RATIO),
+                                            min_size_ratio=data.get("min_size_ratio"),
+                                            max_size_ratio=data.get("max_size_ratio"),
                                             size_band_active=section.id not in dense_section_ids,
                                             dense_sublayers=not fixed_outer_boundary and section.id in dense_section_ids,
+                                            proportional_cuts=widened,
                                             allow_parity_split=(section.left_seam in dense_seams or
                                                                 section.right_seam in dense_seams),
                                             _sampling_cache=sampling_cache)
@@ -164,7 +208,8 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                         corner = np.r_[plan.front[section.corner], 0.0]
                         patches = plan_corner(section.kind, source_chains, outer, left, right,
                                               corner, h, tol, max_added_elements=limit,
-                                              fixed_outer_boundary=fixed_outer_boundary)
+                                              fixed_outer_boundary=fixed_outer_boundary,
+                                              validate_unit=validate_corner)
                     if patches:
                         for candidate in patches:
                             check_element_limit(len(candidate.quads), limit,
@@ -326,7 +371,7 @@ def finalize_diagnostics(world_nodes, nodes, quads, diagnostics, plan, data, *, 
     """Validate final LINE spacing and report geometry by its committed IDs."""
     for seam in diagnostics["seam_states"]:
         seam["points"] = world_nodes[seam["node_ids"], :2].tolist()
-    aspect, scaled = quad_shape(nodes[quads, :2])
+    aspect, scaled = quad_shape(world_nodes[quads, :2])
     scores = np.maximum(aspect, 1 / scaled)
     for record in [*diagnostics["section_details"], *diagnostics["units"]]:
         record.pop("_fixed_interior", None)
@@ -362,8 +407,9 @@ def finalize_diagnostics(world_nodes, nodes, quads, diagnostics, plan, data, *, 
         ids = seams[record["seam_id"]]["node_ids"]
         first, last = ids[0], ids[-1]
         edge = record["source_edge"]
+        limit = 0. if record["gap_limited"] else data["dense_mapping_angle"]
         valid, angle = dense_angle(nodes[first, :2], nodes[last, :2], data["directions"][edge],
-                                   data["normals"][edge], record["endpoint"], data["dense_mapping_angle"])
+                                   data["normals"][edge], record["endpoint"], limit)
         if not valid:
             raise QuadLayerError("represented dense seam exceeds its angular interval",
                                  code="unmeshable_section_layout", seam_id=record["seam_id"])

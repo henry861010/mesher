@@ -133,7 +133,8 @@ class AuditFixTests(unittest.TestCase):
     def test_mapped_anchor_diagnostics_use_committed_coordinates(self):
         mesh = square()
         ids = target(mesh, [[-1, -1], [-.0008, -1], [2, -1], [2, 2], [-1, 2]])
-        result = layer(mesh, [0, 3, 2, 1], 1, outline_o=ids, tolerance=.001, repair_slots=False)
+        result = layer(mesh, [0, 3, 2, 1], 1, outline_o=ids, max_size_ratio=1.25,
+                       tolerance=.001, repair_slots=False)
         self.assertTrue(set(ids).issubset(result.outline))
         for record in result.diagnostics['section_details']:
             if 'line_sampling' not in record:

@@ -15,7 +15,7 @@ from ...unit.build_unit_1_1_x_y import _validate_patch
 from .._geometry import BoxIndex, area, area_epsilon, cross, on_segment, point_location, segment_contacts
 from .._limits import ElementLimitExceeded, check_element_limit
 from .._construction.patch import _four_sided_units
-from .._patterns import AxisPattern, pattern_contacts
+from .._patterns import pattern_contacts, union_patterns
 from .._types import QuadLayerError
 from .._construction.units import CoordinatePool
 
@@ -111,30 +111,13 @@ def _free_station(point, free_boundary, tol):
     _fail("a mandatory anchor leaves the free repair boundary")
 
 
-def _union_patterns(patterns, tol):
-    """Coalesce collinear finite pieces before checking complete chords."""
-    ordered = sorted(patterns, key=lambda p: (p.axis, p.support, p.lo, p.hi, p.ids))
-    result = []
-    for pattern in ordered:
-        if (result and pattern.axis == result[-1].axis
-                and abs(pattern.support - result[-1].support) <= tol
-                and pattern.lo <= result[-1].hi + tol):
-            previous = result.pop()
-            result.append(AxisPattern(previous.axis, previous.support,
-                                      min(previous.lo, pattern.lo), max(previous.hi, pattern.hi),
-                                      tuple(sorted(set(previous.ids + pattern.ids)))))
-        else:
-            result.append(pattern)
-    return result
-
-
 def _pattern_geometry(source, patterns, tol, free_boundary=None):
     """Find complete interior chords and all mandatory mouth contacts."""
     if free_boundary is None:
         free_boundary = source[[-1, 0]]
     polygon = np.vstack((source, free_boundary[1:-1]))[:, :2]
     chords, anchors, used_ids = [], list(free_boundary), set()
-    for pattern in _union_patterns(patterns, tol):
+    for pattern in union_patterns(patterns, tol):
         events = [(pattern.lo, pattern.point(pattern.lo)),
                   (pattern.hi, pattern.point(pattern.hi))]
         for a, b in zip(polygon, np.roll(polygon, -1, axis=0)):

@@ -123,11 +123,14 @@ class PhysicalToleranceTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "ambiguous_geometry")
 
     def test_line_counts_do_not_spend_geometric_tolerance_on_rounding(self):
-        self.assertEqual(line_count_bounds([1.0005], 1, 1., .001, max_size_ratio=1), (2, 2))
-        self.assertEqual(line_count_bounds([1.2505], 1, 1., .001), (2, 2))
-        self.assertEqual(line_count_bounds([1.2495], 1, 1., .001), (1, 2))
-        self.assertEqual(line_count_bounds([.9995], 1, 1., .001), (1, 1))
-        self.assertEqual(line_count_bounds([.1 + .2], 1, .1, .001), (3, 6))
+        for length, h, maximum, expected in ((1.0005, 1., 1., (2, 2)),
+                                             (1.2505, 1., 1.25, (2, 2)),
+                                             (1.2495, 1., 1.25, (1, 2)),
+                                             (.9995, 1., 1.25, (1, 1)),
+                                             (.1 + .2, .1, 1.25, (3, 6))):
+            with self.subTest(length=length):
+                self.assertEqual(line_count_bounds([length], 1, h, .001, min_size_ratio=.5,
+                                                   max_size_ratio=maximum), expected)
 
     def test_segment_endpoint_contact_uses_euclidean_distance(self):
         start, end = np.array([0., 0.]), np.array([1., 0.])

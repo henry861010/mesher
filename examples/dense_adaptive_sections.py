@@ -34,7 +34,8 @@ def build_comparison():
     results = []
     for label, settings in cases:
         mesh, outline = build_fixture()
-        result = generate_layer_adaptive_mesh(mesh, outline, 1000., **settings)
+        result = generate_layer_adaptive_mesh(mesh, outline, 1000., min_size_ratio=0.5,
+                                              max_size_ratio=1.25, **settings)
         results.append((label, result))
     return results
 

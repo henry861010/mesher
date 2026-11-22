@@ -47,8 +47,10 @@ def smooth_selected_units(nodes, quads, units, *, element_offset, original_count
         poor = np.flatnonzero(scores > _THRESHOLD)
         if not len(poor):
             continue
-        # Visit the worst quad's vertices first without sorting all the cells.
-        worst = scores[poor].argmax()
+        # Moves use previously updated neighbors. Visit the first equally
+        # poor quad when conversion of length units perturbs a score by ulps.
+        poor_scores = scores[poor]
+        worst = np.argmax(poor_scores >= poor_scores.max() * (1 - _EPS))
         poor[0], poor[worst] = poor[worst], poor[0]
         fixed = set(unit["_polygon_ids"])
         fixed.update(unit.get("_fixed_interior", ()))

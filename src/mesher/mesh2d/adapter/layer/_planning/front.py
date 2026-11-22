@@ -1,23 +1,38 @@
 """Plan and validate automatic expansion or a caller-specified target front."""
 from __future__ import annotations
 
+import math
+from fractions import Fraction
+
 import numpy as np
 
-from .._geometry import BoxIndex, area, area_epsilon, on_segment, point_location, segment_contacts
+from .._geometry import BoxIndex, area, area_epsilon, point_location, segment_contacts
 from .._types import QuadLayerError, UnmeshableDirectQuadLayout
 from .source import _fail, _input_loop, _simple_loop
+
+
+def _within_snap_reach(ordinates, sign, source_support, expand_size, ratio):
+    """Compare the guide midline distance to the physical expansion reach."""
+    first, last = (float(value) * sign for value in ordinates)
+    a, b = first - source_support, last - source_support
+    gap = .5 * a + .5 * b
+    reach = expand_size * ratio
+    if math.isfinite(gap) and math.isfinite(reach):
+        error = 8 * math.ulp(max(abs(a), abs(b), reach))
+        if abs(gap - reach) > error:
+            return gap < reach
+    # Roundoff can move either the midpoint or the product across the cutoff.
+    # Decide borderline (and overflowing) comparisons from the supplied floats.
+    exact_gap = (Fraction(first) + Fraction(last)) / 2 - Fraction(source_support)
+    return exact_gap <= Fraction(expand_size) * Fraction(ratio)
 
 
 def _expansion_distances(data):
     """Plan supports and pattern distances before any front can collapse."""
     chains, normals = data["chains"], data["normals"]
     tol, expand_h = data["tol"], data["expand_h"]
-    reach = expand_h * data["ratio"]
-    # The range controls the thickness of the entire side. Allow arithmetic
-    # roundoff at equality, independently of the physical contact tolerance.
-    roundoff = min(tol, data["numeric_tol"] + 8 * np.finfo(float).eps * reach)
     supports, distances, snapped = [], [], []
-    for chain, normal, tangent in zip(chains, normals, data["directions"]):
+    for edge, (chain, normal, tangent) in enumerate(zip(chains, normals, data["directions"])):
         support = float(np.max(chain @ normal))
         lo, hi = min(chain @ tangent), max(chain @ tangent)
         nearest, pattern_id = float("inf"), None
@@ -28,13 +43,16 @@ def _expansion_distances(data):
                                pattern.hi * tangent[pattern.axis]))
             if interval[1] < lo - tol or interval[0] > hi + tol:
                 continue
-            distance = float(pattern.support * normal[1 - pattern.axis]) - support
-            if tol < distance < nearest:
+            axis = 1 - pattern.axis
+            distance = float(pattern.support * normal[axis]) - support
+            if (tol < distance < nearest and _within_snap_reach(
+                    data["world_patterns"][j, :, axis], float(normal[axis]),
+                    data["world_source_supports"][edge], data["world_expand_h"], data["ratio"])):
                 nearest, pattern_id = distance, j
-        distance = nearest if np.isfinite(nearest) and nearest - reach <= roundoff else expand_h
+        distance = nearest if pattern_id is not None else expand_h
         supports.append(support + distance)
         distances.append(distance)
-        snapped.append(pattern_id if distance == nearest else None)
+        snapped.append(pattern_id)
     data.update(expansion=distances, snapped=snapped, supports=supports)
     return supports
 
@@ -93,6 +111,16 @@ def _normalize_outline_o(outline_o, data):
     turns = np.sum(directions * np.roll(directions, 1, axis=0), axis=1)
     if np.any(turns < 0):
         _fail("outline_o cannot reverse along an adjacent edge", **context)
+    corners = np.flatnonzero(turns == 0)
+    for first, last in zip(corners, np.roll(corners, -1)):
+        # A long oblique edge can pass a per-segment check after subdivision.
+        # Apply the same total transverse-span limit as a reusable source edge.
+        stop = last if last > first else last + len(points)
+        indices = np.arange(first, stop + 1) % len(points)
+        transverse = 1 - int(np.argmax(np.abs(directions[first])))
+        if np.ptp(points[indices, transverse]) > tol:
+            _fail("outline_o logical edges must be near a global X or Y axis",
+                  edge_index=int(first), **context)
     try:
         _simple_loop(points, tol, "outline_o")
     except QuadLayerError as error:
@@ -138,11 +166,6 @@ def _specified_front(data, target):
               "unsupported_new_outline", source_edge_count=len(data["chains"]),
               target_edge_count=len(corners), **context)
     shift = matches[0]
-    # Include the wraparound run when the input begins in the middle of an edge.
-    for first, last in zip(corners, np.roll(corners, -1)):
-        indices = np.arange(first, last if last > first else last + len(points)) % len(points)
-        if any(not on_segment(points[i], points[first], points[last], tol) for i in indices):
-            _fail("outline_o points must follow their logical straight edge", **context)
     front = np.roll(front, -shift, axis=0).copy()
     anchors = np.roll(points, -int(corners[shift]), axis=0).copy()
     anchor_ids = np.roll(ids, -int(corners[shift])).copy()

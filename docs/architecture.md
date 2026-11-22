@@ -101,7 +101,7 @@ node mappings join those interfaces without renumbering source data, and final
 topology/geometry validation precedes one caller commit. Errors are atomic
 across the complete operation. This orchestration remains NumPy-only and does
 not import Mesh25D or process-flow modules.
-Both adaptive APIs validate `max_transition_count=20`, `min_size_ratio=0.5`, and `max_size_ratio=1.25`
+Both adaptive APIs validate `max_transition_count=20`, `min_size_ratio=None`, and `max_size_ratio=None`
 through the shared `_line_policy` input contract before geometry preparation.
 The full API forwards them only to ordinary intermediate layers; the last
 fixed-interface layer remains exempt, including a one-layer full mesh. Result
@@ -161,13 +161,21 @@ or overlapping assignments. INNER reservations and repaired shared seams stay
 fixed. Pattern contacts must already be supplied target nodes.
 
 All three adapter entry points accept `small_element_size=None` (positive world
-length when enabled) and `dense_mapping_angle=30.0` (finite degrees in `[0, 90)`).
-`_planning/dense.py` finds maximal consecutive source-edge runs strictly below
-the size threshold within each corner/pattern-delimited LINE. Relative to the
+length when enabled), `small_element_group_count=0` (nonnegative integer),
+`dense_mapping_angle=30.0` (finite degrees in `[0, 90)`) and
+`dense_min_gap_ratio=0.5` (finite fraction in `[0, 1]`).
+`_planning/dense.py` finds maximal runs of consecutive source edges strictly
+shorter than the size threshold within each corner/pattern-delimited LINE.
+Only runs containing more than `small_element_group_count` edges qualify. Relative to the
 outward normal, begin endpoints select the first usable contact in `[-angle, 0]`
-and end endpoints in `[0, angle]`, ordered from zero outward. Endpoints map
-independently. Ordinary mode falls back to a valid normal projection; fixed mode
-skips an unmatched optional cut. Mandatory seams remain fixed. Shared geometry
+and end endpoints in `[0, angle]`, ordered from zero outward. Within each LINE,
+`_planning/dense_contacts.py` compares the proposed contacts for each ordinary
+gap before reserving either end. When the retained width falls below the requested
+fraction, both facing endpoints use a zero angle. A zero ratio disables this check.
+Ordinary mode reserves existing contacts and legal normal
+projections, then tries the full outward angle for each unmatched endpoint.
+A blocked expansion keeps its legal projection. Fixed mode skips an unmatched
+optional cut. Mandatory seams remain fixed. Shared geometry
 checks in `_planning/mapping.py` reject crossing or out-of-band connectors.
 Numerical geometric tolerance is retained; `dense_region_tolerance` is removed.
 Diagnostics include mapped/skipped dense endpoints and chosen corner contacts.
@@ -175,7 +183,7 @@ Diagnostics include mapped/skipped dense endpoints and chosen corner contacts.
 Fully dense LINE sections use the transition cap for resampling and retain
 `element_size` as a spacing preference. Their outer spacing may fall below or
 above the ratio band. Ordinary sections and sections mixing dense and
-non-dense source edges use both ratios. All share the
+non-dense source edges apply each specified ratio independently. All share the
 seam-parity solver, unit builders, and element-budget preflight. Diagnostics
 record their section/source/seam IDs, without new section kinds or fake pattern
 IDs. The full orchestrator exports dense seam contacts as global front anchors
@@ -185,7 +193,9 @@ a closer point. Chain positions survive repair-node renumbering between boundary
 builds. A fully dense resampled LINE uses two equal-height strips with a shared
 midline. The single-strip planner first coarsens the source onto that midline,
 then coarsens the resulting edges onto the mandatory final anchors. Each
-strip has its own transition cap. The builder tries another midline if the
+strip has its own transition cap. When a free endpoint widens, each strip
+uses normalized source positions to place retained nodes on its target
+interval and preserves all mandatory anchors. The builder tries another midline if the
 outer strip cannot fit, and records source-to-final assignments for diagnostics.
 The cyclic solver minimizes the number of
 outer parity splits before comparing alignment, spacing and quality. Fixed
@@ -296,9 +306,10 @@ element-budget parameter and makes no budget-feasibility promise.
 LINE construction pairs the ordered source and outer boundaries. It tries
 placing movable outer points at source projections, with a bounded density
 distribution available when required anchors or segment-count constraints
-prevent exact projection. Ordinary and mixed LINE outer spacing lies in
-`[min_size_ratio * element_size, max_size_ratio * element_size]`. Adjacent
-mandatory anchors closer than the minimum form one unsplit interval. Each outer
+prevent exact projection. In ordinary and mixed LINE sections, each supplied
+ratio times `element_size` sets the corresponding lower or upper spacing bound.
+With both ratios omitted, `element_size` guides sampling without a hard size bound.
+Adjacent mandatory anchors closer than a requested minimum form one unsplit interval. Each outer
 segment in a resampled strip accepts at most `max_transition_count` input edges from that strip.
 
 Projection is computed once per section and reused for its seam states.

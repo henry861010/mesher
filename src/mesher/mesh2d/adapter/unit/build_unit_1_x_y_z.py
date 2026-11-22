@@ -242,9 +242,11 @@ def _stage_inner_ring(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patc
 
 
 def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = None, tolerance=None,
-                 *, fixed_interior=None) -> _Patch:
+                 *, fixed_interior=None, validate_candidate=None) -> _Patch:
     def selected(patch: _Patch, method: str) -> _Patch:
         _physical_quads(*patch, tolerance)
+        if validate_candidate is not None:
+            validate_candidate(*patch)
         if diagnostics is not None:
             diagnostics["method"] = method
         return patch
@@ -284,6 +286,7 @@ def _build_unit_1_x_y_z(
     *,
     _diagnostics: dict | None = None,
     _fixed_interior=None,
+    _validate_candidate=None,
     tolerance=None,
 ) -> Mesh2D:
     """Append convex Quad4 cells inside four cyclic boundary chains.
@@ -323,7 +326,7 @@ def _build_unit_1_x_y_z(
 
     staged_diagnostics: dict = {}
     nodes, quads = _stage_patch(mesh.nodes, edges, staged_diagnostics, policy,
-                                fixed_interior=_fixed_interior)
+                                fixed_interior=_fixed_interior, validate_candidate=_validate_candidate)
     _checked_patch(nodes, quads, (edge1, edge2, edge3, edge4))
     mesh.replace_data(nodes=nodes, elements=np.vstack((mesh.elements, quads)))
     if _diagnostics is not None:

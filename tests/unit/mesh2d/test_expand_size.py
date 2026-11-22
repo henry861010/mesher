@@ -82,7 +82,7 @@ class ExpandSizeTests(unittest.TestCase):
                 self.assert_front_bounds(plan.front, [-expand_size] * 2,
                                          [4. + expand_size, 3. + expand_size])
                 result = generate_layer_adaptive_mesh(
-                    mesh, outline, element_size, expand_size=expand_size)
+                    mesh, outline, element_size, expand_size=expand_size, min_size_ratio=.5, max_size_ratio=1.25)
                 self.assert_layer(mesh, outline, result, old_nodes, old_elements)
                 np.testing.assert_allclose(result.diagnostics["edge_expansion"], expand_size)
                 self.assert_front_bounds(mesh.nodes[result.outline, :2],
@@ -92,9 +92,12 @@ class ExpandSizeTests(unittest.TestCase):
         self.assertGreater(counts[.25, .8], counts[.5, .8])
 
     def test_pattern_threshold_is_relative_to_expand_size(self):
+        # The represented (3 + .45) - 3 exceeds .3 * 1.5. Use binary-exact
+        # .3125 * 1.5 for equality at a non-unit expansion ratio.
         cases = ((.8, .6, 1., .6), (.8, .8, 1., .8), (.8, .9, 1., .8),
                  (.3, .4, 1., .3), (.3, .4, 1.5, .4),
-                 (.3, .45, 1.5, .45), (.3, .46, 1.5, .3))
+                 (.3, .45, 1.5, .3), (.3125, .46875, 1.5, .46875),
+                 (.3, .46, 1.5, .3))
         for expand_size, distance, ratio, expected in cases:
             with self.subTest(expand_size=expand_size, distance=distance, ratio=ratio):
                 mesh, outline = layer_checks._rectangle()
@@ -109,6 +112,27 @@ class ExpandSizeTests(unittest.TestCase):
                                            plan.edge_expansion)
                 self.assert_front_bounds(mesh.nodes[result.outline, :2],
                                          [-expand_size] * 2, [4. + expand_size, 3. + expected])
+
+    def test_pattern_reach_is_inclusive_and_independent_of_world_offset(self):
+        for fixture, size, repaired in ((layer_checks._rectangle, .5, False), (_step, 1., True)):
+            for offset in (0., 1e12):
+                for excess in (0., 2.**-12):
+                    with self.subTest(repaired=repaired, offset=offset, excess=excess):
+                        mesh, outline = fixture()
+                        mesh.nodes[:, :2] += offset
+                        top = mesh.nodes[:, 1].max()
+                        reach = 2 * size
+                        pattern_y = top + reach + excess
+                        self.assertEqual(pattern_y - top, reach + excess)
+                        pattern = [[[offset + 1.25, pattern_y], [offset + 2.25, pattern_y]]]
+                        kwargs = dict(pattern_lines=pattern, expand_ratio=2)
+                        plan = plan_quad_sections(mesh, outline, size, **kwargs)
+                        result = generate_layer_adaptive_mesh(mesh, outline, size, **kwargs)
+                        expected = reach if excess == 0. else size
+                        self.assertEqual(bool(plan.diagnostics["corner_repairs"]), repaired)
+                        self.assertEqual(plan.front[:, 1].max() - top, expected)
+                        self.assertEqual(mesh.nodes[result.outline, 1].max() - top, expected)
+                        self.assertEqual(0 in result.diagnostics["snapped_patterns"], excess == 0.)
 
     def test_repair_triggers_and_replanned_growth_follow_expand_size(self):
         for fixture, key, element_size, expand_size in (

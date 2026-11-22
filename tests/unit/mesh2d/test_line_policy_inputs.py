@@ -54,10 +54,10 @@ class LinePolicyInputTests(unittest.TestCase):
     def test_invalid_ratios_fail_before_preparation_including_fixed_only_full_mesh(self):
         for full in (False, True):
             for value in (0, -0.5, 1.01, np.nan, np.inf, -np.inf, True, np.bool_(False),
-                          None, "0.5", [0.5], np.array(0.5), 0.5 + 0j):
+                          "0.5", [0.5], np.array(0.5), 0.5 + 0j):
                 with self.subTest(full=full, value=repr(value)):
                     self.assert_invalid_atomic("min_size_ratio", value, full=full)
-            for value in (0.9, -1, np.nan, np.inf, True, None, "1.25", [1.25]):
+            for value in (0.9, -1, np.nan, np.inf, True, "1.25", [1.25]):
                 with self.subTest(full=full, maximum=repr(value)):
                     self.assert_invalid_atomic("max_size_ratio", value, full=full)
             error = self.assert_invalid_atomic("min_size_ratio", 10 ** 1000, full=full)
@@ -68,7 +68,7 @@ class LinePolicyInputTests(unittest.TestCase):
                              (10 ** 1000, np.nextafter(0.0, 1.0))):
             with self.subTest(count_type=type(count), ratio=ratio):
                 actual_count, actual_ratio, maximum = validate_line_parameters(count, ratio)
-                self.assertEqual(maximum, 1.25)
+                self.assertIsNone(maximum)
                 self.assertEqual(actual_count, count)
                 self.assertEqual(actual_ratio, ratio)
                 self.assertIs(type(actual_count), int)
@@ -97,8 +97,8 @@ class LinePolicyInputTests(unittest.TestCase):
         np.testing.assert_array_equal(mesh.elements, before_elements)
         result = generate_layer_adaptive_mesh(mesh, outline, 0.5)
         self.assertEqual(result.diagnostics["max_transition_count"], 20)
-        self.assertEqual(result.diagnostics["min_size_ratio"], 0.5)
-        self.assertEqual(result.diagnostics["max_size_ratio"], 1.25)
+        self.assertIsNone(result.diagnostics["min_size_ratio"])
+        self.assertIsNone(result.diagnostics["max_size_ratio"])
 
     def test_full_forwards_only_to_intermediate_layers(self):
         mesh, _ = self.fixture()

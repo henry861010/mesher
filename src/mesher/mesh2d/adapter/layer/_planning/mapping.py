@@ -12,6 +12,22 @@ def same_point(a, b, tol):
     return bool(np.linalg.norm(np.asarray(a) - b) <= tol)
 
 
+def corner_distances(points, source, data):
+    """Rank corner contacts using only axes that distinguish candidates."""
+    points = np.asarray(points)
+    axes = np.any(points != points[0], axis=0)
+    coordinates = points[:, axes]
+    source = source[axes]
+    distances = np.linalg.norm(coordinates - source, axis=1)
+    # A constant normal coordinate adds the same squared distance to every
+    # candidate. Its world offset must not turn distinct tangential gaps into
+    # ties. Keep roundoff from the varying coordinates for transformed ties.
+    local_extent = max(np.abs(coordinates).max(initial=0.), np.abs(source).max(initial=0.))
+    origin_ulp = np.abs(np.spacing(data["origin"][axes])).max(initial=0.)
+    roundoff = 4 * origin_ulp / data["scale"] + 8 * np.finfo(float).eps * local_extent
+    return distances, min(data["tol"], roundoff)
+
+
 def compatible_interfaces(first, second, tol):
     """Interfaces may share endpoints, but cannot cross or overlap."""
     for point in segment_contacts(*first, *second, tol):

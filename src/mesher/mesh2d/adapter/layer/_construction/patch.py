@@ -1,6 +1,8 @@
 """Shared four-sided direct Quad4 patch assembly."""
 from __future__ import annotations
 
+from functools import partial
+
 import numpy as np
 
 from ...unit.build_unit_1_1_x_y import _validate_patch
@@ -20,18 +22,20 @@ def _check_units(units, sides, tol):
     _validate_patch(nodes, quads, ids)
 
 
-def _four_sided_units(sides, tol, max_added_elements=None, *, _cache=None) -> list[UnitPlan]:
+def _four_sided_units(sides, tol, max_added_elements=None, *, _cache=None,
+                      validate_unit=None) -> list[UnitPlan]:
     """Try the natural corner patch, then two-unit cuts on opposite chains.
 
     Cuts retain each original boundary segment. Their parity midpoint is one
     shared connector, and each child has a one-segment side for a unit builder.
     No triangular cells or global ring fallback are constructed here.
     """
+    build = partial(build_unit_patch, tol=tol, _cache=_cache, validate_unit=validate_unit)
     candidates = []
     limit_errors = []
     if any(len(side) == 2 for side in sides):
         try:
-            unit = build_unit_patch(sides, tol, _cache=_cache)
+            unit = build(sides)
             check_element_limit(len(unit.quads), max_added_elements, stage="section_builder")
             candidates.append([unit])
         except ElementLimitExceeded as error:
@@ -56,10 +60,10 @@ def _four_sided_units(sides, tol, max_added_elements=None, *, _cache=None) -> li
             first = (bottom[i:], right, top[:j + 1], connector[::-1])
             second = (bottom[:i + 1], connector, top[j:], left)
             try:
-                units = [build_unit_patch(first, tol, _cache=_cache)]
+                units = [build(first)]
                 check_element_limit(len(units[0].quads), max_added_elements,
                                     stage="section_builder")
-                second_unit = build_unit_patch(second, tol, _cache=_cache)
+                second_unit = build(second)
                 check_element_limit(len(units[0].quads) + len(second_unit.quads),
                                     max_added_elements, stage="section_builder")
                 units.append(second_unit)

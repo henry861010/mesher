@@ -11,7 +11,7 @@ import numpy as np
 from .._limits import bounded_outer_counts
 from .._types import QuadLayerError
 from .sampling import LineSampling
-from .strip import alignment_metrics, fixed_cut_plans
+from .strip import _edge_assignment, alignment_metrics, fixed_cut_plans
 
 
 _EPS = 32 * np.finfo(float).eps
@@ -28,6 +28,9 @@ class _ProjectedLine:
         self.x = sampling.source_positions.copy()
         self.n = len(self.x) - 1
         self.h, self.tol, self.cap = sampling.h, sampling.tol, sampling.max_transition_count
+        # A gap subtracts two stations before division by h. Express its
+        # arithmetic uncertainty in the same units as the RMS spacing error.
+        self.spacing_roundoff = _EPS * max(1., self.contacts[-1] / self.h)
         self.size_band_active = sampling.size_band_active
         self.low, self.high = sampling.h_min, sampling.h_max
         self.x[0], self.x[-1] = self.contacts[[0, -1]]
@@ -47,6 +50,12 @@ class _ProjectedLine:
         self.usable[[0, -1]] = True
         self.ordered = self.x.copy()
         self.ordered[0], self.ordered[-1] = -np.inf, np.inf
+
+    def _best_spacing(self, options):
+        """Break a roundoff tie using the supplied count and traversal order."""
+        best = min(score for score, _, _ in options)
+        tied = (option for option in options if option[0] <= best + self.spacing_roundoff)
+        return min(tied, key=lambda option: option[1])[2]
 
     def sweep(self, left, right, *, reverse):
         """Advance whole units, considering a bounded neighborhood per cut."""
@@ -71,10 +80,11 @@ class _ProjectedLine:
                 if choice is not None:
                     cost, counts = choice
                     b = sum(counts)
-                    options.append((cost / b, min(j - i, b), end, (i, j, counts)))
+                    options.append((sqrt(cost / b), (min(j - i, b), end), (i, j, counts)))
             if not options:
                 return []
-            _, _, start, unit = min(options)
+            unit = self._best_spacing(options)
+            start = self.n - unit[0] if reverse else unit[1]
             result.append(unit)
         return result[::-1] if reverse else result
 
@@ -210,13 +220,13 @@ class _ProjectedLine:
                 index = bisect_left(self.x, station, lo, hi)
                 upper = min(hi, index + (lo - index) % 2)
                 lower = max(lo, upper - 2)
-                j = lower if station - self.x[lower] <= self.x[upper] - station else upper
+                j = lower if station - self.x[lower] <= self.x[upper] - station + margin else upper
                 result.append((i, j, [1]))
                 i = j
             return result
         return None
 
-    def projected_units(self, left, right):
+    def projected_units(self, left, right, *, preserve_target_row):
         """Find a fully perpendicular layout over a bounded set of source spans."""
         n = self.n
         # A single row whose existing lengths are already close to h needs
@@ -225,13 +235,13 @@ class _ProjectedLine:
         simple = self.simple_coarsening(gaps, left, right)
         if simple:
             return simple
-        # An ordinary coarsening unit takes at least two source edges per
-        # outer edge. When even the neighboring pair exceeds the maximum,
-        # only its endpoint caps need individual decisions.
+        # Keep a row already at the target size, or one whose neighboring
+        # edges cannot coarsen within the maximum. Only the ends need planning.
         margin = _EPS * self.contacts[-1]
         if (n >= 5 and len(self.contacts) == 2
                 and np.all(gaps >= self.low - margin) and np.all(gaps <= self.high + margin)
-                and np.all(gaps[:-1] + gaps[1:] > self.high + margin)):
+                and ((preserve_target_row and np.all(np.abs(gaps - self.h) <= margin))
+                     or np.all(gaps[:-1] + gaps[1:] > self.high + margin))):
             ends = []
             for at_left, edge in ((True, left), (False, right)):
                 options = []
@@ -266,8 +276,8 @@ class _ProjectedLine:
                 for start, end, b in zip(bounds, bounds[1:], counts):
                     errors.append(b * ((end - start) / (b * self.h) - 1) ** 2)
                     count += b
-            plans.append(((fsum(errors) / count, count), units))
-        return min(plans, key=lambda option: option[0])[1] if plans else []
+            plans.append((sqrt(fsum(errors) / count), count, units))
+        return self._best_spacing(plans) if plans else []
 
     def materialize(self, units):
         count = sum(sum(counts) for _, _, counts in units)
@@ -327,13 +337,42 @@ def _fit_cuts(profile, sampled, cuts):
     return points
 
 
+def proportional_front(sampling, front, cuts):
+    """Place each retained source station, including those inside multi-edge units."""
+    source = sampling.source_positions
+    positions = (front[:, :2] - front[0, :2]) @ sampling.tangent
+    desired = np.full(len(front), np.nan)
+    for (i, j), (ni, nj) in zip(cuts, cuts[1:]):
+        inner, outer = source[i:ni + 1], positions[j:nj + 1]
+        if len(inner) >= len(outer):
+            loads = _edge_assignment(inner, outer, sampling.max_transition_count)
+            desired[j:nj + 1] = inner[np.cumsum([0, *loads])]
+        else:
+            loads = _edge_assignment(outer, inner, None)
+            desired[j + np.cumsum([0, *loads])] = inner
+
+    anchors = np.searchsorted(positions, sampling.anchor_positions)
+    desired[anchors] = sampling.anchor_positions
+    paired = np.flatnonzero(np.isfinite(desired))
+    if np.any(np.diff(desired[paired]) <= sampling.tol):
+        return None
+    # Extra subdivisions retain their relative positions between paired nodes
+    # and mandatory anchors. Restore exact anchor coordinates after interpolation.
+    fitted = np.interp(positions, positions[paired], desired[paired])
+    if np.any(np.diff(fitted) <= sampling.tol):
+        return None
+    points = front[0] + fitted[:, None] * np.r_[sampling.tangent, 0.]
+    points[anchors] = sampling.anchors
+    return points
+
+
 def plan_resampled(source, anchors, left, right, h, tol, cap, min_ratio, max_ratio,
-                   *, cache=None, max_added_elements=None, size_band_active=True):
+                   *, cache=None, max_added_elements=None, size_band_active=True, proportional_cuts=False):
     """Yield (outer XYZ, ordered cut pairs) without constructing any elements."""
     cache = {} if cache is None else cache
     if "sampling" not in cache:
         cache["sampling"] = LineSampling(source, anchors, h, tol, cap, min_ratio, max_ratio,
-                                         size_band_active=size_band_active)
+                                         size_band_active=size_band_active, proportional_cuts=proportional_cuts)
     sampling = cache["sampling"]
     count_args = (len(source) - 1, len(left), len(right), max_added_elements)
     demand_counts = sampling.counts(len(left), len(right))
@@ -348,7 +387,8 @@ def plan_resampled(source, anchors, left, right, h, tol, cap, min_ratio, max_rat
     if "projected_line" not in cache:
         cache["projected_line"] = _ProjectedLine(sampling)
     profile = cache["projected_line"]
-    units = profile.projected_units(len(left) - 1, len(right) - 1)
+    units = profile.projected_units(len(left) - 1, len(right) - 1,
+                                    preserve_target_row=size_band_active and max_ratio is None)
     tried = []
 
     def usable(points, cuts):
@@ -379,14 +419,24 @@ def plan_resampled(source, anchors, left, right, h, tol, cap, min_ratio, max_rat
     # projections. It supplies feasible interval counts; coordinates remain
     # adjustable around the actual paired source indices.
     alternatives = []
+    sampling_error = None
     for count in retained:
-        sampled, _ = sampling.sample(count)
-        for cuts in fixed_cut_plans(source, sampled, left, right, tol, cap):
+        try:
+            sampled, _ = sampling.sample(count)
+        except QuadLayerError as error:
+            if error.code != "line_constraints_infeasible":
+                raise
+            # One parity-compatible count can put two sampled points within
+            # tolerance even when the neighboring count is representable.
+            sampling_error = error
+            continue
+        for cuts in fixed_cut_plans(source, sampled, left, right, tol, cap,
+                                    cut_stations=sampling.source_positions if proportional_cuts else None):
             points = _fit_cuts(profile, sampled, cuts)
             if not usable(points, cuts):
                 # Slanted end seams can project several source cuts onto one
                 # mandatory contact. The original density sample stays ordered.
-                if size_band_active or not usable(sampled, cuts):
+                if sampling.size_band_active or not usable(sampled, cuts):
                     continue
                 points = sampled
             mean, peak = alignment_metrics(source, points, cuts[1:-1], tol)
@@ -397,3 +447,5 @@ def plan_resampled(source, anchors, left, right, h, tol, cap, min_ratio, max_rat
         yield points, cuts
     if not tried and limit_error is not None:
         raise limit_error
+    if not tried and sampling_error is not None:
+        raise sampling_error

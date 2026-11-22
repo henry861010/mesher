@@ -26,7 +26,8 @@ class LineSamplingTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "line_constraints_infeasible")
 
     def test_dense_region_has_the_planned_six_segment_distribution(self):
-        sampler = LineSampling(*_dense_fixture(), 500, 1e-9, max_size_ratio=1., max_transition_count=10)
+        sampler = LineSampling(*_dense_fixture(), 500, 1e-9, min_size_ratio=.5, max_size_ratio=1.,
+                               max_transition_count=10)
         self.assertAlmostEqual(sampler.demand, 6)
         self.assertEqual(sampler.counts(2, 2), [6])
         points, error = sampler.sample(6)
@@ -99,7 +100,8 @@ class LineSamplingTests(unittest.TestCase):
 
     def test_short_anchor_interval_is_preserved_once_and_recorded(self):
         anchors = _xyz([0, 0.2, 2.2], 1)
-        sampler = LineSampling(_xyz([0, 1.1, 2.2]), anchors, 1, 1e-10, max_size_ratio=1., max_transition_count=10)
+        sampler = LineSampling(_xyz([0, 1.1, 2.2]), anchors, 1, 1e-10, min_size_ratio=.5,
+                               max_size_ratio=1., max_transition_count=10)
         points, _ = sampler.sample(4)
         np.testing.assert_array_equal(points[:2], anchors[:2])
         self.assertEqual(sampler.diagnostics["forced_short_intervals"], [
@@ -112,7 +114,8 @@ class LineSamplingTests(unittest.TestCase):
     def test_anchor_allocation_prioritizes_density_and_retains_exact_points(self):
         source, _ = _dense_fixture()
         anchors = _xyz([0, 1000, 1100, 2100], 500)
-        sampler = LineSampling(source, anchors, 500, 1e-9, max_size_ratio=1., max_transition_count=10)
+        sampler = LineSampling(source, anchors, 500, 1e-9, min_size_ratio=.5, max_size_ratio=1.,
+                               max_transition_count=10)
         points, _ = sampler.sample(7)
         for anchor in anchors:
             self.assertEqual(np.count_nonzero(np.all(points == anchor, axis=1)), 1)
@@ -156,7 +159,8 @@ class LineSamplingTests(unittest.TestCase):
         self.assertFalse(result[0].flags.writeable)
 
     def test_validation_rejects_moved_anchors_and_out_of_band_gaps(self):
-        sampler = LineSampling(_xyz([0, 1, 2]), _xyz([0, 1, 2], 1), 1, 1e-10, max_size_ratio=1., max_transition_count=10)
+        sampler = LineSampling(_xyz([0, 1, 2]), _xyz([0, 1, 2], 1), 1, 1e-10,
+                               min_size_ratio=.5, max_size_ratio=1., max_transition_count=10)
         points = sampler.sample(4)[0].copy()
         points[2, 0] += 1e-12
         self.assert_infeasible(lambda: sampler.validate_sample(points))

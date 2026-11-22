@@ -75,7 +75,7 @@ def quality_score(nodes: np.ndarray, quads: np.ndarray) -> float:
 
 
 def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
-                     _cache: dict | None = None) -> UnitPlan:
+                     _cache: dict | None = None, validate_unit=None) -> UnitPlan:
     """Build four coordinate chains without changing any caller-owned arrays.
 
     The supplied sides are cyclic; either winding is accepted. Boundary IDs
@@ -101,16 +101,22 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
     effective_tol = tol / scale
     policy = _physical_boundary(boundary, np.arange(len(boundary)), tol)
 
-    def restored(raw_nodes, raw_quads, details):
-        method, fixed_interior = details
+    def restore_nodes(raw_nodes):
         nodes = np.column_stack((origin + scale * raw_nodes[:, :2],
                                  np.zeros(len(raw_nodes))))
         # Every fixed coordinate survives normalization exactly, on either path.
         nodes[:len(boundary)] = boundary
+        return nodes
+
+    def restored(raw_nodes, raw_quads, details):
+        method, fixed_interior = details
+        nodes = restore_nodes(raw_nodes)
         quads = np.asarray(raw_quads, dtype=np.int64).copy()
         if not np.all(np.isfinite(nodes)):
             raise ValueError("restored unit coordinates must be finite")
         _physical_quads(nodes, quads, policy)
+        if validate_unit is not None:
+            validate_unit(nodes, quads)
         return UnitPlan(nodes, quads, ids, method, quality_score(nodes, quads),
                         {"boundary_counts": tuple(map(len, ids))}, fixed_interior)
 
@@ -148,8 +154,10 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
         break
     else:
         midpoints = []
+        check = (None if validate_unit is None else
+                 lambda points, cells: validate_unit(restore_nodes(points), cells))
         build_unit_1_x_y_z(mesh, *ids, tolerance=effective_tol, _diagnostics=diagnostics,
-                           _fixed_interior=midpoints)
+                           _fixed_interior=midpoints, _validate_candidate=check)
         details = (diagnostics["method"], tuple(midpoints))
         result = restored(mesh.nodes, mesh.elements, details)
     if _cache is not None:

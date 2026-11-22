@@ -7,6 +7,7 @@ import numpy as np
 
 from mesher import Mesh2D
 from mesher.mesh2d.adapter import QuadLayerError, generate_layer_adaptive_mesh, plan_quad_sections
+from tests.unit.mesh2d.test_slot_repair import _blocks
 
 
 def _rectangle():
@@ -107,6 +108,54 @@ class QuadLayerPatternRegressionTests(unittest.TestCase):
         generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=patterns)
         self.assert_frozen_prefix(mesh, snapshot)
         self.assert_axis_covered(mesh, [-.5, 3.], [4.5, 3.])
+
+    def test_source_contact_at_represented_world_tolerance(self):
+        for top, kwargs in ((1., {"tolerance": 1.001 - 1.}), (2., {})):
+            with self.subTest(top=top):
+                mesh = Mesh2D([[0, 0], [7, 0], [7, top], [0, top]], [[0, 1, 2, 3]])
+                snapshot = self._snapshot(mesh)
+                guide = np.array([[[1.75, top + .001], [5.25, top + .001]]])
+                original_guide = guide.copy()
+                plan = plan_quad_sections(mesh, [0, 3, 2, 1], .5, pattern_lines=guide, **kwargs)
+                self.assert_unchanged(mesh, snapshot)
+                np.testing.assert_array_equal(plan.edge_expansion, [.5] * 4)
+                result = generate_layer_adaptive_mesh(mesh, [0, 3, 2, 1], .5, pattern_lines=guide, **kwargs)
+                self.assert_frozen_prefix(mesh, snapshot)
+                self.assertEqual(mesh.nodes[result.outline, 1].max(), top + .5)
+                self.assertEqual(result.diagnostics["snapped_patterns"], [None] * 4)
+                np.testing.assert_array_equal(guide, original_guide)
+
+    def test_outside_contact_tolerance_still_requests_a_separate_front(self):
+        mesh = Mesh2D([[0, 0], [2.125, 0], [2.125, .5], [0, .5]], [[0, 1, 2, 3]])
+        gap = .501 - .5
+        self.assertGreater(gap, .001)
+        guide = [[[.5, .501], [1.5, .501]]]
+        plan = plan_quad_sections(mesh, [0, 3, 2, 1], .5, pattern_lines=guide)
+        self.assertEqual(plan.edge_expansion[1], gap)
+        snapshot = self._snapshot(mesh)
+        try:
+            result = generate_layer_adaptive_mesh(mesh, [0, 3, 2, 1], .5, pattern_lines=guide)
+        except QuadLayerError as error:
+            self.assertEqual(error.code, "unmeshable_section_layout")
+            self.assertEqual(error.context["source_edge"], 1)
+            self.assert_unchanged(mesh, snapshot)
+        else:
+            self.assertEqual(result.diagnostics["snapped_patterns"][1], 0)
+            self.assertEqual(mesh.nodes[result.outline, 1].max(), .501)
+
+    def test_same_guide_still_controls_another_source_wall(self):
+        mesh, outline = _blocks([(np.arange(0, 3.5, .5), [0, .5, 1]),
+                                 (np.arange(3., 7.5, .5), [0, .5, 1, 1.5, 2])])
+        guide = [[[.5, 2.001], [6.5, 2.001]]]
+        result = generate_layer_adaptive_mesh(mesh, outline, .5, pattern_lines=guide,
+                                              expand_ratio=3, repair_slots=False)
+        self.assertEqual(result.diagnostics["snapped_patterns"], [None, 0, None, None, None, None])
+        self.assertEqual(result.diagnostics["edge_expansion"][1], 2.001 - 1.)
+
+    def test_incompatible_contact_frames_fail_atomically(self):
+        mesh = Mesh2D([[0, 0], [7, 0], [7, 2], [0, 2]], [[0, 1, 2, 3]])
+        guides = [[[2, 2.001], [5, 2.001]], [[2, -.001], [5, -.001]]]
+        self.assert_atomic_error(mesh, [0, 3, 2, 1], guides, code="numeric_resolution_exceeded")
 
     def test_long_vertical_shared_edges_form_complete_chords(self):
         for extent in (1000., 1e6, 2e6):

@@ -14,7 +14,7 @@ from ._fixed_boundary import (fixed_boundary_nodes, prepare_fixed_boundary,
                               restore_fixed_boundary)
 from ._geometry import area
 from ._limits import check_element_limit
-from ._line_policy import (DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT,
+from ._line_policy import (DEFAULT_DENSE_MIN_GAP_RATIO, DEFAULT_MAX_TRANSITION_COUNT,
                            validate_dense_parameters, validate_line_parameters)
 from ._planning.front import (_expansion_distances, _front, _normalize_outline_o,
                               _specified_front)
@@ -62,8 +62,9 @@ def _world_repair_diagnostics(value, data, key=None):
 def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, tolerance,
                   *, expand_size=None, repair_slots=True, max_added_elements=None,
                   repair_max_element_size=None, outline_o=None, fixed_outer_boundary=False,
-                  small_element_size=None, dense_mapping_angle=30.0,
-                  _dense_seam_targets=None):
+                  small_element_size=None, small_element_group_count=0, dense_mapping_angle=30.0,
+                  dense_min_gap_ratio=DEFAULT_DENSE_MIN_GAP_RATIO, _dense_seam_targets=None,
+                  _dense_gap_limited=()):
     try:
         tolerance = resolve_tolerance(tolerance)
     except (TypeError, ValueError, OverflowError) as error:
@@ -75,8 +76,9 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, to
     if fixed_outer_boundary and outline_o is None:
         _fail("fixed_outer_boundary requires outline_o", stage="input_validation",
               parameter="outline_o")
-    small_element_size, dense_mapping_angle = validate_dense_parameters(
-        small_element_size, dense_mapping_angle)
+    small_element_size, small_element_group_count, dense_mapping_angle, dense_min_gap_ratio = (
+        validate_dense_parameters(small_element_size, small_element_group_count,
+                                  dense_mapping_angle, dense_min_gap_ratio))
     if not isinstance(repair_slots, (bool, np.bool_)):
         _fail("repair_slots must be a boolean", stage="input_validation", parameter="repair_slots")
     if repair_max_element_size is not None:
@@ -149,8 +151,10 @@ def _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio, to
     data["_repair_diagnostics"] = repair_diagnostics
     data.update(fixed_outer_boundary=bool(fixed_outer_boundary),
                 small_element_size=small_element_size,
-                dense_mapping_angle=dense_mapping_angle)
+                small_element_group_count=small_element_group_count,
+                dense_mapping_angle=dense_mapping_angle, dense_min_gap_ratio=dense_min_gap_ratio)
     if _dense_seam_targets is not None:
+        data["_dense_gap_limited"] = _dense_gap_limited
         data["_dense_seam_targets"] = {
             key: (np.asarray(point) - data["origin"]) / data["scale"]
             for key, point in _dense_seam_targets.items()}
@@ -188,7 +192,9 @@ def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, 
                        repair_slots: bool = True,
                        repair_max_element_size: float | None = None,
                        small_element_size: float | None = None,
-                       dense_mapping_angle: float = 30.0) -> QuadSectionPlan:
+                       small_element_group_count: int = 0,
+                       dense_mapping_angle: float = 30.0,
+                       dense_min_gap_ratio: float = DEFAULT_DENSE_MIN_GAP_RATIO) -> QuadSectionPlan:
     """Inspect repaired source and section geometry without modifying input.
 
     All returned coordinates and expansion distances use the caller's frame.
@@ -215,16 +221,20 @@ def plan_quad_sections(mesh: Mesh2D, outline_i: ArrayLike, element_size: float, 
     ``fixed_outer_boundary=True`` requires ``outline_o`` and previews the same
     existing-node corner/dense mapping as construction, including fixed-boundary
     parity and contact validation. It does not guarantee a feasible unit mesh.
-    ``small_element_size`` is a world length; None disables dense partitioning.
+    ``small_element_size`` is a world length. None disables dense partitioning.
+    A run must have more than ``small_element_group_count`` consecutive short edges (default 0).
     ``dense_mapping_angle`` is in degrees, default 30, and must be in [0, 90).
-    Each optional endpoint maps independently, as in the construction API.
+    Facing endpoints of neighboring runs use normal projections when their proposed
+    contacts would retain less than ``dense_min_gap_ratio`` of the intervening width.
+    This fraction is in [0, 1], defaults to 0.5, and is disabled at 0.
     """
     data, plan = _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio,
                               tolerance, expand_size=expand_size, repair_slots=repair_slots,
                               repair_max_element_size=repair_max_element_size,
                               outline_o=outline_o, fixed_outer_boundary=fixed_outer_boundary,
                               small_element_size=small_element_size,
-                              dense_mapping_angle=dense_mapping_angle)
+                              small_element_group_count=small_element_group_count,
+                              dense_mapping_angle=dense_mapping_angle, dense_min_gap_ratio=dense_min_gap_ratio)
 
     def world(points):
         result = points * data["scale"] + data["origin"]
@@ -247,12 +257,14 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
                       tolerance: GeometryTolerance | float | None = None,
                       max_added_elements: int = 1_000_000,
                       max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
-                      min_size_ratio: float = 0.5,
-                      max_size_ratio: float = DEFAULT_MAX_SIZE_RATIO,
+                      min_size_ratio: float | None = None,
+                      max_size_ratio: float | None = None,
                       repair_slots: bool = True,
                       repair_max_element_size: float | None = None,
                       small_element_size: float | None = None,
-                      dense_mapping_angle: float = 30.0) -> QuadLayerResult:
+                      small_element_group_count: int = 0,
+                      dense_mapping_angle: float = 30.0,
+                      dense_min_gap_ratio: float = DEFAULT_DENSE_MIN_GAP_RATIO) -> QuadLayerResult:
     """Append one conforming Quad4 layer, committing only after validation.
 
     ``outline_i`` is a one-dimensional integer node-ID loop containing every
@@ -338,11 +350,12 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
 
     ``max_transition_count`` is a positive Python or NumPy integer, default 20.
     Each output segment in a resampled strip may receive at most this many
-    input segments. Reverse refinement is unrestricted. ``min_size_ratio`` is finite
-    and in (0, 1], default 0.5. ``max_size_ratio`` is finite and at least 1,
-    default 1.25. In ordinary and mixed LINE sections, outer spacing lies
-    between the two ratios times ``element_size``, within numerical roundoff.
-    Adjacent mandatory anchors closer than that minimum form a recorded short
+    input segments. Reverse refinement is unrestricted. In ordinary and mixed
+    LINE sections, ``element_size`` is the target outer spacing. Each size ratio
+    defaults to None, leaving its corresponding bound open. A finite
+    ``min_size_ratio`` in (0, 1] sets the minimum spacing and a finite
+    ``max_size_ratio`` of at least 1 sets the maximum, as multiples of the target.
+    Adjacent mandatory anchors closer than the requested minimum form a recorded short
     interval. A neighboring dense seam can require one parity correction on
     the free front: the longest sampled gap is bisected and both new gaps are
     checked with their local spacing exception. Fully dense resampled LINEs
@@ -365,14 +378,23 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
 
     ``small_element_size=None`` disables dense-run partitioning. A finite positive
     value splits each LINE at the ends of maximal runs of source edges strictly
-    shorter than this world length. ``dense_mapping_angle`` is finite and in
+    shorter than this world length when the run has more than
+    ``small_element_group_count`` edges. This nonnegative integer defaults to 0,
+    so a single short edge qualifies by default. ``dense_mapping_angle`` is finite and in
     [0, 90) degrees, default 30. From the outward normal, each begin endpoint
     searches toward the preceding source direction in [-angle, 0]; each end
     searches forward in [0, angle]. Only the first geometrically usable outer
     contact, ordered by increasing absolute angle, is selected. Contacts stay
-    inside their corner/pattern-delimited LINE. Each endpoint is independent:
-    if none exists, ordinary mode creates a normal projection when valid;
-    fixed mode skips only that optional cut. Mandatory seams remain unchanged.
+    inside their corner/pattern-delimited LINE. Each unmatched resampleable
+    endpoint widens by its normal distance to the front times tan(angle).
+    Neighboring runs use normal contacts on their facing ends if the proposed
+    outer gap is below ``dense_min_gap_ratio`` times the source gap. This fraction
+    is in [0, 1], defaults to 0.5, and is disabled at 0. A fixed front skips a
+    protected endpoint when it lacks a usable node on the normal.
+    A blocked expansion keeps its legal normal projection. When either end
+    widens, retained source nodes keep their fractional positions on the
+    midline and final front, subject to mandatory anchors. Fixed mode skips
+    unmatched optional cuts.
     The removed ``dense_region_tolerance`` keyword has no compatibility alias.
     """
     return _generate_layer_adaptive_mesh(
@@ -383,7 +405,8 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
         repair_max_element_size=repair_max_element_size,
         max_transition_count=max_transition_count, min_size_ratio=min_size_ratio,
         max_size_ratio=max_size_ratio,
-        small_element_size=small_element_size, dense_mapping_angle=dense_mapping_angle)
+        small_element_size=small_element_size, small_element_group_count=small_element_group_count,
+        dense_mapping_angle=dense_mapping_angle, dense_min_gap_ratio=dense_min_gap_ratio)
 
 
 @geometric_errors
@@ -394,14 +417,16 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                                  tolerance: GeometryTolerance | float | None = None,
                                  max_added_elements: int = 1_000_000,
                                  max_transition_count: int = DEFAULT_MAX_TRANSITION_COUNT,
-                                 min_size_ratio: float = 0.5,
-                                 max_size_ratio: float = DEFAULT_MAX_SIZE_RATIO,
+                                 min_size_ratio: float | None = None,
+                                 max_size_ratio: float | None = None,
                                  repair_slots: bool = True,
                                  repair_max_element_size: float | None = None,
                                  fixed_outer_boundary: bool = False,
                                  small_element_size: float | None = None,
+                                 small_element_group_count: int = 0,
                                  dense_mapping_angle: float = 30.0,
-                                 _dense_seam_targets=None) -> QuadLayerResult:
+                                 dense_min_gap_ratio: float = DEFAULT_DENSE_MIN_GAP_RATIO,
+                                 _dense_seam_targets=None, _dense_gap_limited=()) -> QuadLayerResult:
     """Shared transaction for public layers and full-mesh final interfaces.
 
     Fixed targets include every section's front contact and are never sampled
@@ -436,8 +461,10 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                               repair_max_element_size=repair_max_element_size,
                               outline_o=outline_o, fixed_outer_boundary=fixed_outer_boundary,
                               small_element_size=small_element_size,
+                              small_element_group_count=small_element_group_count,
                               dense_mapping_angle=dense_mapping_angle,
-                              _dense_seam_targets=_dense_seam_targets)
+                              dense_min_gap_ratio=dense_min_gap_ratio,
+                              _dense_seam_targets=_dense_seam_targets, _dense_gap_limited=_dense_gap_limited)
     data["max_transition_count"] = max_transition_count
     data["min_size_ratio"] = min_size_ratio
     data["max_size_ratio"] = max_size_ratio
@@ -505,7 +532,7 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                    "added_nodes": len(nodes) - len(mesh.nodes), "added_elements": len(all_quads),
                    "expand_added_nodes": len(nodes) - len(working.nodes),
                    "expand_added_elements": len(quads),
-                   "quality": _quality_summary(nodes, all_quads),
+                   "quality": _quality_summary(world_nodes, all_quads),
                    "max_added_elements": max_added_elements,
                    "max_transition_count": max_transition_count,
                    "min_size_ratio": min_size_ratio,

@@ -240,9 +240,10 @@ def merge_by_adapter(cow_mesh: Mesh2D, non_cow_mesh: Mesh2D) -> Mesh2D:
         outline_i=cow_boundary,
         element_size=0.8 * GLOBAL_ELEMENT_SIZE,
         expand_size=0.4 * GLOBAL_ELEMENT_SIZE,
-        small_element_size=30,
+        small_element_size=50,
+        small_element_group_count=0,
         max_transition_count=10,
-        dense_mapping_angle=30,
+        dense_mapping_angle=5,
         min_size_ratio=0.5,
         max_size_ratio=1.5
     )
@@ -260,8 +261,18 @@ def merge_by_adapter(cow_mesh: Mesh2D, non_cow_mesh: Mesh2D) -> Mesh2D:
 
 if __name__ == "__main__":
     from mesher.mesh2d.visualization import view_mesh
+    j_criteria = 0.4
+    
+    editor = EditorMesh2D()
 
     cow_mesh = get_cow_mesh()
     # view_mesh(cow_mesh)
     non_cow_mesh = get_no_cow_mesh()
-    view_mesh(merge_by_adapter(cow_mesh, non_cow_mesh))
+    mesh = merge_by_adapter(cow_mesh, non_cow_mesh)
+    
+    jacobian_ratios = editor.jacobian_ratios(mesh, sampling="gauss")
+    element_indices = np.where(jacobian_ratios < j_criteria)[0]
+    print(f"MIN Jacobian ratio: {np.min(jacobian_ratios)}. {len(element_indices)}element are smaller than {j_criteria}")
+    
+    view_mesh(mesh, element_indices=element_indices)
+    

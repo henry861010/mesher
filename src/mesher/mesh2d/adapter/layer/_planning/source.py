@@ -1,11 +1,13 @@
 """Validate source mesh and patterns, then normalize their coordinate frame."""
 from __future__ import annotations
 
+from itertools import chain
+
 import numpy as np
-from .....tolerance import GeometryToleranceError, resolve_tolerance
+from .....tolerance import GeometryToleranceError, resolve_tolerance, within_distance
 
 from ....model import Mesh2D, _validate_zero_z
-from .._geometry import BoxIndex, area, cross, intervals_cover, segment_contacts
+from .._geometry import BoxIndex, area, cross, intervals_cover, scaled_cell_edges, segment_contacts
 from .._old_mesh import old_edge_keys
 from .._patterns import (PATTERN_RANGE_LIMIT, AxisPattern, covered_intervals,
                          occupied_intervals, pattern_contacts)
@@ -53,21 +55,22 @@ def _normalize_patterns(pattern_lines, origin, scale, tol, source):
     try:
         raw = np.asarray(pattern_lines)
         if raw.shape in ((0,), (0, 2, 2)):
-            return np.empty((0, 2, 2))
+            empty = np.empty((0, 2, 2))
+            return empty, empty
         if (raw.shape[1:] != (2, 2) or raw.ndim != 3 or np.iscomplexobj(raw)
                 or (raw.dtype.kind == "O" and any(np.iscomplexobj(v) for v in raw.flat))):
             _fail("patterns must be real XY segments with shape (n, 2, 2)", parameter="pattern_lines")
-        patterns = np.asarray(raw, dtype=float)
+        world_patterns = np.asarray(raw, dtype=float)
     except QuadLayerError:
         raise
     except OverflowError:
         range_failure("coordinate_conversion")
     except (ValueError, TypeError) as exc:
         raise QuadLayerError("patterns must have shape (n, 2, 2)") from exc
-    if not np.all(np.isfinite(patterns)):
+    if not np.all(np.isfinite(world_patterns)):
         _fail("patterns must be finite XY segments with shape (n, 2, 2)")
     with np.errstate(over="ignore", invalid="ignore"):
-        patterns = (patterns - origin) / scale
+        patterns = (world_patterns - origin) / scale
     # Source coordinates are within one unit of the chosen source-node origin.
     # Bound endpoints before subtraction, lengths, or spatial-index queries.
     lower, upper = source.min(axis=0), source.max(axis=0)
@@ -90,7 +93,7 @@ def _normalize_patterns(pattern_lines, origin, scale, tol, source):
             segment = segment[::-1]
         result.append(segment)
     # Geometric classification merges duplicates later, retaining original IDs.
-    return np.asarray(result)
+    return np.asarray(result), world_patterns
 
 
 def _input_loop(outline, node_count, *, parameter="outline_i"):
@@ -116,6 +119,68 @@ def _input_loop(outline, node_count, *, parameter="outline_i"):
     # A stable initial frame makes normalization independent of input start
     # and winding, including when the lowest node is in the middle of an edge.
     return np.roll(raw.astype(np.int64, copy=True), -int(np.argmin(raw)))
+
+
+def _pattern_contact_origin(mesh, data, *, fixed_frame):
+    """Choose one frame that preserves threshold contacts on straight, parallel supports."""
+    if not data["pattern_records"]:
+        return None
+    near = [{}, {}]
+    scale, tol = data["scale"], data["tol"]
+    for ids, tangent in zip(data["ids"], data["directions"]):
+        along = int(np.argmax(np.abs(tangent)))
+        axis = 1 - along
+        points = mesh.nodes[ids, :2]
+        support = float(points[0, axis])
+        if np.any(points[:, axis] != support):
+            continue
+        local_support = data["xy"][ids[0], axis]
+        for j, pattern in enumerate(data["pattern_records"]):
+            if pattern.axis != along:
+                continue
+            # Any alternate origin lies inside the source box (unit span).
+            # Only pairs this close to T can change classification on rounding.
+            gap = abs(pattern.support - local_support)
+            error = 16 * np.finfo(float).eps * max(1., abs(pattern.support), tol)
+            if abs(gap - tol) > error:
+                continue
+            guide = data["world_patterns"][j]
+            if (guide[0, axis] != guide[1, axis]
+                    or guide[:, along].max() < points[:, along].min()
+                    or guide[:, along].min() > points[:, along].max()):
+                continue
+            ordinate = float(guide[0, axis])
+            near[axis][support, ordinate] = (within_distance(support, ordinate, data["tolerance"]), j)
+
+    def agrees(origin, pair, contact):
+        support, guide = ((value - float(origin)) / scale for value in pair)
+        # Both the fast axis comparison and the exact distance predicate are
+        # used downstream. They must give the same answer in this frame.
+        return (np.isfinite(support) and np.isfinite(guide)
+                and (abs(guide - support) <= tol) == contact
+                and within_distance(guide, support, tol) == contact)
+
+    origin = data["origin"].copy()
+    for axis, pairs in enumerate(near):
+        conflicts = [pair for pair, (contact, _) in pairs.items()
+                     if not agrees(origin[axis], pair, contact)]
+        if not conflicts:
+            continue
+        if not fixed_frame:
+            for candidate in dict.fromkeys(support for support, _ in chain(conflicts, pairs)):
+                if all(agrees(candidate, pair, contact) for pair, (contact, _) in pairs.items()):
+                    origin[axis] = candidate
+                    break
+            else:
+                candidate = None
+            if candidate is not None:
+                continue
+        pair = conflicts[0]
+        _fail("the common source frame cannot resolve a parallel pattern contact",
+              code="numeric_resolution_exceeded", stage="pattern_normalization",
+              parameter="pattern_lines", pattern_index=pairs[pair][1], axis=axis,
+              source_support=pair[0], pattern_support=pair[1], tolerance=data["tolerance"].absolute)
+    return None if np.array_equal(origin, data["origin"]) else origin
 
 
 def _source_chains(flat, xy, tol):
@@ -207,6 +272,7 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, toleran
         _fail("source boundary has zero or unrepresentable extent")
     xy = (mesh.nodes[:, :2] - origin) / scale
     h /= scale
+    world_expand_h = expand_h
     expand_h /= scale
     if not np.isfinite(h) or h <= 0 or not np.all(np.isfinite(xy)):
         _fail("geometry and target size have incompatible numeric scales")
@@ -261,22 +327,38 @@ def _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, toleran
         _fail("source boundary has zero area")
     normals = np.column_stack((-directions[:, 1], directions[:, 0]))
     frozen = np.vstack([np.column_stack((edge[:-1], edge[1:])) for edge in ids])
-    cells = xy[mesh.elements]
-    if len(cells):
-        edges = np.roll(cells, -1, axis=1) - cells
-        turns = cross(edges, np.roll(edges, -1, axis=1))
+    if len(mesh.elements):
+        edges = scaled_cell_edges(mesh.nodes[mesh.elements, :2], scale)
+        following = np.roll(edges, -1, axis=1)
+        turns = cross(edges, following)
         threshold = numeric_tol * np.maximum(np.linalg.norm(edges, axis=2),
-                                    np.linalg.norm(np.roll(edges, -1, axis=1), axis=2))
-        if np.any(~(np.all(turns > threshold, axis=1) | np.all(turns < -threshold, axis=1))):
-            _fail("existing Quad4 elements must be nondegenerate and strictly convex")
-    patterns = _normalize_patterns(pattern_lines, origin, scale, tol, source)
+                                             np.linalg.norm(following, axis=2))
+        # A large, nearly collinear remote cell can lose the sign of a turn
+        # even when the minimum altitude based on the source span is small.
+        products = abs(edges[..., 0] * following[..., 1]) + abs(edges[..., 1] * following[..., 0])
+        threshold = np.maximum(threshold, 8 * np.finfo(float).eps * products)
+        invalid = ~(np.all(turns > threshold, axis=1) | np.all(turns < -threshold, axis=1))
+        if invalid.any():
+            _fail("existing Quad4 elements must be nondegenerate and strictly convex",
+                  element_index=int(np.flatnonzero(invalid)[0]))
+    patterns, world_patterns = _normalize_patterns(pattern_lines, origin, scale, tol, source)
     pattern_records = tuple(AxisPattern.from_points(points, (i,))
                             for i, points in enumerate(patterns))
-    return dict(xy=xy, ids=ids, source=source, chains=chains, normals=normals,
+    world_source_supports = [float(np.max(mesh.nodes[chain, :2] @ normal))
+                             for chain, normal in zip(ids, normals)] if len(patterns) else []
+    data = dict(xy=xy, ids=ids, source=source, chains=chains, normals=normals,
                 directions=directions, frozen=frozen, patterns=patterns,
                 pattern_records=pattern_records,
-                h=h, expand_h=expand_h, ratio=ratio, tol=tol, numeric_tol=numeric_tol,
+                world_patterns=world_patterns, world_source_supports=world_source_supports,
+                h=h, expand_h=expand_h, world_expand_h=world_expand_h,
+                ratio=ratio, tol=tol, numeric_tol=numeric_tol,
                 tolerance=policy, origin=origin, scale=scale)
+    contact_origin = _pattern_contact_origin(mesh, data, fixed_frame=_frame is not None)
+    if contact_origin is None:
+        return data
+    frame = dict(origin=contact_origin, scale=scale, tol=tol, numeric_tol=numeric_tol)
+    return _prepare(mesh, outline_i, element_size, pattern_lines, expand_ratio, policy,
+                    expand_size=expand_size, _semantic_directions=_semantic_directions, _frame=frame)
 
 
 def _validate_old_patterns(mesh, data):

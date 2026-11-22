@@ -12,11 +12,11 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from .._geometry import BoxIndex, area, area_epsilon, cross, on_segment, point_location, segment_contacts
-from .._patterns import AxisPattern, covered_intervals, pattern_contacts
+from .._patterns import covered_intervals, pattern_contacts, union_patterns
 from .._types import QuadLayerError, QuadSectionPlan, Seam, Section
 from .dense import DenseLinePartition
 from .fixed_corners import fixed_corner_layouts
-from .mapping import canonical_target, target_node_id
+from .mapping import canonical_target, corner_distances, target_node_id
 
 
 def _fail(message, *, patterns=False, **context):
@@ -94,32 +94,6 @@ class _Chord:
     pattern_ids: tuple[int, ...]
 
 
-def _union_patterns(patterns, tol):
-    """Merge finite collinear intervals, retaining their original identities."""
-    records = []
-    for pattern in patterns:
-        records.append((pattern.axis, pattern.support, pattern.lo, pattern.hi, pattern.ids))
-    records.sort()
-    groups = []
-    for axis, support, low, high, indices in records:
-        if groups and axis == groups[-1][0] and abs(support - groups[-1][1]) <= tol:
-            groups[-1][2].append((low, high, indices))
-        else:
-            groups.append((axis, support, [(low, high, indices)]))
-    result = []
-    for axis, support, intervals in groups:
-        merged = []
-        for low, high, indices in sorted(intervals):
-            if merged and low <= merged[-1][1] + tol:
-                merged[-1][1] = max(high, merged[-1][1])
-                merged[-1][2].update(indices)
-            else:
-                merged.append([low, high, set(indices)])
-        for low, high, indices in merged:
-            result.append(AxisPattern(axis, support, low, high, tuple(sorted(indices))))
-    return result
-
-
 def _admit_patterns(data):
     """Return complete local transverse chords and mandatory pattern anchors."""
     tol, patterns = data["tol"], data["pattern_records"]
@@ -128,7 +102,7 @@ def _admit_patterns(data):
     boundary_points = np.asarray(boundaries)
     boundary_index = BoxIndex(boundary_points.min(axis=1), boundary_points.max(axis=1), tol)
     chords, anchors = [], list(data["patterns"].reshape((-1, 2)))
-    for pattern in _union_patterns(patterns, tol):
+    for pattern in union_patterns(patterns, tol):
         pattern_ids = pattern.ids
         events = [(pattern.lo, pattern.point(pattern.lo), 0),
                   (pattern.hi, pattern.point(pattern.hi), 0)]
@@ -219,11 +193,11 @@ class _Seams:
         return seam_id
 
 
-def _nearest_anchor(chain, corner_at_end, target, tol):
+def _nearest_anchor(chain, corner_at_end, target, data):
     indices = list(range(len(chain) - 1)) if corner_at_end else list(range(1, len(chain)))
-    distances = np.linalg.norm(chain[indices] - target, axis=1)
+    distances, tie_tol = corner_distances(chain[indices], target, data)
     minimum = float(np.min(distances))
-    tied = [index for index, distance in zip(indices, distances) if distance <= minimum + tol]
+    tied = [index for index, distance in zip(indices, distances) if distance <= minimum + tie_tol]
     return max(tied) if corner_at_end else min(tied)
 
 
@@ -244,8 +218,8 @@ def _make_corners(data, chords, seams):
                                    seams.add((source_corner, incoming)), seams.add((source_corner, outgoing)),
                                    len(ids[previous]) - 1, 0))
             continue
-        left_index = _nearest_anchor(chains[previous], True, target, tol)
-        right_index = _nearest_anchor(chains[index], False, target, tol)
+        left_index = _nearest_anchor(chains[previous], True, target, data)
+        right_index = _nearest_anchor(chains[index], False, target, data)
         left_patterns = [chord for chord in chords if chord.edge == previous
                          and left_index <= chord.index < len(ids[previous]) - 1]
         right_patterns = [chord for chord in chords if chord.edge == index

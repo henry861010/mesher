@@ -45,7 +45,7 @@ class SectionLineTests(unittest.TestCase):
     def test_large_coarsening_preserves_source_and_reports_actual_outer_spacing(self):
         args = _fixture()
         originals = tuple(array.copy() for array in args)
-        candidates = plan_line(*args, 50.0, 1e-9, best_only=True)
+        candidates = plan_line(*args, 50.0, 1e-9, best_only=True, min_size_ratio=.5, max_size_ratio=1.25)
         self.assertEqual(len(candidates), 1)
         patch = candidates[0]
         self.assertEqual(len(patch.outer_ids), 3)

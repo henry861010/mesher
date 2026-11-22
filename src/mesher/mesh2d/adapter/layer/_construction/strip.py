@@ -102,7 +102,7 @@ def _sweep(source_xy, outer_xy, left, right, tol, cap):
     return cuts
 
 
-def fixed_cut_plans(source, outer, left, right, tol, cap=None):
+def fixed_cut_plans(source, outer, left, right, tol, cap=None, *, cut_stations=None):
     """Yield at most two partitions, with one or two short-side segments per unit.
 
     Each full-height cut has even prefix boundary parity, independent of its
@@ -110,6 +110,8 @@ def fixed_cut_plans(source, outer, left, right, tol, cap=None):
     The two sweeps start at opposite ends and are ranked on actual cut shear.
     """
     source_xy, outer_xy = _frame(np.asarray(source), np.asarray(outer))
+    if cut_stations is not None:
+        source_xy[:, 0] = cut_stations
     if any(np.any(np.diff(chain[:, 0]) <= tol) for chain in (source_xy, outer_xy)):
         raise ValueError("LINE nodes must be strictly ordered along the line axis")
     n, m = len(source_xy) - 1, len(outer_xy) - 1
@@ -244,7 +246,7 @@ def _paired_unit(sides, i, j, tol, cache, stats):
                     metadata={"paired_cut": (i, j)}, fixed_interior=fixed)
 
 
-def _adjacent_cuts(pairs, at, source_xy, outer_xy, tol, cap):
+def _adjacent_cuts(pairs, at, source_xy, outer_xy, tol, cap, cut_stations=None):
     """Best two local parity-preserving moves; both neighboring spans stay valid."""
     (si, sj), (i, j), (ei, ej) = pairs[at - 1:at + 2].tolist()
     options = []
@@ -252,6 +254,9 @@ def _adjacent_cuts(pairs, at, source_xy, outer_xy, tol, cap):
                    (-1, -1), (1, 1), (-1, 1), (1, -1)):
         a, b = i + di, j + dj
         if not si < a < ei or not sj < b < ej:
+            continue
+        # A repaired cut on a widened front must still join matching stations.
+        if cut_stations is not None and abs(cut_stations[a] - outer_xy[b, 0]) > tol:
             continue
         spans = ((a - si, b - sj), (ei - a, ej - b))
         if any(min(s, o) > 2 or (cap is not None and s > cap * o) for s, o in spans):
@@ -262,7 +267,7 @@ def _adjacent_cuts(pairs, at, source_xy, outer_xy, tol, cap):
 
 
 def build_strip(source, outer, left, right, cuts, size_error, tol, *, cache, stats,
-                max_added_elements=None, cap=None):
+                max_added_elements=None, cap=None, cut_stations=None):
     """Build one fixed partition, returning None for an unbuildable geometry."""
     source, outer, left, right = map(xyz_chain, (source, outer, left, right))
     pairs = np.asarray(cuts, dtype=np.int64)
@@ -277,6 +282,7 @@ def build_strip(source, outer, left, right, cuts, size_error, tol, *, cache, sta
     direct[0] &= len(left) == 2
     direct[-1] &= len(right) == 2
     source_xy, outer_xy = _frame(source, outer)
+    assignment_x = source_xy[:, 0] if cut_stations is None else cut_stations
     units = [None] * len(sizes)
     pairs = pairs.copy()
     try:
@@ -313,10 +319,10 @@ def build_strip(source, outer, left, right, cuts, size_error, tol, *, cache, sta
             # a one-segment side to each child.
             if no <= ns:
                 v = 1
-                u = _edge_assignment(source_xy[i:ni + 1, 0], outer_xy[j:nj + 1, 0], cap)[0]
+                u = _edge_assignment(assignment_x[i:ni + 1], outer_xy[j:nj + 1, 0], cap)[0]
             else:
                 u = 1
-                v = _nearest(outer_xy[j:nj + 1, 0], source_xy[i + 1, 0], 1, no - 1)
+                v = _nearest(outer_xy[j:nj + 1, 0], assignment_x[i + 1], 1, no - 1)
             unit = _paired_unit(sides, u, v, tol, cache, stats)
         else:
             stats["unit_trial_count"] = stats.get("unit_trial_count", 0) + 1
@@ -339,7 +345,7 @@ def build_strip(source, outer, left, right, cuts, size_error, tol, *, cache, sta
             for at in (k + 1, k):
                 if not 0 < at < len(units):
                     continue
-                for replacement in _adjacent_cuts(pairs, at, source_xy, outer_xy, tol, cap):
+                for replacement in _adjacent_cuts(pairs, at, source_xy, outer_xy, tol, cap, cut_stations):
                     stats["local_repair_count"] = stats.get("local_repair_count", 0) + 1
                     try:
                         first = construct(at - 1, pairs[at - 1], replacement)
@@ -371,7 +377,7 @@ def build_strip(source, outer, left, right, cuts, size_error, tol, *, cache, sta
     result = assemble_section(units, source, outer, left, right, size_error, tol)
     maximum_count = 0
     for record, unit, (i, j), (ni, nj) in zip(result.units, units, pairs[:-1], pairs[1:]):
-        source_stations, outer_stations = source_xy[i:ni + 1, 0], outer_xy[j:nj + 1, 0]
+        source_stations, outer_stations = assignment_x[i:ni + 1], outer_xy[j:nj + 1, 0]
         if "paired_cut" in unit.metadata:
             # Each child owns the source slice used during construction.
             a, b = unit.metadata["paired_cut"]

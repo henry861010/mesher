@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
+from .._line_policy import DEFAULT_DENSE_MIN_GAP_RATIO
 from .._types import QuadLayerError
-from .mapping import canonical_target, dense_angle, target_node_id, valid_interface
+from .dense_contacts import DenseLineContacts
+from .mapping import target_node_id
 
 
 class DenseLinePartition:
@@ -26,7 +28,7 @@ class DenseLinePartition:
                              source_nodes=[int(source[i]) for i in indices])
 
     def cuts(self, edge, start, stop, left, right, registry, outer):
-        """Map each run endpoint independently, retaining only usable cuts."""
+        """Find maximal qualifying runs and register their selected cuts."""
         data = self.data
         size = data.get("small_element_size")
         if size is None:
@@ -37,91 +39,78 @@ class DenseLinePartition:
         else:
             points = data["xy"][ids[start:stop + 1]]
             size /= data["scale"]
-        lengths = np.hypot.reduce(np.diff(points, axis=0), axis=1)
-        # Each edge has its own representation budget; physical T must not
-        # shift the user's strict density threshold.
+        delta = np.abs(np.diff(points, axis=0))
+        # Allow for rounding at the two endpoints of a varying coordinate.
+        # A common coordinate cancels exactly, even far from the origin.
         ulps = np.abs(np.spacing(points))
-        margin = 2 * np.hypot.reduce(ulps[:-1] + ulps[1:], axis=1)
-        margin += 8 * np.finfo(float).eps * np.maximum(lengths, size)
-        short = lengths < size - margin
+        uncertainty = np.where(delta == 0, 0., .5 * (ulps[:-1] + ulps[1:]))
+        upper_length = np.hypot.reduce(delta + uncertainty, axis=1)
+        short = upper_length < size - 8 * np.finfo(float).eps * size
         changes = np.diff(np.r_[False, short, False].astype(np.int8))
-        runs = list(zip((np.flatnonzero(changes == 1) + start).tolist(),
-                        (np.flatnonzero(changes == -1) + start).tolist()))
+        begins = (np.flatnonzero(changes == 1) + start).tolist()
+        ends = (np.flatnonzero(changes == -1) + start).tolist()
+        group_count = data.get("small_element_group_count", 0)
+        runs = [(begin, end) for begin, end in zip(begins, ends) if end - begin > group_count]
         endpoints = sorted((index, role) for run in runs for index, role in zip(run, ("begin", "end"))
                            if start < index < stop)
+        if not endpoints:
+            return [(start, left), (stop, right)], runs
+        interfaces = [seam.points[[0, -1]] for seam in registry.items] + list(self.interfaces)
+        mapper = DenseLineContacts(data, edge, endpoints, start, stop, outer, interfaces)
+        gaps = [(left[1], right[0]) for left, right in zip(runs, runs[1:])]
+        ratio = data.get("dense_min_gap_ratio", DEFAULT_DENSE_MIN_GAP_RATIO)
+        if self.targets is None:
+            contacts, reasons, limited = mapper.select(gaps, ratio)
+        else:
+            contacts, reasons, limited = self._restore_contacts(edge, mapper)
+            conflicts = mapper.narrow_gaps(gaps, contacts, ratio)
+            if conflicts:
+                self.fail("planned dense seams no longer preserve their intervening gap",
+                          edge, sorted(conflicts))
         cuts = [(start, left)]
-        tangent, normal, tol = data["directions"][edge], data["normals"][edge], data["tol"]
-        angle_limit = data.get("dense_mapping_angle", 30.0)
-        fixed = data.get("fixed_outer_boundary", False)
-        # Candidates are the original contacts of this LINE. A newly projected
-        # dense endpoint must not bias the next endpoint's mapping.
-        ordered = np.asarray(sorted((canonical_target(p, data) for p in outer),
-                                    key=lambda p: float(p @ tangent)))
+        tangent, normal = data["directions"][edge], data["normals"][edge]
         for index, role in endpoints:
             source = data["xy"][ids[index]]
-            projected = canonical_target(source + normal * float((outer[0] - source) @ normal), data)
-            previous = registry.items[cuts[-1][1]].points[-1]
-            following = registry.items[right].points[-1]
-            interfaces = [seam.points[[0, -1]] for seam in registry.items]
-            interfaces.extend(self.interfaces)
-
-            def angle_ok(point):
-                return dense_angle(source, point, tangent, normal, role, angle_limit)[0]
-
-            def usable(point):
-                return (float((point - previous) @ tangent) > tol
-                        and float((following - point) @ tangent) > tol
-                        and valid_interface(source, point, data, interfaces))
-
             record = {"source_edge": edge, "source_index": index,
-                      "source_node": int(ids[index]), "endpoint": role}
-            target, reason = None, "no_eligible_node"
-            key = (edge, index)
-            if self.targets is not None:
-                # Global meshing may add a nearer node: consume only the saved
-                # canonical contact, including the absence of an optional cut.
-                if key in self.targets:
-                    distances = np.linalg.norm(ordered - self.targets[key], axis=1)
-                    nearest = int(np.argmin(distances))
-                    if (distances[nearest] > tol or not angle_ok(ordered[nearest])
-                            or not usable(ordered[nearest])):
-                        self.fail("planned dense seam is absent or incompatible with the fixed interface",
-                                  edge, [index])
-                    target, reason = ordered[nearest].copy(), "canonical_contact"
-                    self.used_targets.add(key)
-                else:
-                    reason = "not_planned"
-            else:
-                angular = [dense_angle(source, p, tangent, normal, role, angle_limit) for p in ordered]
-                eligible = np.array([valid for valid, _ in angular])
-                angles = np.array([angle for _, angle in angular])
-                candidates = sorted(np.flatnonzero(eligible), key=lambda i: (abs(float(angles[i])), int(i)))
-                for candidate in candidates:
-                    if usable(ordered[candidate]):
-                        target, reason = ordered[candidate].copy(), "existing_contact"
-                        break
-                if target is None and not fixed:
-                    if angle_ok(projected) and usable(projected):
-                        target, reason = projected, "projected_contact"
-                    else:
-                        reason = "no_valid_projection"
+                      "source_node": int(ids[index]), "endpoint": role, "gap_limited": index in limited}
+            target, reason = contacts.get(index), reasons[index]
             if target is None:
                 self.mappings.append({**record, "status": "skipped", "reason": reason})
                 continue
             seam = registry.add((source, target))
             cuts.append((index, seam))
-            delta = target - source
-            angle = float(np.degrees(np.arctan2(delta @ tangent, delta @ normal)))
             target_id = target_node_id(target, data)
             world_target = (data["_source_mesh"].nodes[target_id, :2]
                             if target_id is not None and "_source_mesh" in data
                             else target * data["scale"] + data["origin"])
+            delta = (world_target - data["origin"]) / data["scale"] - source
+            angle = float(np.degrees(np.arctan2(delta @ tangent, delta @ normal)))
             record.update(seam_id=seam, target_node=target_id,
                           target=world_target.tolist(), angle=angle)
             self.seams.append(record)
             self.mappings.append({**record, "status": "mapped", "reason": reason})
         cuts.append((stop, right))
         return cuts, runs
+
+    def _restore_contacts(self, edge, mapper):
+        """Reuse the exact contacts sent to the global grid, including protected normals."""
+        contacts = mapper.bounds.copy()
+        reasons = {}
+        limited = set()
+        saved_limits = self.data.get("_dense_gap_limited", ())
+        for index in mapper.roles:
+            key = (edge, index)
+            if key in saved_limits:
+                limited.add(index)
+            if key not in self.targets:
+                reasons[index] = "not_planned"
+                continue
+            point = mapper.match_saved(index, self.targets[key], contacts, limited)
+            if point is None:
+                self.fail("planned dense seam is absent or incompatible with the fixed interface", edge, [index])
+            contacts[index], reasons[index] = point, "canonical_contact"
+            self.used_targets.add(key)
+        return contacts, reasons, limited
 
     def record(self, section, start, stop, runs):
         if any(a <= start and stop <= b for a, b in runs):
@@ -135,6 +124,8 @@ class DenseLinePartition:
             edge, index = next(iter(set(self.targets) - self.used_targets))
             self.fail("a planned dense seam disappeared during fixed construction", edge, [index])
         return {"small_element_size": self.data.get("small_element_size"),
+                "small_element_group_count": self.data.get("small_element_group_count", 0),
                 "dense_mapping_angle": self.data.get("dense_mapping_angle", 30.0),
+                "dense_min_gap_ratio": self.data.get("dense_min_gap_ratio", DEFAULT_DENSE_MIN_GAP_RATIO),
                 "dense_sections": self.sections, "dense_seams": self.seams,
                 "dense_mappings": self.mappings}

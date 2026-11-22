@@ -12,6 +12,7 @@ from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh, generate_rectilinear_mesh_optimal
 from tests.unit.mesh2d.test_dense_sections import rectangle
 from tests.unit.mesh2d.test_extend_quad_layer import _target_ids
+from tests.unit.mesh2d.test_slot_repair import _blocks
 from tests.unit.mesh2d import test_fixed_layer_boundary as fixed_checks
 
 
@@ -74,14 +75,67 @@ class BoundaryMappingTests(unittest.TestCase):
                 self.assert_exact_interface(mesh, result, target)
                 self.assertEqual(result.diagnostics['dense_mappings'], plan.diagnostics['dense_mappings'])
 
-    def test_ordinary_mode_projects_when_no_eligible_node_exists(self):
+    def test_new_contacts_expand_around_mandatory_outer_nodes(self):
         mesh, outline, target = dense_fixture([102, 108])
-        plan = plan_quad_sections(mesh, outline, 50, outline_o=target, small_element_size=10)
-        for role, x in (('begin', 100), ('end', 110)):
+        kwargs = dict(outline_o=target, small_element_size=10)
+        plan = plan_quad_sections(mesh, outline, 50, **kwargs)
+        result = generate_layer_adaptive_mesh(mesh, outline, 50, **kwargs)
+        offset = 50 / np.sqrt(3)
+        for role, x in (('begin', 100 - offset), ('end', 110 + offset)):
             record = top_mappings(mesh, plan)[role]
-            self.assertEqual(record['reason'], 'projected_contact')
+            self.assertEqual(record['reason'], 'expanded_contact')
             self.assertAlmostEqual(record['target'][0], x)
             self.assertIsNone(record['target_node'])
+            np.testing.assert_allclose(top_mappings(mesh, result)[role]['target'], record['target'])
+        self.assertTrue(set(target).issubset(result.outline))
+
+    def test_proportional_cuts_on_both_sublayers_with_independent_snaps(self):
+        # The middle source node is 20% along the dense interval [100, 120].
+        for anchors, angle, bounds, reasons in (
+            ([], 45., (90., 130.), ('expanded_contact', 'expanded_contact')),
+            ([100.], 45., (100., 130.), ('existing_contact', 'expanded_contact')),
+            ([120.], 45., (90., 120.), ('expanded_contact', 'existing_contact')),
+            ([100., 120.], 45., (100., 120.), ('existing_contact', 'existing_contact')),
+            ([], 0., (100., 120.), ('projected_contact', 'projected_contact')),
+        ):
+            with self.subTest(anchors=anchors, angle=angle):
+                mesh, outline = rectangle([0, 50, 100, 104, 120, 170, 220], height=100.)
+                target = _target_ids(mesh, [[-10, -10], [-10, 110], *[[x, 110] for x in anchors],
+                                            [230, 110], [230, -10]])
+                result = generate_layer_adaptive_mesh(mesh, outline, 40., outline_o=target,
+                                                      small_element_size=17., dense_mapping_angle=angle,
+                                                      max_transition_count=1)
+                records = top_mappings(mesh, result)
+                self.assertEqual(tuple(records[r]['reason'] for r in ('begin', 'end')), reasons)
+                detail, = [s for s in result.diagnostics['section_details'] if 'midline_ids' in s
+                           and mesh.nodes[s['source_chains'][0][0], 1] == 100.]
+                front = bounds[0] + np.array([0., .2, 1.]) * (bounds[1] - bounds[0])
+                np.testing.assert_allclose(mesh.nodes[detail['outer_ids'], 0], front)
+                np.testing.assert_allclose(mesh.nodes[detail['midline_ids'], 0], ([100., 104., 120.] + front) / 2)
+
+    def test_disabled_gap_guard_preserves_snap_before_free_end_expands(self):
+        mesh, outline = rectangle([0, 100, 103, 110, 113, 200], height=100.)
+        target = _target_ids(mesh, [[-10, -10], [-10, 110], [101, 110], [210, 110], [210, -10]])
+        plan = plan_quad_sections(mesh, outline, 20., outline_o=target,
+                                  small_element_size=5., dense_mapping_angle=45., dense_min_gap_ratio=0)
+        records = {mesh.nodes[r['source_node'], 0]: r for r in plan.diagnostics['dense_mappings']
+                   if mesh.nodes[r['source_node'], 1] == 100.}
+        # The later begin snaps at 101. Neither candidate for the earlier end
+        # at 103 (113 or 103) can be inserted before that reserved contact.
+        self.assertEqual(records[110]['reason'], 'existing_contact')
+        self.assertAlmostEqual(records[110]['target'][0], 101.)
+        self.assertEqual(records[103]['status'], 'skipped')
+        self.assertAlmostEqual(records[100]['target'][0], 90.)
+        self.assertAlmostEqual(records[113]['target'][0], 123.)
+
+    def test_expansion_blocked_by_corner_keeps_legal_normal_projection(self):
+        mesh, outline, target = dense_fixture()
+        plan = plan_quad_sections(mesh, outline, 50., outline_o=target,
+                                  small_element_size=10., dense_mapping_angle=62.)
+        records = top_mappings(mesh, plan)
+        self.assertEqual(records['begin']['reason'], 'expanded_contact')
+        self.assertEqual(records['end']['reason'], 'projected_contact')
+        self.assertAlmostEqual(records['end']['target'][0], 110.)
 
     def test_fixed_dense_interfaces_can_exceed_the_transition_cap(self):
         mesh, outline, target = dense_fixture([100., 110.])
@@ -149,6 +203,32 @@ class BoundaryMappingTests(unittest.TestCase):
         result = generate_layer_adaptive_mesh(mesh, outline, 2, outline_o=target, fixed_outer_boundary=True)
         self.assert_exact_interface(mesh, result, target)
         self.assertTrue(any(r['candidate_rank'] > 1 for r in result.diagnostics['corner_mappings']))
+
+    def test_fixed_corner_uses_the_nearest_distinct_target(self):
+        for offset in (0., 2.**40):
+            with self.subTest(offset=offset):
+                mesh = Mesh2D([[0, 0], [1, 0], [1, 1], [0, 1]], [[0, 1, 2, 3]])
+                target = _target_ids(mesh, [
+                    [-1, -1], [-1, -.02], [-1, 0], [-1, 1], [-1, 2], [0, 2], [1, 2],
+                    [2, 2], [2, 1], [2, 0], [2, -.02], [2, -1], [1, -1], [0, -1]])
+                mesh.nodes[:, 0] += offset
+                for api in (plan_quad_sections, generate_layer_adaptive_mesh):
+                    result = api(mesh, [0, 3, 2, 1], 1., outline_o=target, fixed_outer_boundary=True)
+                    contact, = [r for r in result.diagnostics['corner_mappings']
+                                if r['source_node'] == 0 and r['side'] == 'outgoing']
+                    self.assertEqual(contact['target_node'], target[2])
+
+    def test_inner_corner_uses_the_nearest_distinct_source(self):
+        mesh, outline = _blocks([([0, .25, .5, .52, .75, 1], [0, .5, 1]),
+                                 ([1, 1.5, 2, 2.5, 3], [0, .5, 1, 1.5, 2, 2.5, 3])])
+        plan = plan_quad_sections(mesh, outline, .5, repair_slots=False)
+        corner, = [section for section in plan.sections if section.kind == 'INNER']
+        first_node = corner.source_chains[0][0]
+        np.testing.assert_array_equal(mesh.nodes[first_node, :2], [.5, 1.])
+        result = generate_layer_adaptive_mesh(mesh, outline, .5, repair_slots=False)
+        detail, = [section for section in result.diagnostics['section_details']
+                   if section['kind'] == 'INNER']
+        self.assertEqual(detail['left_ids'][0], first_node)
 
     def test_corner_distance_ties_are_stable_under_transformations(self):
         reference = None

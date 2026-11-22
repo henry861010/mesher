@@ -9,17 +9,20 @@ import numpy as np
 
 from .._geometry import on_segment
 from .._types import QuadLayerError
-from .mapping import compatible_interfaces, same_point, target_node_id, valid_interface
+from .mapping import (compatible_interfaces, corner_distances, same_point,
+                      target_node_id, valid_interface)
 
 
-def _nearest_first(points, source, tol):
+def _nearest_first(points, source, data):
     """Resolve numerically equal distances in canonical boundary order."""
-    distances = [float(np.linalg.norm(point - source)) for point in points]
+    if len(points) < 2:
+        return points
+    distances, tie_tol = corner_distances(points, source, data)
     order = sorted(range(len(points)), key=distances.__getitem__)
     result, start = [], 0
     while start < len(order):
         stop = start + 1
-        while stop < len(order) and distances[order[stop]] <= distances[order[start]] + tol:
+        while stop < len(order) and distances[order[stop]] <= distances[order[start]] + tie_tol:
             stop += 1
         result.extend(points[i] for i in sorted(order[start:stop]))
         start = stop
@@ -57,7 +60,7 @@ def fixed_corner_layouts(data, chords, registry, corners):
                           if on_segment(point, a, b, tol)
                           and not same_point(point, front[index], tol)
                           and all(same_point(point, p, tol) for p in forced)]
-            candidates = _nearest_first(candidates, source, tol)
+            candidates = _nearest_first(candidates, source, data)
             variables.append((seam_id, index, side, source, candidates))
     variable_ids = {item[0] for item in variables}
     known = {seam.id: seam.points[-1] for seam in registry.items if seam.id not in variable_ids}

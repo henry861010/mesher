@@ -12,6 +12,39 @@ def cross(a, b):
     return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
 
 
+def scaled_cell_edges(cells, scale):
+    """Subtract represented endpoints before scaling to preserve local turns."""
+    following = np.roll(cells, -1, axis=1)
+    with np.errstate(over="ignore", invalid="ignore"):
+        edges = following - cells
+        overflow = ~np.isfinite(edges)
+        edges /= scale
+        if np.any(overflow):
+            # Opposite finite coordinates can overflow their difference even
+            # when the edge fits in the normalized frame.
+            edges[overflow] = following[overflow] / scale - cells[overflow] / scale
+    return edges
+
+
+def resolved_quad_turns(local_cells, world_cells=None, scale=1.):
+    """Require positive turns resolvable at the coordinates used for FEM."""
+    edges = (np.roll(local_cells, -1, axis=1) - local_cells if world_cells is None
+             else scaled_cell_edges(world_cells, scale))
+    following = np.roll(edges, -1, axis=1)
+    span = np.ptp(local_cells, axis=1).max(axis=1)
+    threshold = (64 * np.finfo(float).eps * span**2)[:, None]
+    if world_cells is not None:
+        # Two rounded endpoints can perturb each edge component by one ULP.
+        # Propagate those X/Y uncertainties through the determinant so that
+        # rounding a collinear corner cannot turn it into a usable Quad4.
+        ux, uy = np.max(np.spacing(np.abs(world_cells)), axis=1).T / scale
+        magnitudes = np.abs(edges) + np.abs(following)
+        uncertainty = (magnitudes[..., 0] * uy[:, None] + magnitudes[..., 1] * ux[:, None]
+                       + (2 * ux * uy)[:, None])
+        threshold = np.maximum(threshold, uncertainty)
+    return bool(np.all(cross(edges, following) > threshold))
+
+
 def area(p):
     p = np.asarray(p) - p[0]
     return float(np.sum(cross(p, np.roll(p, -1, axis=0))) * 0.5)

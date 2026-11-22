@@ -91,6 +91,67 @@ class SegmentContactTests(unittest.TestCase):
 
 
 class LayerAuditTests(unittest.TestCase):
+    def test_attaching_to_source_must_connect_incident_cells_in_one_fan(self):
+        # The four strips form the square's external perimeter. Growing a
+        # layer connects the strips around each corner through shared edges.
+        points = [[0, 0], [4, 0], [4, 4], [0, 4],
+                  [3.5, .2], [.5, .2], [3.8, 3.5], [3.8, .5],
+                  [.5, 3.8], [3.5, 3.8], [.2, .5], [.2, 3.5],
+                  [.8, .6], [1.2, 1.2], [.6, .8]]
+        strips = [[0, 1, 4, 5], [1, 2, 6, 7], [2, 3, 8, 9], [3, 0, 10, 11]]
+        mesh = Mesh2D(points, strips)
+        generate_layer_adaptive_mesh(mesh, [0, 3, 2, 1], 1.)
+
+        # This extra quad occupies the gap between strips. Its only
+        # connection to the assembled domain would be the DOF at node 0.
+        mesh = Mesh2D(points, strips + [[0, 12, 13, 14]])
+        nodes, elements = mesh.nodes, mesh.elements
+        with self.assertRaises(QuadLayerError) as caught:
+            generate_layer_adaptive_mesh(mesh, [0, 3, 2, 1], 1.)
+        self.assertEqual(caught.exception.code, "topology_change")
+        self.assertEqual(caught.exception.context["parameter"], "outline_i")
+        self.assertEqual(caught.exception.context["node_id"], 0)
+        self.assertEqual(caught.exception.context["boundary_degree"], 4)
+        self.assertIs(mesh.nodes, nodes)
+        self.assertIs(mesh.elements, elements)
+
+    def test_duplicate_target_cells_cannot_mask_a_point_only_connection(self):
+        source = [[0, 0], [1, 0], [1, 1], [0, 1]]
+        target = [[-1, -1], [-1, 0], [-1, 1], [-1, 2], [0, 2], [1, 2],
+                  [2, 2], [2, 1], [2, 0], [2, -1], [1, -1], [0, -1]]
+        for fixed in (False, True):
+            with self.subTest(fixed=fixed):
+                mesh = Mesh2D(source + target + [[3, 2], [3, 3], [2, 3]],
+                              [[0, 1, 2, 3], [10, 16, 17, 18], [10, 16, 17, 18]])
+                nodes, elements = mesh.nodes, mesh.elements
+                with self.assertRaises(QuadLayerError) as caught:
+                    generate_layer_adaptive_mesh(mesh, [0, 3, 2, 1], 1., outline_o=np.arange(4, 16),
+                                                 fixed_outer_boundary=fixed)
+                self.assertEqual(caught.exception.code, "topology_change")
+                self.assertEqual(caught.exception.context["parameter"], "outline_o")
+                self.assertEqual(caught.exception.context["node_id"], 10)
+                self.assertIs(mesh.nodes, nodes)
+                self.assertIs(mesh.elements, elements)
+
+    def test_remote_cell_corner_jacobian_uses_physical_coordinates(self):
+        source = [[.17, .63], [3.17, .63], [3.17, 3.63], [.17, 3.63]]
+        distant_cells = (
+            # Three collinear corners have zero corner Jacobian.
+            [[1e6, 1e6 + 1], [1e6 + 1, 1e6 + 2], [1e6 + 2, 1e6 + 3], [1e6, 1e6 + 7]],
+            # This corner is inverted by one ULP in the represented input.
+            [[1001., 1000.], [1006., 1004.], [1026., np.nextafter(1020., 0.)], [1001., 1060.]],
+        )
+        for cell in distant_cells:
+            for operation in (plan_quad_sections, generate_layer_adaptive_mesh):
+                with self.subTest(cell=cell, operation=operation.__name__):
+                    mesh = Mesh2D(source + cell, [[0, 1, 2, 3], [4, 5, 6, 7]])
+                    nodes, elements = mesh.nodes, mesh.elements
+                    with self.assertRaisesRegex(QuadLayerError, "strictly convex") as caught:
+                        operation(mesh, [0, 3, 2, 1], 1.)
+                    self.assertEqual(caught.exception.context["element_index"], 1)
+                    self.assertIs(mesh.nodes, nodes)
+                    self.assertIs(mesh.elements, elements)
+
     def test_separated_neighbor_is_accepted_and_close_diagonal_is_atomic(self):
         source = np.array([[0., 0.], [1., 0.], [1., 1.], [0., 1.]])
         cases = [(np.array([[2.0008, 2.0008], [3., 2.0008], [3., 3.], [2.0008, 3.]]), True),

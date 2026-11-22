@@ -41,7 +41,8 @@ class QuadLayerLimitTests(unittest.TestCase):
                 patch.object(_section_mesh, "plan_corner") as corner_builder, \
                 patch.object(aligned, "LineSampling") as sampler:
             with self.assertRaises(ElementLimitExceeded) as caught:
-                generate_layer_adaptive_mesh(mesh, outline, 1e-8, max_added_elements=1000, tolerance=1e-10)
+                generate_layer_adaptive_mesh(mesh, outline, 1e-8, max_size_ratio=1.25,
+                                             max_added_elements=1000, tolerance=1e-10)
         self.assertEqual(caught.exception.code, "element_limit_exceeded")
         self.assertEqual(caught.exception.context["stage"], "element_count_preflight")
         self.assertEqual(caught.exception.context["count_kind"], "lower_bound")

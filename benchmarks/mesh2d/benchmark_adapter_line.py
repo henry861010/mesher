@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--height", type=float, default=8.0)
     parser.add_argument("--target-size", type=float, default=8.0)
     parser.add_argument("--max-transition-count", type=int, default=10)
-    parser.add_argument("--min-size-ratio", type=float, default=0.5)
+    parser.add_argument("--min-size-ratio", type=float, help="Override this checkout's default LINE lower size ratio.")
     parser.add_argument("--max-size-ratio", type=float, help="Override this checkout's default LINE upper size ratio.")
     parser.add_argument("--dense-segments", type=int, default=0,
                         help="Number of source intervals with reduced spacing.")
@@ -61,14 +61,17 @@ def main():
     from mesher.mesh2d.adapter.layer._construction.units import quality_score
 
     projected = hasattr(line, "plan_resampled")
+    sizing = {}
+    if args.min_size_ratio is not None:
+        sizing["min_size_ratio"] = args.min_size_ratio
     if projected:
         from mesher.mesh2d.adapter.layer._construction import strip as builder_module
-        max_ratio = 1.25 if args.max_size_ratio is None else args.max_size_ratio
-        sizing = {"max_size_ratio": max_ratio}
+        if args.max_size_ratio is not None:
+            sizing["max_size_ratio"] = args.max_size_ratio
     else:
         if args.max_size_ratio not in (None, 1.):
             parser.error("the baseline checkout has a fixed maximum size ratio of 1")
-        builder_module, max_ratio, sizing = line, 1., {}
+        builder_module = line
 
     length = float(args.segments) if args.length is None else args.length
     values = [length, args.height, args.target_size]
@@ -77,9 +80,9 @@ def main():
         parser.error("segment count, repeats, lengths and target size must be positive and finite")
     if args.max_transition_count < 1:
         parser.error("maximum transition count must be a positive integer")
-    if not np.isfinite(args.min_size_ratio) or not 0 < args.min_size_ratio <= 1:
+    if args.min_size_ratio is not None and not 0 < args.min_size_ratio <= 1:
         parser.error("minimum size ratio must be finite and in (0, 1]")
-    if not np.isfinite(max_ratio) or max_ratio < 1:
+    if args.max_size_ratio is not None and (not np.isfinite(args.max_size_ratio) or args.max_size_ratio < 1):
         parser.error("maximum size ratio must be finite and at least one")
     if not 0 <= args.dense_segments <= args.segments:
         parser.error("dense segment count must be between zero and the source segment count")
@@ -110,13 +113,13 @@ def main():
     inputs = (source, outer, left, right)
     snapshots = tuple(value.copy() for value in inputs)
     sampler = LineSampling(source, outer, args.target_size, tolerance,
-                           args.max_transition_count, args.min_size_ratio, **sizing)
+                           args.max_transition_count, **sizing)
     metadata = {
         "sourceSegments": args.segments, "length": length,
         "height": args.height, "targetSize": args.target_size,
         "leftNodes": args.left_nodes, "rightNodes": args.right_nodes,
-        "maxTransitionCount": args.max_transition_count, "minSizeRatio": args.min_size_ratio,
-        "maxSizeRatio": max_ratio,
+        "maxTransitionCount": args.max_transition_count, "minSizeRatio": sampler.min_size_ratio,
+        "maxSizeRatio": sampler.max_size_ratio if projected else 1.,
         "denseSegments": args.dense_segments, "denseSpacingRatio": args.dense_spacing_ratio,
         "denseStartSegment": dense_start if args.dense_segments else None,
     }
@@ -160,8 +163,7 @@ def main():
                     hooks.enter_context(patch.object(line, "plan_resampled", timed_plans))
                 candidates = line.plan_line(
                     source, outer, left, right, args.target_size, tolerance, best_only=True,
-                    max_transition_count=args.max_transition_count,
-                    min_size_ratio=args.min_size_ratio, **sizing)
+                    max_transition_count=args.max_transition_count, **sizing)
             elapsed = perf_counter() - started
         except TimeoutError:
             print(json.dumps({

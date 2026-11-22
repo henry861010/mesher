@@ -397,6 +397,36 @@ class OutlineTargetTests(unittest.TestCase):
         self.assertEqual(caught.exception.context["parameter"], "outline_o")
         self.assert_unchanged(mesh, snapshot)
 
+    def test_target_corner_requires_a_continuous_fan_of_cells(self):
+        outline = [0, 3, 2, 1]
+        target = np.arange(4, 16)
+        # Node 10 is the top right target corner (2, 2).
+        points = [[0, 0], [1, 0], [1, 1], [0, 1],
+                  [-1, -1], [-1, 0], [-1, 1], [-1, 2], [0, 2], [1, 2],
+                  [2, 2], [2, 1], [2, 0], [2, -1], [1, -1], [0, -1]]
+        for fixed in (False, True):
+            with self.subTest(fixed=fixed):
+                # A diagonal cell would share a temperature DOF at one point.
+                mesh = Mesh2D(points + [[3, 2], [3, 3], [2, 3]],
+                              [[0, 1, 2, 3], [10, 16, 17, 18]])
+                snapshot = self._snapshot(mesh)
+                with self.assertRaises(QuadLayerError) as caught:
+                    generate_layer_adaptive_mesh(mesh, outline, 1., outline_o=target,
+                                                 fixed_outer_boundary=fixed)
+                self.assertEqual(caught.exception.code, "topology_change")
+                self.assertEqual(caught.exception.context["node_id"], 10)
+                self.assertEqual(caught.exception.context["boundary_degree"], 4)
+                self.assert_unchanged(mesh, snapshot)
+
+                # Two old cells meeting at a point are valid here: the new layer
+                # joins both along full edges and connects their fans at node 10.
+                mesh = Mesh2D(points + [[2, 3], [1, 3], [3, 1], [3, 2]],
+                              [[0, 1, 2, 3], [9, 10, 16, 17], [11, 18, 19, 10]])
+                result = generate_layer_adaptive_mesh(mesh, outline, 1., outline_o=target,
+                                                      fixed_outer_boundary=fixed)
+                self.assertTrue(set(target).issubset(result.outline))
+                self.assertEqual(len(EditorMesh2D.outlines(mesh)), 1)
+
     def test_existing_element_on_the_layer_side_of_target_fails_atomically(self):
         mesh, outline, ids = self._attached_target()
         mesh.nodes[-2:, 1] = 3.25
