@@ -11,6 +11,7 @@ from time import perf_counter
 import numpy as np
 
 from ...model import Mesh2D, _validate_zero_z
+from ..._winding import ccw_elements
 from ...quality import MeshQualityChecker
 from ....tolerance import GeometryToleranceError, resolve_tolerance
 from ..utils.pattern_segments import _coerce_pattern_guides
@@ -20,7 +21,6 @@ from .utils import (
     _cleanup_data,
     _candidate_element_mask,
     _signed_xy_area,
-    _counter_clockwise_elements,
     _normalize_circle,
     _normalize_nonnegative,
     _project_circle,
@@ -171,7 +171,7 @@ def _assemble(nodes, elements, rows, local_nodes, local_elements, origins, sourc
     referenced = np.unique(output)
     mapping = np.full(len(updated), -1, dtype=np.int64)
     mapping[referenced] = np.arange(len(referenced))
-    return Mesh2D(updated[referenced], mapping[output])
+    return updated[referenced], mapping[output]
 
 
 def _run_local_imprint(
@@ -183,7 +183,7 @@ def _run_local_imprint(
 
     Observer receives (stage, global_snapshot, provenance). Normal calls do
     not allocate stage snapshots. Structurally invalid inputs still fail
-    before selection, while remote geometric defects remain untouched.
+    before selection, and the final commit validates every output row.
     """
     started = perf_counter()
     if not isinstance(mesh, Mesh2D):
@@ -200,10 +200,12 @@ def _run_local_imprint(
     if not 0.0 < flat_quad_angle <= 180.0:
         raise ValueError("flat_quad_angle must be greater than 0 and at most 180 degrees")
     nodes, elements = mesh.nodes, mesh.elements
-    if not np.all(np.isfinite(nodes)):
-        raise ValueError("nodes must contain finite coordinates")
     if elements.size and (elements.min() < 0 or elements.max() >= len(nodes)):
         raise ValueError("elements contain an out-of-range node index")
+    if not np.all(np.isfinite(nodes)):
+        bad = np.flatnonzero(~np.isfinite(nodes[elements, :2]).all(axis=(1, 2)))
+        raise GeometryToleranceError("nodes must contain finite coordinates", code="invalid_input_geometry",
+                                     element_indices=bad.tolist())
     policy.check_resolution(np.asarray([center - radius, center + radius]), stage="circular imprint")
     scale = max(1.0, float(np.max(np.abs(center))), radius)
     epsilon = 1024 * np.finfo(float).eps * scale
@@ -229,14 +231,17 @@ def _run_local_imprint(
         if observer is not None:
             for stage in ("projection", "cleanup", "split"):
                 observer(stage, Mesh2D(nodes, elements), {"patch_rows": core})
-        return mesh
+        return mesh._ensure_ccw()
     index_started = perf_counter()
     adjacency = _NodeElements(elements, len(nodes))
     rows = adjacency.incident(np.unique(elements[core]))
     data["adjacency_seconds"] = perf_counter() - index_started
     extraction_started = perf_counter()
     node_ids, inverse = np.unique(elements[rows], return_inverse=True)
-    local = Mesh2D(nodes[node_ids], inverse.reshape(-1, 4))
+    try:
+        local = Mesh2D(nodes[node_ids], inverse.reshape(-1, 4))
+    except GeometryToleranceError as error:
+        raise _global_geometry_error(error, element_ids=rows, source="circle input") from error
     data["extraction_seconds"] = perf_counter() - extraction_started
     projection_started = perf_counter()
     try:
@@ -271,9 +276,10 @@ def _run_local_imprint(
             selected[new_rows] = True
             rows = np.flatnonzero(selected)
         node_ids, inverse = np.unique(elements[rows], return_inverse=True)
-        projected_elements = _counter_clockwise_elements(
-            working_nodes[node_ids], inverse.reshape(-1, 4),
-        )
+        try:
+            projected_elements = ccw_elements(working_nodes[node_ids], inverse.reshape(-1, 4))
+        except GeometryToleranceError as error:
+            raise _global_geometry_error(error, element_ids=rows, source="circle projection") from error
         cleanup_started = perf_counter()
         discarded = []
         try:
@@ -379,17 +385,19 @@ def _run_local_imprint(
             working_nodes, elements, rows, clean_nodes, clean_elements,
             clean_origins, cleanup_sources,
         )
-        observer("cleanup", snapshot, metadata)
+        observer("cleanup", Mesh2D(*snapshot), metadata)
     stitch_started = perf_counter()
-    result = _assemble(
+    result_nodes, result_elements = _assemble(
         working_nodes, elements, rows, local.nodes, local.elements, origins, sources,
     )
     data["stitch_seconds"] = perf_counter() - stitch_started
     if observer is not None:
-        observer("split", result, metadata)
+        observer("split", Mesh2D(result_nodes, result_elements), metadata)
     commit_started = perf_counter()
-    if not (np.array_equal(result.nodes, nodes) and np.array_equal(result.elements, elements)):
-        mesh.replace_data(nodes=result.nodes, elements=result.elements)
+    if np.array_equal(result_nodes, nodes) and np.array_equal(result_elements, elements):
+        mesh._ensure_ccw()
+    else:
+        mesh.replace_data(nodes=result_nodes, elements=result_elements)
     data["commit_seconds"] = perf_counter() - commit_started
     data["total_seconds"] = perf_counter() - started
     return mesh

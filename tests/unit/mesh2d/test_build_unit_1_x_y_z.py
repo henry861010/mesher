@@ -5,6 +5,8 @@ from collections import Counter
 
 import numpy as np
 
+from ._fixtures import assert_ccw
+
 from mesher import Mesh2D
 from mesher.mesh2d.adapter.unit import (
     build_unit_1_1_1_x,
@@ -82,6 +84,7 @@ def _overlap_area(first, second):
 
 class BuildUnit1XYZTests(unittest.TestCase):
     def assert_valid_patch(self, mesh, edges, original_nodes, original_elements=None):
+        assert_ccw(mesh)
         if original_elements is None:
             original_elements = np.empty((0, 4), dtype=np.int32)
         np.testing.assert_array_equal(mesh.nodes[:len(original_nodes)], original_nodes)

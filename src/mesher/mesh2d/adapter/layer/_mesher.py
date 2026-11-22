@@ -5,11 +5,11 @@ from dataclasses import replace
 from time import perf_counter
 
 import numpy as np
-from ....tolerance import GeometryTolerance, resolve_tolerance
+from ....tolerance import GeometryTolerance, GeometryToleranceError, resolve_tolerance
 from numpy.typing import ArrayLike
 
 from ...model import Mesh2D
-from ._errors import geometric_errors
+from ._errors import geometric_errors, layer_error
 from ._fixed_boundary import (fixed_boundary_nodes, prepare_fixed_boundary,
                               restore_fixed_boundary)
 from ._geometry import area
@@ -420,6 +420,14 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
         _fail("max_added_elements must be a positive integer", "invalid_input",
               stage="input_validation", parameter="max_added_elements")
     max_added_elements = int(max_added_elements)
+    destination = mesh
+    if isinstance(mesh, Mesh2D):
+        try:
+            mesh = Mesh2D(mesh.nodes, mesh.elements)
+        except GeometryToleranceError as error:
+            raise layer_error(error, stage="input_validation") from error
+        except ValueError as error:
+            raise QuadLayerError(str(error), stage="input_validation") from error
     data, plan = _prepare_plan(mesh, outline_i, element_size, pattern_lines, expand_ratio,
                               tolerance, expand_size=expand_size, repair_slots=repair_slots,
                               max_added_elements=max_added_elements,
@@ -505,6 +513,7 @@ def _generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i, element_size: float, 
                    "edge_expansion": [d * data["scale"] for d in data["expansion"]],
                    "snapped_patterns": data["snapped"], "elapsed_seconds": perf_counter() - start}
     # This is the only mutation of the caller's mesh.
+    mesh = destination
     mesh.replace_data(nodes=world_nodes, elements=elements)
     return QuadLayerResult(
         mesh=mesh, outline=[int(node) for chain in result_outline for node in chain[:-1]],

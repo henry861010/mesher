@@ -6,6 +6,7 @@ import unittest
 
 import numpy as np
 
+from .._fixtures import edited_mesh
 from mesher import Mesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 
@@ -87,7 +88,7 @@ class HoleMeasurementTests(unittest.TestCase):
         self.assertEqual(report["overlap_area"], 1)
 
     def test_invalid_measurement_preserves_the_original_mesh(self):
-        mesh = Mesh2D(nodes=[[0, 0], [1, 1], [0, 1], [1, 0]],
+        mesh = edited_mesh(nodes=[[0, 0], [1, 1], [0, 1], [1, 0]],
                       elements=[[0, 1, 2, 3]])
         nodes, elements = mesh.nodes.copy(), mesh.elements.copy()
 

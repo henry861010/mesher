@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 import numpy as np
 
+from .._fixtures import assert_ccw
+
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.circular.utils.pattern_segments import _PatternGuideSet
 from mesher.mesh2d.circular.imprint.mesher import (
@@ -1029,6 +1031,7 @@ class CircleIntegrationTests(unittest.TestCase):
         )
 
         self.assertIs(result, mesh)
+        assert_ccw(mesh)
         pattern_nodes, _ = self.assert_pattern_circle_edges(mesh)
         boundaries = _get_boundary(mesh)
         self.assertEqual(len(boundaries), 1)
@@ -1686,7 +1689,7 @@ class OpenCircleIntegrationTests(unittest.TestCase):
 
 class DeleteElementTests(unittest.TestCase):
     def setUp(self):
-        self.nodes = (np.arange(18, dtype=np.float64).reshape(6, 3) * [1, 1, 0])
+        self.nodes = np.array([[i, i*i, 0.] for i in range(6)])
         self.mesh = Mesh2D(
             nodes=self.nodes,
             elements=np.array(
@@ -1735,7 +1738,7 @@ class DeleteElementTests(unittest.TestCase):
 
 class ClearNodeTests(unittest.TestCase):
     def test_removes_unreferenced_nodes_and_remaps_elements(self):
-        nodes = (np.arange(21, dtype=np.float64).reshape(7, 3) * [1, 1, 0])
+        nodes = np.array([[i, i*i, 0.] for i in range(7)])
         mesh = Mesh2D(
             nodes=nodes,
             elements=np.array(
@@ -1760,7 +1763,7 @@ class ClearNodeTests(unittest.TestCase):
 
     def test_empty_elements_remove_all_nodes(self):
         mesh = Mesh2D(
-            nodes=(np.arange(12, dtype=np.float64).reshape(4, 3) * [1, 1, 0]),
+            nodes=np.array([[i, i*i, 0.] for i in range(4)]),
             elements=np.empty((0, 4), dtype=np.int64),
         )
 
@@ -1771,7 +1774,7 @@ class ClearNodeTests(unittest.TestCase):
         self.assertEqual(mesh.elements.shape, (0, 4))
 
     def test_returns_identity_map_when_all_nodes_are_referenced(self):
-        nodes = (np.arange(12, dtype=np.float64).reshape(4, 3) * [1, 1, 0])
+        nodes = np.array([[i, i*i, 0.] for i in range(4)])
         elements = np.array([[0, 1, 2, 3]], dtype=np.int32)
         mesh = Mesh2D(nodes=nodes, elements=elements)
 

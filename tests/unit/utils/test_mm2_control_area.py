@@ -174,7 +174,7 @@ class FindAdapterGroupTests(unittest.TestCase):
         horizontal = [[[10, y], [0, y]] for y in (2, 0, 1)]
         vertical = [[[x, 0], [x, 10]] for x in (4, 6, 5)]
         short = [[2, 1], [10, 1]]
-        pair = [[[10, y], [0, y]] for y in (6, 5)]
+        pair = [[[10, y], [0, y]] for y in (7, 6)]
         lines = [pair[0], *horizontal, pair[0][::-1], short, *vertical,
                  horizontal[0][::-1], pair[1], short]
         before = deepcopy(lines)
@@ -186,12 +186,11 @@ class FindAdapterGroupTests(unittest.TestCase):
         self.assertEqual(remaining, [pair[0], pair[0][::-1], short, pair[1], short])
         self.assertEqual(lines, before)
 
-    def test_gap_equal_to_threshold_separates_groups(self):
-        lines = [[[10, y], [0, y]] for y in (4, 0, 5, 1)]
-        self.assertEqual(find_adapter_group(3, lines, min_group_count=2), ([
-            {"box": [0, 0, 10, 1], "x_points": [[0, 0], [0, 1]]},
-            {"box": [0, 4, 10, 5], "x_points": [[0, 4], [0, 5]]},
-        ], []))
+    def test_group_size_is_inclusive(self):
+        lines = [[[10, y], [0, y]] for y in (0, 50, 100, 150.001)]
+        self.assertEqual(find_adapter_group(50, lines), ([
+            {"box": [0, 0, 10, 100], "x_points": [[0, 0], [0, 50], [0, 100]]},
+        ], [lines[-1]]))
 
     def test_custom_minimum_counts_distinct_positions(self):
         lines = [[[x, 0], [x, 10]] for x in (0, 1, 2, 2)]

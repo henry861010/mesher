@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+from .._fixtures import assert_ccw
 from mesher.mesh2d.imprint_line import get_pair_line, imprint_lines, ImprintLineError
 from mesher.mesh2d.imprint_line.mesher import _prepare_plan, _assemble
 from mesher.mesh2d.imprint_line._unit import build_unit
@@ -25,6 +26,7 @@ class ImprintTests(unittest.TestCase):
         args = _prepare_plan(size, pairs, patterns, outer_outline=outer,
                              min_transition_size=minimum, pattern_snap_distance=snap, **kwargs)
         mesh = _assemble(*args)
+        assert_ccw(mesh)
         plan = args[1]
         self.assertTrue(np.all(mesh.nodes[:, 2] == 0))
         expected_triangles = 0

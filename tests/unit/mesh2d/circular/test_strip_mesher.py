@@ -1078,7 +1078,7 @@ class MeshInnerOuterCircleTests(unittest.TestCase):
 
     def test_clockwise_existing_element_is_an_atomic_error(self):
         mesh, inner_nodes, outer_nodes = self._closed_fixture()
-        mesh.elements = np.array([[0, 2, 1, 1]], dtype=np.int32)
+        mesh.elements[:] = np.array([[0, 2, 1, 1]], dtype=np.int32)
 
         self.assert_atomic_value_error(
             mesh,

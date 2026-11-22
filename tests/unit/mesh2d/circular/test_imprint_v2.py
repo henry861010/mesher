@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from .._fixtures import edited_mesh
 from mesher import Mesh2D
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.circular.imprint_v2 import imprint_circle
@@ -259,8 +260,8 @@ class ToCircleTests(unittest.TestCase):
         np.testing.assert_array_equal(mesh.elements, [[0, 2, 1, 1]])
         self.assertGreater(self._signed_areas(mesh)[0], 0.0)
 
-    def test_preserves_zero_area_elements_without_reordering(self):
-        mesh = self._mesh(
+    def test_rejects_zero_area_elements_without_reordering(self):
+        mesh = edited_mesh(
             [
                 [0.0, 0.0],
                 [1.0, 0.0],
@@ -274,7 +275,8 @@ class ToCircleTests(unittest.TestCase):
         )
         original_elements = mesh.elements.copy()
 
-        _to_circle(mesh, [0.0, 0.0], 1.0, 0.0, 1e-12, None, indices=[])
+        with self.assertRaises(ValueError):
+            _to_circle(mesh, [0.0, 0.0], 1.0, 0.0, 1e-12, None, indices=[])
 
         np.testing.assert_array_equal(mesh.elements, original_elements)
         np.testing.assert_array_equal(self._signed_areas(mesh), [0.0, 0.0])
@@ -319,7 +321,7 @@ class ToCircleTests(unittest.TestCase):
                 [0.9, 0.0, 0.0],
                 [0.0, 1.1, 0.0],
                 [-1.0, 0.0, 0.0],
-                [2.0, 2.0, 0.0],
+                [2.0, -2.0, 0.0],
                 [0.0, 0.0, 0.0],
             ],
             [[0, 1, 2, 3]],
@@ -340,13 +342,13 @@ class ToCircleTests(unittest.TestCase):
                 [1.0, 0.0],
                 [0.0, 1.0],
                 [-1.0, 0.0],
-                [2.0, 2.0],
+                [2.0, -2.0],
                 [0.0, 0.0],
             ],
             atol=1.0e-15,
         )
         np.testing.assert_array_equal(mesh.nodes[:, 2], 0.0)
-        np.testing.assert_array_equal(mesh.elements, [[0, 3, 2, 1]])
+        np.testing.assert_array_equal(mesh.elements, [[0, 1, 2, 3]])
 
     def test_element_indices_limit_unique_referenced_nodes(self):
         mesh = self._mesh(
@@ -636,7 +638,7 @@ class ToCircleTests(unittest.TestCase):
         )
         mesh = self._mesh(
             np.column_stack((np.cos(angles), np.sin(angles))),
-            [[0, 1, 2, 3], [4, 5, 6, 7]],
+            [[0, 2, 3, 3], [1, 2, 3, 3], [4, 5, 6, 7]],
         )
         unselected = mesh.nodes[4:].copy()
 
@@ -647,7 +649,7 @@ class ToCircleTests(unittest.TestCase):
             0.05,
             0.04,
             None,
-            indices=[0],
+            indices=[0, 1],
         )
 
         np.testing.assert_array_equal(mesh.nodes[1, :2], mesh.nodes[0, :2])
@@ -824,7 +826,7 @@ class ImprintCircleTests(unittest.TestCase):
             2.0,
         )
 
-    def test_preserves_clockwise_triangle_winding(self):
+    def test_splits_clockwise_input_into_counterclockwise_children(self):
         mesh = Mesh2D(
             nodes=[[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
             elements=[[0, 2, 1, 1]],
@@ -840,7 +842,7 @@ class ImprintCircleTests(unittest.TestCase):
                 points[:, 0] * following[:, 1]
                 - points[:, 1] * following[:, 0]
             )
-            self.assertLess(signed_area, 0.0)
+            self.assertGreater(signed_area, 0.0)
 
     def test_handles_a_large_offset_circle_without_area_cancellation(self):
         center = np.array([1.0e12, -1.0e12])
@@ -1156,7 +1158,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
             [14, 15, 16, 17],   # folded Quad4
             [0, 1, 1, 2],       # invalid repeated-node Quad4
         ]
-        mesh = Mesh2D(nodes=nodes, elements=elements)
+        mesh = edited_mesh(nodes, elements)
 
         result = _remove_redundant_element(mesh, 0.01, 0.01)
 
@@ -1299,7 +1301,7 @@ class RemoveRedundantElementTests(unittest.TestCase):
         self.assertEqual(mesh.element_count, original_count)
 
     def test_removes_elements_with_nonfinite_xy_coordinates(self):
-        mesh = Mesh2D(
+        mesh = edited_mesh(
             nodes=[
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],

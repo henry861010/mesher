@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 import numpy as np
 
+from .._fixtures import assert_ccw
+
 from mesher import Mesh2D
 from mesher.mesh2d.circular import extend_circular_mesh
 from mesher.mesh2d.circular.extend import mesher as extend_module
@@ -126,6 +128,7 @@ class ExtendCircularMeshTests(unittest.TestCase):
         )
 
         self.assertIs(result, mesh)
+        assert_ccw(mesh)
         layer_count = 3
         ring_size = 8
         self.assertEqual(mesh.nodes.shape, (9 + layer_count * ring_size, 3))
@@ -354,7 +357,7 @@ class ExtendCircularMeshTests(unittest.TestCase):
         )
         snapshot = self._snapshot(mesh)
 
-        with self.assertRaisesRegex(ValueError, "strict angular order"):
+        with self.assertRaisesRegex(ValueError, "opposite directions"):
             extend_circular_mesh(
                 mesh,
                 element_size=0.5,

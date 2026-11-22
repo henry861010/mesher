@@ -52,7 +52,7 @@ def _delete_element(mesh: Mesh2D, indices) -> Mesh2D:
         delete_indices = np.empty(0, dtype=np.int64)
 
     if delete_indices.size == 0:
-        return mesh
+        return mesh._ensure_ccw()
 
     keep = np.ones(len(elements), dtype=bool)
     keep[delete_indices] = False
@@ -106,6 +106,7 @@ def _clear_node(mesh: Mesh2D) -> np.ndarray:
     old_to_new[referenced_nodes] = np.arange(referenced_nodes.size, dtype=np.intp)
 
     if referenced_nodes.size == node_count:
+        mesh._ensure_ccw()
         return old_to_new
 
     compact_elements = old_to_new[elements].astype(elements.dtype, copy=False)

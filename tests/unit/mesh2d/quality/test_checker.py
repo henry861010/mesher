@@ -18,8 +18,8 @@ from mesher.mesh2d.quality import (
 
 def _checker(nodes, elements, *, tolerance=None):
     kwargs = {} if tolerance is None else {"tolerance": tolerance}
-    return MeshQualityChecker(
-        Mesh2D(np.asarray(nodes), np.asarray(elements)),
+    return MeshQualityChecker.from_arrays(
+        np.asarray(nodes), np.asarray(elements),
         **kwargs,
     )
 

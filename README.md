@@ -175,6 +175,12 @@ aligned nodes. Missing or ambiguous centers and insufficient arms raise
 
 `EditorMesh2D` is a stateless NumPy-only API: every call receives a `Mesh2D`.
 
+Every public mesh-producing operation returns simple counterclockwise XY elements.
+Valid clockwise input is reordered while retaining the first node and Tri3 padding.
+Direct NumPy edits are supported, and the next successful mesh update certifies all
+output cells. To diagnose original winding or malformed geometry before construction,
+use `MeshQualityChecker.from_arrays(nodes, elements)`.
+
 ```python
 from mesher.mesh2d import EditorMesh2D
 
@@ -195,7 +201,7 @@ Euclidean proximity groups whose complete diameter is at most `tolerance`
 representative; an overlong proximity chain raises `ambiguous_geometry`.
 Adjacent-vertex Quad4 collapses can become padded Tri3, but loss of a cell raises
 `feature_below_resolution` before mutation. Unreferenced nodes are removed;
-winding, concavity, and pre-existing duplicate elements are retained. Tolerance
+output winding is CCW, and concavity and pre-existing duplicate elements are retained. Tolerance
 must be finite and strictly positive. Deletion renumbers element rows, and
 explicit equivalence can renumber nodes; obtain fresh selections after editing.
 

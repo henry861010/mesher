@@ -300,14 +300,15 @@ class LocalPatchTests(unittest.TestCase):
             run(mesh, guide_segments=[[[0., 0.], [1., 1.]]])
         self.assertIs(mesh.nodes, original_nodes)
 
-    def test_remote_folded_clockwise_and_duplicate_geometry_is_preserved(self):
+    def test_remote_clockwise_and_duplicate_cells_are_normalized(self):
         nodes = [[0., 0.], [2., 0.], [0., 2.],
                  [10., 0.], [11., 1.], [10., 1.], [11., 0.],
                  [20., 0.], [20., 1.], [21., 0.],
                  [20., 0.], [20., 1.], [21., 0.]]
-        elements = [[0, 1, 2, 2], [3, 4, 5, 6], [7, 8, 9, 9], [10, 11, 12, 12]]
+        elements = [[0, 1, 2, 2], [3, 6, 4, 5], [7, 8, 9, 9], [10, 11, 12, 12]]
         mesh = Mesh2D(nodes, elements)
         before = mesh.nodes[mesh.elements[1:]].copy()
+        mesh.elements[2:] = [[7, 8, 9, 9], [10, 11, 12, 12]]
         run(mesh, tolerance=.01)
         remote = mesh.elements[np.min(mesh.nodes[mesh.elements, 0], axis=1) >= 10.]
         np.testing.assert_array_equal(mesh.nodes[remote], before)

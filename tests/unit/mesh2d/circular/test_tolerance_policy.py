@@ -141,7 +141,7 @@ class CircularTolerancePolicyTests(unittest.TestCase):
             edge = origin + 1. + .001
             for x in (np.nextafter(edge, -np.inf), edge, np.nextafter(edge, np.inf)):
                 with self.subTest(origin=origin, x=x):
-                    mesh = Mesh2D([[x, 0.]], [[0, 0, 0, 0]])
+                    mesh = Mesh2D([[x, 0.], [origin, .1], [origin, -.1]], [[0, 1, 2, 2]])
                     selected = _search_circle(mesh, origin, 0., 1.)
                     expected = abs(Fraction(float(x)) - Fraction(origin)) <= Fraction(1.) + Fraction(.001)
                     self.assertEqual(bool(len(selected)), expected)

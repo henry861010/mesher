@@ -267,9 +267,19 @@ class MeshQualityChecker:
     ) -> None:
         if not isinstance(mesh, Mesh2D):
             raise ValueError("mesh must be a Mesh2D instance")
+        self._load_arrays(mesh.nodes, mesh.elements, tolerance)
+
+    @classmethod
+    def from_arrays(cls, nodes: ArrayLike, elements: ArrayLike, *, tolerance=None):
+        """Inspect raw winding and malformed cells before Mesh2D normalization."""
+        checker = cls.__new__(cls)
+        checker._load_arrays(nodes, elements, tolerance)
+        return checker
+
+    def _load_arrays(self, nodes, elements, tolerance):
         self.tolerance = resolve_tolerance(tolerance)
 
-        node_array = np.asarray(mesh.nodes)
+        node_array = np.asarray(nodes)
         if node_array.ndim != 2 or node_array.shape[1] not in (2, 3):
             raise ValueError("nodes must have shape (N, 2) or (N, 3)")
         if (
@@ -279,7 +289,7 @@ class MeshQualityChecker:
         ):
             raise ValueError("nodes must have a real numeric dtype")
 
-        element_array = np.asarray(mesh.elements)
+        element_array = np.asarray(elements)
         if element_array.ndim != 2 or element_array.shape[1] != 4:
             raise ValueError("elements must have shape (M, 4)")
         if not np.issubdtype(element_array.dtype, np.integer) or np.issubdtype(

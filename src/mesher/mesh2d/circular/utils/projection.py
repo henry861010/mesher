@@ -1436,6 +1436,5 @@ def _to_circle(
     )
 
     # Both arrays are fully materialized before either attribute is assigned.
-    mesh.nodes = combined_nodes
-    mesh.elements = combined_elements
+    mesh.replace_data(nodes=combined_nodes, elements=combined_elements)
     return mesh

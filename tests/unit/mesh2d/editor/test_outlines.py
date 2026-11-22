@@ -110,6 +110,7 @@ class EditorOutlinesTests(unittest.TestCase):
         self.assertEqual(EditorMesh2D.outlines(empty_mesh()), [])
         invalid = Mesh2D([[0, 0], [1, 0], [0, 1], [0, -1]],
                          [[0, 1, 2, 2], [0, 1, 3, 3]])
+        invalid.elements[1] = [0, 1, 3, 3]
         with self.assertRaises(ValueError):
             EditorMesh2D.outlines(invalid)
         for kind in ('zero_length', 'zero_area', 'nonfinite'):

@@ -88,7 +88,7 @@ class FullGeometryTests(unittest.TestCase):
 
     def test_source_winding_triangle_and_outside_are_rejected(self):
         clockwise = _rectangle()
-        clockwise.elements = clockwise.elements[:, ::-1]
+        clockwise.elements[:] = clockwise.elements[:, ::-1]
         triangle = Mesh2D([[0, 0], [1, 0], [0, 1]], [[0, 1, 2, 2]])
         for mesh in (clockwise, triangle, _rectangle(20., 20., 21., 21.)):
             with self.subTest(mesh=mesh.elements.tolist()), self.assertRaises(QuadLayerError):

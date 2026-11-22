@@ -155,13 +155,13 @@ def _assemble(working, final_outlines, regions):
     return Mesh2D(np.vstack(nodes), np.vstack(elements)), outer_ids
 
 
-def _validate_complete(mesh, original, outer, outer_ids):
+def _validate_complete(mesh, source_nodes, source_elements, outer, outer_ids):
     """Validate the assembled topology and geometry before the sole caller commit."""
-    if (not np.array_equal(mesh.nodes[:original.node_count], original.nodes)
-            or not np.array_equal(mesh.elements[:original.element_count], original.elements)):
+    if (not np.array_equal(mesh.nodes[:len(source_nodes)], source_nodes)
+            or not np.array_equal(mesh.elements[:len(source_elements)], source_elements)):
         raise ValueError("full meshing changed original nodes or elements")
-    referenced_new = np.unique(mesh.elements[mesh.elements >= original.node_count])
-    if not np.array_equal(referenced_new, np.arange(original.node_count, mesh.node_count)):
+    referenced_new = np.unique(mesh.elements[mesh.elements >= len(source_nodes)])
+    if not np.array_equal(referenced_new, np.arange(len(source_nodes), mesh.node_count)):
         raise ValueError("full meshing generated unused nodes")
     scale = float(np.max(np.ptp(outer, axis=0)))
     xy = (mesh.nodes[:, :2] - outer[0]) / scale
@@ -265,10 +265,13 @@ def generate_full_adaptive_mesh(
     policy = _call(lambda: resolve_tolerance(tolerance), stage="input_validation")
     outer_outline, _, patterns = _call(lambda: canonical_geometry(
         outer_outline, pattern_lines=patterns, tolerance=policy), stage="input_validation")
+    if not isinstance(mesh, Mesh2D):
+        raise QuadLayerError("mesh must be a Mesh2D", stage="input_validation")
+    working = _call(lambda: Mesh2D(mesh.nodes, mesh.elements), stage="input_validation")
+    source_nodes, source_elements = working.nodes, working.elements
     topology = _call(lambda: discover_boundaries(
-        mesh, outer_outline, tolerance=policy),
+        working, outer_outline, tolerance=policy),
         stage="input_validation")
-    working = Mesh2D(mesh.nodes, mesh.elements)
     outlines = topology.outlines
     layer_outlines, layer_diagnostics = [], []
 
@@ -363,7 +366,7 @@ def generate_full_adaptive_mesh(
     layer_outlines.append(current)
     layer_diagnostics.append(diagnostics)
     completed, outer_ids = _call(lambda: _assemble(working, current, regions), stage="global_assembly")
-    _call(lambda: _validate_complete(completed, mesh, topology.outer_outline, outer_ids),
+    _call(lambda: _validate_complete(completed, source_nodes, source_elements, topology.outer_outline, outer_ids),
           stage="full_mesh_validation")
     diagnostics = {
         "geometry_tolerance": policy.absolute,

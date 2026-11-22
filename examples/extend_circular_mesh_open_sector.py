@@ -34,12 +34,15 @@ def build_inner_sector(
     )
 
     ring = np.arange(1, sector_count + 2, dtype=np.int32)
+    first, second = ring[:-1], ring[1:]
+    if end_angle < start_angle:
+        first, second = second, first
     elements = np.column_stack(
         (
             np.zeros(sector_count, dtype=np.int32),
-            ring[:-1],
-            ring[1:],
-            ring[1:],
+            first,
+            second,
+            second,
         )
     )
     return Mesh2D(nodes=nodes, elements=elements)

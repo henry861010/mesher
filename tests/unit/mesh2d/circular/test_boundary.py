@@ -12,7 +12,7 @@ from mesher import Mesh2D
 class GetBoundaryTests(unittest.TestCase):
     def test_splits_selected_interface_edges_from_domain_edges(self):
         mesh = Mesh2D(
-            nodes=np.zeros((6, 2), dtype=np.float64),
+            nodes=[[x, y] for y in range(2) for x in range(3)],
             elements=np.array(
                 [[0, 1, 4, 3], [1, 2, 5, 4]],
                 dtype=np.int32,
@@ -32,7 +32,7 @@ class GetBoundaryTests(unittest.TestCase):
 
     def test_returns_ordered_outer_boundary_without_repeating_first_node(self):
         mesh = Mesh2D(
-            nodes=np.zeros((6, 3), dtype=np.float64),
+            nodes=[[x, y] for y in range(2) for x in range(3)],
             elements=np.array(
                 [[0, 1, 4, 3], [1, 2, 5, 4]],
                 dtype=np.int32,
@@ -47,7 +47,7 @@ class GetBoundaryTests(unittest.TestCase):
 
     def test_indices_limit_boundary_search_to_selected_elements(self):
         mesh = Mesh2D(
-            nodes=np.zeros((6, 3), dtype=np.float64),
+            nodes=[[x, y] for y in range(2) for x in range(3)],
             elements=np.array(
                 [[0, 1, 4, 3], [1, 2, 5, 4]],
                 dtype=np.int32,
@@ -61,7 +61,7 @@ class GetBoundaryTests(unittest.TestCase):
 
     def test_multiple_indices_use_the_selected_submesh_regardless_of_order(self):
         mesh = Mesh2D(
-            nodes=np.zeros((6, 3), dtype=np.float64),
+            nodes=[[x, y] for y in range(2) for x in range(3)],
             elements=np.array(
                 [[0, 1, 4, 3], [1, 2, 5, 4]],
                 dtype=np.int32,
@@ -75,7 +75,7 @@ class GetBoundaryTests(unittest.TestCase):
 
     def test_empty_indices_have_no_boundaries(self):
         mesh = Mesh2D(
-            nodes=np.zeros((4, 2), dtype=np.float64),
+            nodes=[[0, 0], [1, 0], [1, 1], [0, 1]],
             elements=np.array([[0, 1, 2, 3]], dtype=np.int64),
         )
 
@@ -83,7 +83,7 @@ class GetBoundaryTests(unittest.TestCase):
 
     def test_rejects_invalid_element_indices(self):
         mesh = Mesh2D(
-            nodes=np.zeros((4, 2), dtype=np.float64),
+            nodes=[[0, 0], [1, 0], [1, 1], [0, 1]],
             elements=np.array([[0, 1, 2, 3]], dtype=np.int64),
         )
 
@@ -101,7 +101,7 @@ class GetBoundaryTests(unittest.TestCase):
                     _get_boundary(mesh, indices=indices)
 
     def test_returns_outer_and_hole_boundaries_with_preserved_winding(self):
-        nodes = np.zeros((16, 3), dtype=np.float64)
+        nodes = [[x, y] for y in range(4) for x in range(4)]
         elements = []
         for row in range(3):
             for column in range(3):
@@ -129,7 +129,7 @@ class GetBoundaryTests(unittest.TestCase):
 
     def test_supports_padded_triangles(self):
         mesh = Mesh2D(
-            nodes=np.zeros((3, 2), dtype=np.float64),
+            nodes=[[0, 0], [1, 0], [0, 1]],
             elements=np.array([[0, 1, 2, 2]], dtype=np.int64),
         )
 
@@ -140,7 +140,7 @@ class GetBoundaryTests(unittest.TestCase):
 
     def test_keeps_point_touching_components_as_separate_boundaries(self):
         mesh = Mesh2D(
-            nodes=np.zeros((7, 2), dtype=np.float64),
+            nodes=[[0, 0], [1, 0], [1, 1], [0, 1], [-1, 0], [-1, -1], [0, -1]],
             elements=np.array(
                 [[0, 1, 2, 3], [0, 4, 5, 6]],
                 dtype=np.int64,

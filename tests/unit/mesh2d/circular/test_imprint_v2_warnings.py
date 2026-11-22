@@ -8,6 +8,7 @@ import warnings
 
 import numpy as np
 
+from .._fixtures import edited_mesh
 from mesher import Mesh2D
 from mesher.tolerance import GeometryToleranceError
 from mesher.mesh2d.circular.imprint_v2 import imprint_circle
@@ -27,7 +28,7 @@ def imprint(mesh, **overrides):
 
 def mesh_with_fold():
     # The untouched remote element ensures local and input element IDs differ.
-    return Mesh2D(
+    return edited_mesh(
         [[10., 10.], [11., 10.], [10., 11.],
          [0., 0.], [1., 1.], [0., 1.], [1., 0.]],
         [[0, 1, 2, 2], [3, 4, 5, 6]],
@@ -41,7 +42,7 @@ class CleanupWarningTests(unittest.TestCase):
             [[0., 0.], [2., 1.], [0., 1.], [1., 0.]],
         ):
             with self.subTest(points=points):
-                mesh = Mesh2D(points, [[0, 1, 2, 3]])
+                mesh = edited_mesh(points, [[0, 1, 2, 3]])
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter('always')
                     _remove_redundant_element(mesh, 1e-12, 0.)
@@ -82,7 +83,7 @@ class CleanupWarningTests(unittest.TestCase):
         )
         for nodes, elements, merge, area in cases:
             with self.subTest(nodes=nodes):
-                mesh = Mesh2D(nodes, elements)
+                mesh = edited_mesh(nodes, elements)
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter('always')
                     _remove_redundant_element(mesh, max(merge, 1e-12), area)
@@ -95,7 +96,7 @@ class CleanupWarningTests(unittest.TestCase):
             ([[0., 0.], [.05, 0.], [1., 1.], [0., 1.]], .1, 1),
         ):
             with self.subTest(points=points):
-                mesh = Mesh2D(points, [[0, 1, 2, 3]])
+                mesh = edited_mesh(points, [[0, 1, 2, 3]])
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter('always')
                     _remove_redundant_element(mesh, max(merge, 1e-12), 0.)
@@ -119,7 +120,7 @@ class CleanupWarningTests(unittest.TestCase):
         points = np.array([[0., 0.], [1., 1.], [0., 1.], [1., 0.]])
         for scale, offset in ((1.e-100, 0.), (1., 1.e12), (1.e100, 0.)):
             with self.subTest(scale=scale, offset=offset):
-                mesh = Mesh2D(points * scale + offset, [[0, 1, 2, 3]])
+                mesh = edited_mesh(points * scale + offset, [[0, 1, 2, 3]])
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter('always')
                     _remove_redundant_element(mesh, 1e-12, 0.)
@@ -150,7 +151,7 @@ class LocalImprintValidationTests(unittest.TestCase):
 
     def test_multiple_invalid_sources_are_reported_in_input_order(self):
         mesh = mesh_with_fold()
-        mesh.replace_data(
+        mesh = edited_mesh(
             nodes=np.concatenate((mesh.nodes, mesh.nodes[3:] + [.1, 0., 0.])),
             elements=np.concatenate((mesh.elements, [[7, 8, 9, 10]])),
         )
@@ -158,14 +159,15 @@ class LocalImprintValidationTests(unittest.TestCase):
             imprint(mesh)
         self.assertEqual(error.exception.context['element_indices'], [1, 2])
 
-    def test_remote_invalid_elements_are_preserved(self):
-        mesh = Mesh2D(
+    def test_remote_invalid_elements_reject_commit(self):
+        mesh = edited_mesh(
             [[0., 0.], [0., 2.], [2., 0.],
              [10., 0.], [11., 1.], [10., 1.], [11., 0.]],
             [[0, 1, 2, 2], [3, 4, 5, 6]],
         )
         before = mesh.nodes[mesh.elements[1]].copy()
-        imprint(mesh)
+        with self.assertRaises(GeometryToleranceError):
+            imprint(mesh)
         np.testing.assert_array_equal(mesh.nodes[mesh.elements[1]], before)
 
     def test_later_split_failure_remains_atomic(self):

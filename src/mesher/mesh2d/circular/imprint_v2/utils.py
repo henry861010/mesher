@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from ..._winding import ccw_elements
 from ...model import Mesh2D, _validate_zero_z
 from ....tolerance import GeometryToleranceError, resolve_tolerance, within_distance, circle_membership
 from ...utils.equivalence import (
@@ -506,69 +507,6 @@ def _merge_close_circle_targets(
     return merged
 
 
-def _counter_clockwise_elements(
-    nodes: NDArray[np.float64],
-    elements: NDArray[np.integer],
-) -> NDArray[np.integer]:
-    """Return connectivity with every orientable row wound counter-clockwise.
-
-    Signed areas are evaluated after translating each element to its first
-    node and scaling its local coordinates.  Scaling the original coordinates
-    first is used only when the translation itself overflows.  Degenerate or
-    otherwise indeterminate rows are deliberately left unchanged.
-    """
-    if elements.shape[0] == 0:
-        return elements
-
-    points = nodes[elements, :2]
-    with np.errstate(over="ignore", invalid="ignore"):
-        relative_points = points - points[:, :1]
-
-    finite_translation = np.all(np.isfinite(relative_points), axis=(1, 2))
-    finite_rows = np.flatnonzero(finite_translation)
-    if finite_rows.size:
-        local_scales = np.max(
-            np.abs(relative_points[finite_rows]),
-            axis=(1, 2),
-        )
-        nonzero_scale = local_scales > 0.0
-        scaled_rows = finite_rows[nonzero_scale]
-        relative_points[scaled_rows] /= local_scales[nonzero_scale, None, None]
-
-    overflow_rows = np.flatnonzero(~finite_translation)
-    if overflow_rows.size:
-        overflow_points = points[overflow_rows]
-        coordinate_scales = np.max(
-            np.abs(overflow_points),
-            axis=(1, 2),
-        )
-        scaled_points = overflow_points / coordinate_scales[:, None, None]
-        relative_points[overflow_rows] = (
-            scaled_points - scaled_points[:, :1]
-        )
-
-    following_points = np.roll(relative_points, -1, axis=1)
-    with np.errstate(over="ignore", invalid="ignore"):
-        signed_twice_areas = np.sum(
-            relative_points[..., 0] * following_points[..., 1]
-            - relative_points[..., 1] * following_points[..., 0],
-            axis=1,
-        )
-    clockwise = np.isfinite(signed_twice_areas) & (signed_twice_areas < 0.0)
-    if not np.any(clockwise):
-        return elements
-
-    normalized = elements.copy()
-    is_triangle = elements[:, 2] == elements[:, 3]
-    clockwise_triangles = clockwise & is_triangle
-    clockwise_quads = clockwise & ~is_triangle
-    normalized[clockwise_triangles] = elements[clockwise_triangles][
-        :, [0, 2, 1, 1]
-    ]
-    normalized[clockwise_quads] = elements[clockwise_quads][:, [0, 3, 2, 1]]
-    return normalized
-
-
 def _preserve_projection_geometry(original, proposed, elements, tolerance):
     """Withdraw projection moves that would invalidate an originally valid cell.
 
@@ -618,17 +556,9 @@ def _commit_circle_update(
     elements: NDArray[np.integer],
 ) -> Mesh2D:
     """Commit proposed nodes and globally normalized connectivity atomically."""
-    proposed_elements = _counter_clockwise_elements(
-        proposed_nodes,
-        elements,
-    )
-    if np.array_equal(proposed_nodes, mesh.nodes) and np.array_equal(
-        proposed_elements,
-        mesh.elements,
-    ):
-        return mesh
-
-    mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
+    if np.array_equal(proposed_nodes, mesh.nodes) and np.array_equal(elements, mesh.elements):
+        return mesh._ensure_ccw()
+    mesh.replace_data(nodes=proposed_nodes, elements=elements)
     return mesh
 
 
@@ -1269,7 +1199,7 @@ def _split_circle(
 
     element_indices = _normalize_indices(elements.shape[0], indices)
     if element_indices.size == 0:
-        return mesh, np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
+        return mesh._ensure_ccw(), np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
 
     selected_elements = elements[element_indices]
     is_triangle = selected_elements[:, 2] == selected_elements[:, 3]
@@ -1288,6 +1218,7 @@ def _split_circle(
         )
 
     xy = float_nodes[:, :2]
+    selected_elements = ccw_elements(float_nodes, selected_elements)
     selected_xy = xy[selected_elements]
     topology_counts = np.where(is_triangle, 3, 4).astype(np.int64)
     edge_positions = np.arange(4, dtype=np.int64)[None, :]
@@ -1357,7 +1288,7 @@ def _split_circle(
     ) & np.all(element_minimum <= circle_maximum, axis=1)
     candidate_positions = np.flatnonzero(broad_phase)
     if candidate_positions.size == 0:
-        return mesh, np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
+        return mesh._ensure_ccw(), np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
 
     candidate_elements = selected_elements[candidate_positions]
     candidate_xy = selected_xy[candidate_positions]
@@ -1797,7 +1728,7 @@ def _split_circle(
     )
     eligible_candidate_positions = np.flatnonzero(eligible_candidates)
     if eligible_candidate_positions.size == 0:
-        return mesh, np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
+        return mesh._ensure_ccw(), np.arange(elements.shape[0]), np.empty((0, 2), dtype=np.int64)
 
     eligible_selection_positions = candidate_positions[
         eligible_candidate_positions
@@ -2168,13 +2099,6 @@ def _split_circle(
     parent_signed_areas = 0.5 * np.sum(
         np.where(parent_valid_edges, parent_cross, 0.0), axis=1
     )
-    original_parent_signs = np.sign(
-        np.where(
-            eligible_counts == 3,
-            triangle_cross[eligible_selection_positions],
-            corner_cross[eligible_selection_positions, 0],
-        )
-    )
     parent_corner_cross = (
         (parent_next_points[..., 0] - proposed_parent_points[..., 0])
         * (
@@ -2193,22 +2117,21 @@ def _split_circle(
     if np.any(
         parent_valid_edges
         & (
-            parent_corner_cross * original_parent_signs[:, None]
+            parent_corner_cross
             <= parent_geometry_tolerances[:, None]
         )
     ) or np.any(
-        parent_signed_areas * original_parent_signs
+        parent_signed_areas
         <= parent_geometry_tolerances
     ):
         raise ValueError(
             "snapping an intersection would invert or fold its parent element"
         )
-    parent_signs = original_parent_signs
     child_parent_rows = np.repeat(
         np.arange(eligible_count, dtype=np.int64), child_counts
     )
     if np.any(
-        child_signed_areas * parent_signs[child_parent_rows]
+        child_signed_areas
         <= child_area_tolerances
     ):
         raise ValueError("imprint produced a degenerate or inverted child")
@@ -2227,7 +2150,7 @@ def _split_circle(
     if np.any(
         child_valid_edges
         & (
-            child_corner_cross * parent_signs[child_parent_rows, None]
+            child_corner_cross
             <= child_area_tolerances[:, None]
         )
     ):
@@ -2346,7 +2269,7 @@ def _remove_redundant_element(
     )
     elements_unchanged = np.array_equal(proposed_elements, elements)
     if nodes_unchanged and elements_unchanged:
-        return mesh
+        return mesh._ensure_ccw()
 
     _warn_invalid_removals(discarded, stacklevel=3)
     mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)

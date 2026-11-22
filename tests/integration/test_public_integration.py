@@ -54,7 +54,7 @@ class PublicIntegrationTests(unittest.TestCase):
 
     def test_build_faces_handles_mesh_with_triangles_and_quads(self):
         mesh = Mesh2D(
-            nodes=np.zeros((7, 3), dtype=np.float64),
+            nodes=[[0, 0], [1, 0], [0, 1], [2, 0], [3, 0], [3, 1], [2, 1]],
             elements=np.array(
                 [[0, 1, 2, 2], [3, 4, 5, 6]],
                 dtype=np.int32,

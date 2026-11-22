@@ -176,7 +176,7 @@ class EditorMesh2D:
         The lexicographically lowest XY supplies each group's coordinate with
         Z=0. A collapsed Quad4 becomes Tri3 when adjacent duplicates can be removed;
         fewer than three vertices, non-adjacent duplicates, and zero-area cells
-        cause a feature_below_resolution error. Winding and concavity are retained.
+        cause a feature_below_resolution error. Output is CCW and preserves concavity.
         Unreferenced nodes are removed and connectivity is renumbered.
 
         Every component diameter is at most the positive absolute tolerance.
@@ -211,7 +211,7 @@ class EditorMesh2D:
         if np.array_equal(proposed_nodes, mesh.nodes) and np.array_equal(
             proposed_elements, elements
         ):
-            return mesh
+            return mesh._ensure_ccw()
         mesh.replace_data(nodes=proposed_nodes, elements=proposed_elements)
         return mesh
 

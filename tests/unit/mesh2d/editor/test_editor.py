@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 
+from .._fixtures import edited_mesh
 from mesher import GeometryToleranceError, Mesh2D
 from mesher.mesh2d import EditorMesh2D
 
@@ -175,7 +176,7 @@ class EditorMesh2DTests(unittest.TestCase):
         for edge in range(4):
             with self.subTest(edge=edge):
                 nodes = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
-                nodes[(edge + 1) % 4] = nodes[edge] + [0.01, 0.01]
+                nodes[(edge + 1) % 4] = nodes[edge] + .005 * (nodes[(edge + 1) % 4] - nodes[edge])
                 mesh = Mesh2D(nodes, [[0, 1, 2, 3]])
                 EditorMesh2D.equivalence(mesh, tolerance=0.1)
                 self.assertEqual(mesh.node_count, 3)
@@ -189,7 +190,7 @@ class EditorMesh2DTests(unittest.TestCase):
             ([[0, 0], [1, 0], [0, 1]], [[0, 1, 0, 2]], 1e-12),
             ([[0, 0], [1, 0], [2, 0]], [[0, 1, 2, 2]], 1e-12),
         ):
-            mesh = Mesh2D(nodes, elements)
+            mesh = edited_mesh(nodes, elements)
             before_nodes, before_elements = mesh.nodes.copy(), mesh.elements.copy()
             with self.assertRaises(GeometryToleranceError) as caught:
                 EditorMesh2D.equivalence(mesh, tolerance=tolerance)
@@ -223,7 +224,7 @@ class EditorMesh2DTests(unittest.TestCase):
         EditorMesh2D.equivalence(mesh, tolerance=0.1)
         expected_nodes = np.column_stack((np.asarray(nodes)[1:], np.zeros(4)))
         np.testing.assert_array_equal(mesh.nodes, expected_nodes)
-        np.testing.assert_array_equal(mesh.elements, [[0, 2, 3, 3], [1, 2, 3, 3]])
+        np.testing.assert_array_equal(mesh.elements, [[0, 3, 2, 2], [1, 3, 2, 2]])
 
     def test_empty_equivalence_removes_orphans_and_unchanged_mesh_is_no_op(self):
         mesh = Mesh2D([[np.nan, 0, 0]], np.empty((0, 4), dtype=np.int32))

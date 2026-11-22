@@ -5,6 +5,8 @@ from collections import Counter
 
 import numpy as np
 
+from ._fixtures import assert_ccw
+
 from mesher import Mesh2D
 from mesher.mesh2d.adapter.unit import build_unit_1_1_1_x
 
@@ -39,6 +41,7 @@ def _signed_area(points):
 
 class BuildUnit111XTests(unittest.TestCase):
     def assert_valid_patch(self, mesh, edges, original_node_count, original_element_count=0):
+        assert_ccw(mesh)
         new_quads = mesh.elements[original_element_count:]
         boundary = np.concatenate([edge[:-1] for edge in edges])
         expected_boundary_edges = {

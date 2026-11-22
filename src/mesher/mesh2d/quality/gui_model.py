@@ -8,7 +8,6 @@ from numbers import Real
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from ..model import Mesh2D
 from .checker import ElementType, MeshQualityChecker, QualityReason
 
 
@@ -95,7 +94,7 @@ def evaluate_element(nodes: ArrayLike, *, tolerance=None) -> ElementQuality:
         element = np.array([[0, 1, 2, 3]], dtype=np.int64)
         element_type = ElementType.QUAD4
 
-    checker = MeshQualityChecker(Mesh2D(node_array, element), tolerance=tolerance)
+    checker = MeshQualityChecker.from_arrays(node_array, element, tolerance=tolerance)
     jacobian = checker.calculate_jacobian()
     scaled = checker.calculate_scaled_jacobian()
     aspect = checker.calculate_aspect_ratio()

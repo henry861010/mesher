@@ -2,6 +2,8 @@
 
 Run from the repository root:
     PYTHONPATH=src venv/bin/python examples/debug_imprint_line.py
+
+Fillet preparation uses the optional process-flow dependencies (kernel and Shapely).
 """
 
 import json
@@ -10,18 +12,18 @@ from pathlib import Path
 import numpy as np
 from mesher import ElementType2D, Mesh2D
 from mesher.mesh2d.adapter import generate_layer_adaptive_mesh
-from mesher.utils import find_adapter_group, get_mm2_control_area
+from mesher.utils import get_mm2_control_area, find_adapter_group
 from mesher.mesh2d.imprint_line import get_pair_line, imprint_lines
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.editor import EditorMesh2D
-
-from mesher.mesh2d.visualization import view_mesh
 
 JSON_PATH = Path(__file__).parent / "data" / "mm2_symmetric_package.json"
 GLOBAL_ELEMENT_SIZE = 1000
 FOCUS_ELEMENT_SIZE = 5
 ADAPTER_KOZ_SIZE = 1000
 COW_CUTOUT_MARGIN = 2000
+UF_GAP = 260
+FILLET_LAYERS = ((5, 5), (50, 5), (25, 1))  # (spacing, layer count), inside out
 
 COW_TO_STIFFENER = 3000
 STIFFENER_WIDTH = 4000
@@ -32,6 +34,70 @@ def _get_die_boxes():
         data = json.load(file)
     return [value for value in data.values()]
 
+
+def _get_die_uf_region(die_boxes, gap=UF_GAP):
+    """Return the filled footprint and its oriented die + UF boundary loops."""
+    from process_flow_kernel.domain.region import Region, TYPE_DIE, TYPE_TARGET
+    from shapely import union_all
+    from shapely.geometry import box
+
+    region = Region([dict(type="BOX", dim=list(bounds)) for bounds in die_boxes])
+    region.set_gap(gap, set_to=TYPE_TARGET, target_mask=TYPE_DIE, is_recursive=True)
+    mask = TYPE_DIE | TYPE_TARGET
+    cells = [
+        box(region.table_x_dim[i], region.table_y_dim[j],
+            region.table_x_dim[i + 1], region.table_y_dim[j + 1])
+        for i in range(region.cell_num_x)
+        for j in range(region.cell_num_y)
+        if region.cell_type[i][j] & mask
+    ]
+    return union_all(cells), region.get_outline(mask)
+
+
+def _get_fillet_pattern_lines(die_boxes, *, gap=UF_GAP, layers=FILLET_LAYERS):
+    """Extend offset sides across corners, retaining only the exterior fillet."""
+    from shapely.geometry import LineString
+
+    spacings = []
+    for size, count in layers:
+        if not np.isfinite(size) or size <= 0 or type(count) is not int or count <= 0:
+            raise ValueError("Fillet layers require positive spacing and integer count")
+        spacings.extend([size] * count)
+    if not spacings:
+        raise ValueError("At least one fillet layer is required")
+    offsets = np.r_[0.0, np.cumsum(spacings)]
+    width = float(offsets[-1])
+    if not np.isfinite(width):
+        raise ValueError("Fillet width must be finite")
+
+    filled, outlines = _get_die_uf_region(die_boxes, gap)
+    # Closed band includes the original outline, but excludes the footprint interior.
+    band = filled.buffer(width, join_style="mitre").difference(filled)
+    segments = set()
+
+    def collect(geometry):
+        if geometry.geom_type == "LineString":
+            points = list(geometry.coords)
+            for start, end in zip(points, points[1:]):
+                if start != end:
+                    segments.add(tuple(sorted((start, end))))
+        elif geometry.geom_type in ("MultiLineString", "GeometryCollection"):
+            for part in geometry.geoms:
+                collect(part)
+
+    for outline in outlines:
+        points = np.asarray(outline, dtype=float)
+        for start, end in zip(points, np.roll(points, -1, axis=0)):
+            tangent = (end - start) / np.linalg.norm(end - start)
+            # Region keeps material on the right, so the left normal is outward.
+            normal = np.array([-tangent[1], tangent[0]])
+            for offset in offsets:
+                line = LineString([start + normal * offset - tangent * width,
+                                   end + normal * offset + tangent * width])
+                collect(line.intersection(band))
+    return sorted(segments)
+
+
 def _get_cow_outline():
     die_boxes = _get_die_boxes()
     
@@ -41,57 +107,19 @@ def _get_cow_outline():
         pkg_y1 = min(pkg_y1, die_box[1])
         pkg_x2 = max(pkg_x2, die_box[2])
         pkg_y2 = max(pkg_y2, die_box[3])
-    pkg_x1 = pkg_x1 - 500
-    pkg_y1 = pkg_y1 - 500
-    pkg_x2 = pkg_x2 + 500
-    pkg_y2 = pkg_y2 + 500
+    pkg_x1 = pkg_x1 - 2000
+    pkg_y1 = pkg_y1 - 2000
+    pkg_x2 = pkg_x2 + 2000
+    pkg_y2 = pkg_y2 + 2000
     return [[pkg_x1, pkg_y1], [pkg_x1, pkg_y2], [pkg_x2, pkg_y2], [pkg_x2, pkg_y1]]
     
-def _find_pair_td_corner(cow_outline):
-    die_boxes = _get_die_boxes()
-
-    areas = get_mm2_control_area(die_boxes, corner_extent=25, max_gap=260)
-
-    box_objs = []
-    for box in areas:
-        box_objs.append(dict(
-            box=box,
-            x_points=[[box[0], y] for y in np.r_[np.arange(box[1], box[3], FOCUS_ELEMENT_SIZE), box[3]]],
-            y_points=[[x, box[1]] for x in np.r_[np.arange(box[0], box[2], FOCUS_ELEMENT_SIZE), box[2]]]
-        ))
-        
-    line_pairs = get_pair_line(
-        boxes = box_objs, 
-        expand_size = ADAPTER_KOZ_SIZE, 
-        outer_outline = cow_outline, 
-        distance = 4000
-    )
-    
-    return line_pairs
-
-def _find_pair_fillet(cow_outline, fillet_objs):
-    box_objs = []
-    remaining_patterns = []
-    for fillet_obj in fillet_objs:
-        groups, remaining = find_adapter_group(group_size=6, lines=fillet_obj.get_mesh_control())
-        box_objs.extend(groups)
-        remaining_patterns.extend(remaining)
-        
-    line_pairs = get_pair_line(
-        boxes = box_objs, 
-        expand_size = ADAPTER_KOZ_SIZE, 
-        outer_outline = cow_outline, 
-        distance = 4000
-    )
-        
-    return line_pairs, remaining_patterns
-
-def cow_mesh(fillet_objs=()):
+def get_cow_mesh() -> Mesh2D:
     cow_outline = _get_cow_outline()
-    
+
+    pattern_lines = []
+
     # die pattern
     die_boxes = _get_die_boxes()
-    pattern_lines = []
     for x1, y1, x2, y2 in die_boxes:
         pattern_lines.extend([
             ((x1, y1), (x2, y1)),
@@ -99,12 +127,34 @@ def cow_mesh(fillet_objs=()):
             ((x2, y2), (x1, y2)),
             ((x1, y2), (x1, y1)),
         ])
+
+    # fillet pattern
+    pattern_lines.extend(_get_fillet_pattern_lines(die_boxes))
     
-    td_corner_pair = _find_pair_td_corner(cow_outline=cow_outline)
-    fillet_pair, fillet_patterns = _find_pair_fillet(cow_outline, fillet_objs)
-    pattern_lines.extend(fillet_patterns)
-    
-    line_pairs = td_corner_pair + fillet_pair
+    # normal box spec
+    normal_box_specs, pattern_lines = find_adapter_group(
+        group_size = 50,
+        lines = pattern_lines, 
+        min_group_count = 3
+    )
+
+    # focus box spec
+    areas = get_mm2_control_area(die_boxes, corner_extent=25, max_gap=UF_GAP)
+    focus_box_specs = []
+    for box in areas:
+        focus_box_specs.append(dict(
+            box=box,
+            x_points=[[box[0], y] for y in np.r_[np.arange(box[1], box[3], FOCUS_ELEMENT_SIZE), box[3]]],
+            y_points=[[x, box[1]] for x in np.r_[np.arange(box[0], box[2], FOCUS_ELEMENT_SIZE), box[2]]]
+        ))
+        
+    # mesh
+    line_pairs = get_pair_line(
+        boxes = normal_box_specs + focus_box_specs, 
+        expand_size = ADAPTER_KOZ_SIZE, 
+        outer_outline = cow_outline, 
+        distance = 4000
+    )
     
     mesh = imprint_lines(
         element_size = GLOBAL_ELEMENT_SIZE, 
@@ -117,7 +167,7 @@ def cow_mesh(fillet_objs=()):
     
     return mesh
 
-def non_cow_mesh():
+def get_no_cow_mesh() -> Mesh2D:
     cow_outline = _get_cow_outline()
     
     x_coordinates = []
@@ -155,10 +205,10 @@ def non_cow_mesh():
     return mesh
 
 
-def build_connected_mesh() -> Mesh2D:
+def merge_by_adapter(cow_mesh: Mesh2D, non_cow_mesh: Mesh2D) -> Mesh2D:
     """Grow two Quad4 layers from the cow boundary to the non-cow cutout."""
-    cow = cow_mesh()
-    grid = non_cow_mesh()
+    cow = cow_mesh
+    grid = non_cow_mesh
     cow_boundary, = EditorMesh2D.outlines(cow)
     xy = cow.nodes[cow_boundary, :2]
     lower = xy.min(axis=0) - COW_CUTOUT_MARGIN
@@ -209,4 +259,9 @@ def build_connected_mesh() -> Mesh2D:
 
 
 if __name__ == "__main__":
-    view_mesh(build_connected_mesh())
+    from mesher.mesh2d.visualization import view_mesh
+
+    cow_mesh = get_cow_mesh()
+    view_mesh(cow_mesh)
+    # non_cow_mesh = get_no_cow_mesh()
+    # view_mesh(merge_by_adapter(cow_mesh, non_cow_mesh))

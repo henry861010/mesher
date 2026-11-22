@@ -7,6 +7,8 @@ from enum import IntEnum
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from ._winding import ccw_elements
+
 
 class ElementType2D(IntEnum):
     """Supported planar element topologies."""
@@ -25,6 +27,7 @@ class Mesh2D:
     Arrays remain writable. Direct edits can temporarily violate this contract;
     public mesh operations validate Z before consuming or changing the mesh.
 
+    Each simple element is stored counterclockwise in XY.
     Connectivity has fixed width four.  Tri3 rows use the canonical padded
     representation ``[n0, n1, n2, n2]``; every other row is classified as a
     Quad4.  The object remains mutable because feature operations update it
@@ -35,11 +38,7 @@ class Mesh2D:
     __slots__ = ("_nodes", "_elements")
 
     def __init__(self, nodes: ArrayLike, elements: ArrayLike) -> None:
-        normalized_nodes = _normalize_nodes(nodes)
-        normalized_elements = _normalize_elements(elements)
-        _validate_connectivity(normalized_elements, len(normalized_nodes))
-        self._nodes = normalized_nodes
-        self._elements = normalized_elements
+        self.replace_data(nodes=nodes, elements=elements)
 
     @classmethod
     def from_planar(cls, nodes: ArrayLike, elements: ArrayLike, *, tolerance=None):
@@ -73,10 +72,17 @@ class Mesh2D:
 
     @nodes.setter
     def nodes(self, values: ArrayLike) -> None:
-        # Feature operations replace nodes before connectivity at commit time,
-        # so cross-array validation is performed by ``replace_data`` or the
-        # subsequent elements assignment rather than by this setter.
-        self._nodes = _normalize_nodes(values)
+        nodes = _normalize_nodes(values)
+        _validate_connectivity(self._elements, len(nodes))
+        elements = ccw_elements(nodes, self._elements)
+        self._nodes, self._elements = nodes, elements
+
+    def _ensure_ccw(self):
+        """Revalidate writable arrays on a successful no-op path."""
+        _validate_zero_z(self._nodes)
+        _validate_connectivity(self._elements, len(self._nodes))
+        self._elements = ccw_elements(self._nodes, self._elements)
+        return self
 
     @property
     def elements(self) -> NDArray[np.int32]:
@@ -87,7 +93,7 @@ class Mesh2D:
         _validate_zero_z(self._nodes)
         elements = _normalize_elements(values)
         _validate_connectivity(elements, len(self._nodes))
-        self._elements = elements
+        self._elements = ccw_elements(self._nodes, elements)
 
     @property
     def element_types(self) -> NDArray[np.uint8]:
@@ -113,8 +119,8 @@ class Mesh2D:
         normalized_nodes = _normalize_nodes(nodes)
         normalized_elements = _normalize_elements(elements)
         _validate_connectivity(normalized_elements, len(normalized_nodes))
-        self._nodes = normalized_nodes
-        self._elements = normalized_elements
+        oriented = ccw_elements(normalized_nodes, normalized_elements)
+        self._nodes, self._elements = normalized_nodes, oriented
 
 
 def _normalize_nodes(values: ArrayLike) -> NDArray[np.float64]:

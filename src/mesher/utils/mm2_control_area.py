@@ -18,7 +18,7 @@ def find_adapter_group(
 ) -> tuple[list[BoxPairSpec], list[_Line]]:
     """Return adapter box controls and the remaining original pattern lines.
 
-    Parallel segments must have identical spans. A gap of at least
+    Parallel segments must have identical spans. A gap greater than
     `group_size` separates runs. A run qualifies at `min_group_count`
     distinct offsets, counting duplicate and reversed segments once.
     All copies of grouped lines are consumed. Remaining lines preserve
@@ -53,7 +53,7 @@ def find_adapter_group(
         positions = sorted(indices_by_offset)
         start = 0
         for stop in range(1, len(positions) + 1):
-            if stop < len(positions) and positions[stop] - positions[stop - 1] < group_size:
+            if stop < len(positions) and positions[stop] - positions[stop - 1] <= group_size:
                 continue
             run = positions[start:stop]
             start = stop
