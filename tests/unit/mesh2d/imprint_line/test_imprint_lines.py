@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 
 from .._fixtures import assert_ccw
+from mesher.mesh2d.editor import EditorMesh2D
 from mesher.mesh2d.imprint_line import get_pair_line, imprint_lines, ImprintLineError
 from mesher.mesh2d.imprint_line.mesher import _prepare_plan, _assemble
 from mesher.mesh2d.imprint_line._unit import build_unit
@@ -29,6 +30,18 @@ class ImprintTests(unittest.TestCase):
         assert_ccw(mesh)
         plan = args[1]
         self.assertTrue(np.all(mesh.nodes[:, 2] == 0))
+        exterior, = EditorMesh2D.outlines(mesh)
+        self.assertEqual(len(exterior) % 2, 0)
+        boundary_edges = {frozenset(edge) for edge in zip(exterior, np.roll(exterior, -1))}
+        triangles = mesh.elements[mesh.element_types == 3, :3]
+        for triangle in triangles:
+            self.assertFalse(any(frozenset(edge) in boundary_edges
+                                 for edge in zip(triangle, np.roll(triangle, -1))))
+            vertices = mesh.nodes[triangle, :2]
+            self.assertTrue(any(np.all(vertices >= t.bounds[:2]) and np.all(vertices <= t.bounds[2:])
+                                for t in plan.transitions))
+        vertices = mesh.nodes[mesh.elements, :2]
+        self.assertFalse(np.any((vertices.min(axis=1) < 0) & (vertices.max(axis=1) > 0)))
         expected_triangles = 0
         for transition in plan.transitions:
             a = transition.axis
@@ -246,6 +259,69 @@ class ImprintTests(unittest.TestCase):
         self.assertFalse(plan.transitions)
         self.assertTrue(np.all(mesh.element_types == 4))
         self.assert_segment(mesh, 1, 1, 0, 10)
+
+    def test_odd_exterior_cut_terminates_at_a_dense_side(self):
+        p = pair(0, (1, 1, 3, 3), expand=(10, .75), count=3)
+        outer = ((-3, -3), (7, -3), (7, 7), (-3, 7))
+        mesh, plan = self.run_case([p], outer=outer, snap=0, max_elements=55)
+        exterior, = EditorMesh2D.outlines(mesh)
+        self.assertEqual(len(exterior), 28)  # Previously 27 with both axes supplied.
+        transition, = plan.transitions
+        self.assert_segment(mesh, 0, 1.5, -3, transition.inner)
+        self.assertTrue(np.all(mesh.element_types == 4))
+        smaller, _ = self.run_case([p], outer=outer, snap=0, max_elements=54)
+        self.assertLessEqual(smaller.element_count, 54)
+
+    def test_unresolvable_parity_cut_extends_the_band(self):
+        p = pair(0, (1, 1, 3, 1.003), expand=(10, .75), count=3)
+        mesh, plan = self.run_case([p], outer=((-3, -3), (7, -3), (7, 7), (-3, 7)))
+        self.assertFalse(plan.transitions)
+        self.assert_segment(mesh, 0, p["points"][1][1], -3, 7)
+
+    def test_triangle_orientation_and_replanning_at_exterior_walls(self):
+        # With one wall the odd units can point their triangles inward. With
+        # both lateral walls locked, neither orientation leaves the exterior free.
+        for low, high, triangles in ((0, 5, 2), (-4, 2, 2), (0, 2, 0)):
+            with self.subTest(low=low, high=high):
+                p = pair(0, (4, 0, 6, 2), expand=.5, count=3)
+                mesh, _ = self.run_case([p], outer=((0, low), (10, low), (10, high), (0, high)), size=3)
+                self.assertEqual(np.count_nonzero(mesh.element_types == 3), triangles)
+
+    def test_touching_transitions_share_a_front_and_preserve_boundary_anchors(self):
+        p = [pair(0, (1, 1, 3, 2), expand=(10, 1), count=3),
+             pair(0, (1, 2, 3, 3), expand=(10, 2), count=3)]
+        outer = ((-3, -3), (80, -3), (80, 7), (-3, 7))
+        mesh, plan = self.run_case(p, [[[-3, 5.25], [-3, 9]]], outer=outer, snap=0)
+        self.assertEqual([t.inner for t in plan.transitions], [5, 5])
+        self.assertTrue(np.any(np.all(mesh.nodes[:, :2] == (-3, 5.25), axis=1)))
+
+    def test_axes_through_dense_lines_transitions_and_background(self):
+        outer = ((-6, -6), (7, -6), (7, 7), (-6, 7))
+        p = pair(0, (1, -1, 3, 1), expand=.5, count=4)
+        patterns = [[[-4, -1.75], [4, -1.75]]]
+        mesh, plan = self.run_case([p], patterns, outer=outer)
+        self.assertTrue(plan.transitions)
+        self.assertEqual(np.count_nonzero(np.all(mesh.nodes[:, :2] == 0, axis=1)), 1)
+        for axis in (0, 1):
+            self.assert_segment(mesh, axis, 0, -6, 7)
+        self.assert_segment(mesh, 0, -1.75, -4, 4)
+        axes = [[[-6, 0], [7, 0]], [[0, 7], [0, -6]]]
+        explicit, _ = self.run_case([p], patterns + axes + axes, outer=outer)
+        np.testing.assert_array_equal(mesh.nodes, explicit.nodes)
+        np.testing.assert_array_equal(mesh.elements, explicit.elements)
+
+    def test_clipped_axes_on_disjoint_spans_and_single_sided_domains(self):
+        outer = np.array([[-6, -5], [6, -5], [6, -2], [-2, -2],
+                          [-2, 2], [6, 2], [6, 5], [-6, 5]])
+        for axis in (0, 1):
+            mesh, _ = self.run_case([], outer=outer if axis == 1 else outer[:, ::-1])
+            self.assert_segment(mesh, axis, 0, -5, -2)
+            self.assert_segment(mesh, axis, 0, 2, 5)
+            self.assert_segment(mesh, 1 - axis, 0, -6, -2)
+            self.assertFalse(np.any(np.all(mesh.nodes[:, :2] == 0, axis=1)))
+        mesh, _ = self.run_case([], outer=((.0003, 0), (5, 0), (5, 4), (.0003, 4)))
+        self.assertEqual(mesh.nodes[:, 0].min(), .0003)
+        self.assert_segment(mesh, 0, 0, .0003, 5)
 
     def test_input_order_and_reversal_are_deterministic(self):
         pairs = [pair(0, (4, 4, 6, 6)), pair(1, (4, 4, 6, 6))]

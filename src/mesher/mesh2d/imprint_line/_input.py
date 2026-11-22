@@ -9,6 +9,7 @@ import numpy as np
 from ...tolerance import canonicalize_points, resolve_tolerance
 from ..generators._holed_geometry import OrthogonalDomain
 from ..generators._holed_grid import _ElementBudget
+from ._constraints import symmetry_segments
 from ._types import Band, ImprintLineError, Patterns
 
 
@@ -82,12 +83,26 @@ def prepare(element_size, line_pairs, pattern_lines, outer_outline,
             expands.append(scalar(value.item(), f"line_pairs[{index}].{name}", zero=True))
         raw.append((axis, expands, len(points)))
         arrays.extend((lines.reshape(-1, 2), points))
-    points = np.vstack(arrays)
+    # Protect zero independently on each axis that meets the outline. Using
+    # a point on the outline for the other component avoids pinning a remote
+    # coordinate when the whole model lies on one side of an axis.
+    active_axes = (outer.min(axis=0) <= 0) & (outer.max(axis=0) >= 0)
+    points = np.vstack([*arrays, outer[0]])
     policy.check_resolution(points, stage="imprint_input", source="fixed_constraints")
-    fixed = np.zeros(len(points), dtype=bool)
+    fixed = np.zeros(points.shape, dtype=bool)
     fixed[len(outer):len(outer) + patterns.size // 2] = True
-    merged = canonicalize_points(points, policy, fixed=fixed,
-                                 stage="imprint_input", source="fixed_constraints")
+    while True:
+        points[-1] = np.where(active_axes, 0., outer[0])
+        fixed[-1] = active_axes
+        merged = canonicalize_points(points, policy, fixed=fixed,
+                                     stage="imprint_input", source="fixed_constraints")
+        outline = merged[:len(outer)]
+        intersects = (outline.min(axis=0) <= 0) & (outline.max(axis=0) >= 0)
+        if not np.any(intersects & ~active_axes):
+            break
+        # A movable exterior can reach an axis during normalization. Pin that
+        # axis too, always restarting from the original input coordinates.
+        active_axes |= intersects
     offsets = np.cumsum([0, *map(len, arrays)])
     parts = [merged[a:b] for a, b in zip(offsets, offsets[1:])]
     domain = OrthogonalDomain(parts[0], tolerance=policy)
@@ -103,6 +118,8 @@ def prepare(element_size, line_pairs, pattern_lines, outer_outline,
         p = p[::-1].copy() if tuple(p[1]) < tuple(p[0]) else p.copy()
         p.setflags(write=False)
         unique.setdefault(tuple(p.ravel()), (p, index))
+    for p in symmetry_segments(domain):
+        unique.setdefault(tuple(p.ravel()), (p, None))
     ordered = [unique[key] for key in sorted(unique)]
     patterns = Patterns((p for p, _ in ordered), (i for _, i in ordered))
     bands = []

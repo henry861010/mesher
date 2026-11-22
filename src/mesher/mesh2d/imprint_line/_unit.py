@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._constraints import on_outline
 from ._types import ImprintLineError
 
 
-def build_unit(bounds, axis, side, coordinates, tolerance):
+def build_unit(bounds, axis, side, coordinates, tolerance, *, outline=None):
     """Return independent XY nodes and padded connectivity; boundaries are fixed.
 
     Remaining depth is proportional to remaining dense-edge span, rather than
@@ -31,6 +32,16 @@ def build_unit(bounds, axis, side, coordinates, tolerance):
                          [lower[-2], lower[-1], tr, ir]))
         lower = lower[1:-1]
         tl, tr = il, ir
+    local = np.asarray(points)
+    xy = np.empty_like(local)
+    xy[:, transverse] = bounds[transverse] + local[:, 0]
+    inner = bounds[axis + (2 if side == 0 else 0)]
+    xy[:, axis] = inner + (-1 if side == 0 else 1) * local[:, 1]
+    # Restore input coordinates, including corners, without roundtrip drift.
+    xy[:n, transverse] = coordinates
+    xy[:n, axis] = inner
+    xy[n:n + 2, transverse] = (bounds[transverse], bounds[transverse + 2])
+    xy[n:n + 2, axis] = bounds[axis + (0 if side == 0 else 2)]
     if len(lower) == 2:
         elements.append([*lower, tr, tl])
     else:
@@ -39,6 +50,14 @@ def build_unit(bounds, axis, side, coordinates, tolerance):
             [[a, b, tr, tl], [b, c, tr, tr]],
             [[a, b, tl, tl], [b, c, tr, tl]],
         )
+        if outline is not None:
+            triangles = np.array([[b, c, tr], [a, b, tl]])
+            edges = np.stack((triangles, np.roll(triangles, -1, axis=1)), axis=-1)
+            blocked = on_outline(xy[edges.reshape(-1, 2)], outline).reshape(2, 3).any(axis=1)
+            alternatives = [cells for cells, touches in zip(alternatives, blocked) if not touches]
+            if not alternatives:
+                raise ImprintLineError("both unit triangulations occupy an exterior edge",
+                                       code="exterior_triangle", stage="unit_construction", bounds=bounds)
 
         def score(cells):
             worst = 0.
@@ -53,16 +72,6 @@ def build_unit(bounds, axis, side, coordinates, tolerance):
             return worst
 
         elements.extend(min(alternatives, key=score))
-    local = np.asarray(points)
-    xy = np.empty_like(local)
-    xy[:, transverse] = bounds[transverse] + local[:, 0]
-    inner = bounds[axis + (2 if side == 0 else 0)]
-    xy[:, axis] = inner + (-1 if side == 0 else 1) * local[:, 1]
-    # Restore input coordinates, including corners, without roundtrip drift.
-    xy[:n, transverse] = coordinates
-    xy[:n, axis] = inner
-    xy[n:n + 2, transverse] = (bounds[transverse], bounds[transverse + 2])
-    xy[n:n + 2, axis] = bounds[axis + (0 if side == 0 else 2)]
     cells = np.asarray(elements, dtype=np.int64)
     if (axis == 0 and side == 1) or (axis == 1 and side == 0):
         quad = cells[:, 2] != cells[:, 3]

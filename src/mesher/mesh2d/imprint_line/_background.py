@@ -1,7 +1,7 @@
 """Sparse rectangular grid around reserved transition cells.
 
-Reuse the existing generator's sweep and rectangle BVH, without its hole-parity
-repair (parity belongs to each mixed-element transition unit here).
+Reuse the generator's sweep and rectangle BVH. Exterior parity cuts may
+terminate on a transition's dense side while its other sides stay locked.
 """
 from __future__ import annotations
 
@@ -75,8 +75,14 @@ class Background(_Builder):
         return float(coordinate)
 
     def anchor(self, point, kind):
+        point = tuple(map(float, point))
         for axis in (0, 1):
             coordinate, value = float(point[1 - axis]), float(point[axis])
+            # A shared wall has no open visibility interval between its owners.
+            # Both units still need its corners and any fixed pattern endpoint.
+            for lo, hi, owner in self.domain._axes[axis].parallel.get(coordinate, ()):
+                if lo <= value <= hi:
+                    self.boundary_points[owner].add(point)
             for interval in self.domain.intervals(axis, coordinate):
                 if interval.start <= value <= interval.end:
                     self.add(axis, coordinate, interval, kind)
@@ -98,8 +104,7 @@ class Background(_Builder):
                     self.origins.setdefault((axis, float(pattern[0, 1 - axis])), set()).update(
                         (max(lo, interval.start), min(hi, interval.end)))
             for point in pattern:
-                if self.domain.contains(point) or self.domain.boundary_owner(point) is not None:
-                    self.anchor(point, "pattern")
+                self.anchor(point, "pattern")
         for band in bands:
             for coordinate in band.coordinates:
                 for interval in self.domain.intervals(band.axis, coordinate):
@@ -144,9 +149,10 @@ class Background(_Builder):
                               "feature_below_resolution", bounds)
         self.index = _RectangleIndex(rectangles, self.budget)
 
-    def _cut_feasible(self, fixed, coordinate, interval, size):
-        """Check every leaf touched by this complete visibility chord."""
+    def _cut_cost(self, fixed, coordinate, interval, size):
+        """Number of rectangles split by a resolved chord, or zero if infeasible."""
         varying = 1 - fixed
+        count = 0
         pending = [self.index.root]
         while pending:
             node = self.index.nodes[pending.pop()]
@@ -159,8 +165,36 @@ class Background(_Builder):
                 pending.extend(node.children)
             elif not all(self._resolvable(length, size) for length in
                          (coordinate - b[fixed], b[fixed + 2] - coordinate)):
-                return False
-        return True
+                return 0
+            else:
+                count += 1
+        return count
+
+    def exterior_cut(self, owner, transition, chain, size, remaining):
+        """Split one background strip from the dense edge to the exterior."""
+        axis = transition.axis
+        for gap in np.argsort(-np.diff(chain), kind="stable"):
+            lo, hi = chain[gap:gap + 2]
+            level = float(self.constraints.align_generated(1 - axis, lo + (hi - lo) / 2,
+                                                            self.domain.tolerance))
+            if min(hi - level, level - lo) <= self.domain.tolerance:
+                continue
+            for interval in self.domain.intervals(axis, level):
+                if transition.side == 0:
+                    direct = (interval.start == transition.inner and interval.start_owner == owner
+                              and interval.end_owner == 0)
+                    exterior = interval.end
+                else:
+                    direct = (interval.end == transition.inner and interval.end_owner == owner
+                              and interval.start_owner == 0)
+                    exterior = interval.start
+                endpoint = (exterior, level) if axis == 0 else (level, exterior)
+                if not direct or endpoint in self.boundary_points[0]:
+                    continue
+                cost = self._cut_cost(1 - axis, level, interval, size)
+                if 0 < cost <= remaining and self.add(axis, level, interval, "parity"):
+                    return np.insert(chain, gap + 1, level)
+        return None
 
     def size_locked(self, size):
         """Each successful iteration splits its target; retries are finite."""
@@ -222,7 +256,7 @@ class Background(_Builder):
                         for value in allowed:
                             if bounds[fixed] < value < bounds[fixed + 2]:
                                 heapq.heappush(pending, (abs(value - ideal), float(value)))
-                    if blocked or not self._cut_feasible(fixed, coordinate, interval, size):
+                    if blocked or not self._cut_cost(fixed, coordinate, interval, size):
                         continue
                     before = self.index.leaf_count
                     added = self.add(varying, coordinate, interval, "sizing")

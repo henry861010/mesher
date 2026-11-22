@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class Patterns(tuple):
-    """Sorted exact segments with their original input indices."""
+    """Sorted exact segments with input indices (None for an implicit axis)."""
 
     def __new__(cls, segments, source_indices):
         result = super().__new__(cls, segments)

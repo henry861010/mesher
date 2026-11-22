@@ -115,6 +115,16 @@ inputs are never modified.
 
 ## Placement and topology
 
+- Every successful mesh has an even number of distinct nodes around the
+  complete exterior loop. Every exterior edge belongs to a Quad4. Tri3s may
+  occur only inside transition units. When the loop would be odd, the mesher
+  first tries one extra cut from a transition's dense side to the exterior.
+  If no such cut fits, it replans the transition.
+- The world axes `x=0` and `y=0` are automatic fixed constraints. Mesh edges
+  cover every part of each axis inside or along the outline, including separate
+  spans in concave models. The origin is a shared node when it belongs to the
+  model. The same exact-coordinate and tolerance rules apply to user patterns
+  near these axes.
 - E is the minimum straight extension before a transition. Obstacles may
   increase it. It does not include the transition's depth.
 - Same-direction overlapping control/extension/transition envelopes merge.

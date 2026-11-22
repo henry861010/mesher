@@ -36,6 +36,29 @@ def _closed_spans(domain, axis, coordinate):
     return merged
 
 
+def symmetry_segments(domain):
+    for axis in (0, 1):
+        fixed = 1 - axis
+        if domain.bounds[fixed] <= 0 <= domain.bounds[fixed + 2]:
+            for lo, hi in _closed_spans(domain, axis, 0.):
+                if lo < hi:
+                    segment = np.zeros((2, 2))
+                    segment[:, axis] = (lo, hi)
+                    yield segment
+
+
+def on_outline(edges, outline):
+    """Identify complete mesh edges lying on the orthogonal exterior."""
+    accepted = np.zeros(len(edges), dtype=bool)
+    for a, b in zip(outline, np.roll(outline, -1, axis=0)):
+        fixed = 0 if a[0] == b[0] else 1
+        varying = 1 - fixed
+        accepted |= (np.all(edges[:, :, fixed] == a[fixed], axis=1)
+                     & np.all(edges[:, :, varying] >= min(a[varying], b[varying]), axis=1)
+                     & np.all(edges[:, :, varying] <= max(a[varying], b[varying]), axis=1))
+    return accepted
+
+
 @dataclass(frozen=True)
 class Constraints:
     supports: tuple[np.ndarray, np.ndarray]
@@ -58,11 +81,15 @@ class Constraints:
             axis = int(p[0, 0] == p[1, 0])
             coordinate = float(p[0, 1 - axis])
             start, end = sorted(map(float, p[:, axis]))
+            source_index = patterns.source_indices[index]
+            if source_index is None:
+                # Implicit axes were already clipped to the normalized domain.
+                segments.append(Segment(axis, coordinate, start, end, "symmetry_axes", 1 - axis))
+                continue
             for lo, hi in _closed_spans(domain, axis, coordinate):
                 low, high = max(lo, start), min(hi, end)
                 if low <= high:
-                    source = patterns.source_indices[index]
-                    segments.append(Segment(axis, coordinate, low, high, "pattern_lines", source))
+                    segments.append(Segment(axis, coordinate, low, high, "pattern_lines", source_index))
         supports = tuple(np.array(sorted(values)) for values in levels)
         for values in supports:
             values.setflags(write=False)

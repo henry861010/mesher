@@ -98,6 +98,18 @@ class DebugFilletTests(unittest.TestCase):
         for line in map(LineString, lines):
             self.assertTrue(line.difference(coverage).is_empty)
 
+    def test_package_axes_and_two_quad_adapter_layers(self):
+        cow = example.get_cow_mesh()
+        exterior, = example.EditorMesh2D.outlines(cow)
+        self.assertEqual(len(exterior) % 2, 0)
+        points = cow.nodes[cow.elements, :2]
+        self.assertFalse(np.any((points.min(axis=1) < 0) & (points.max(axis=1) > 0)))
+        self.assertEqual(np.count_nonzero(np.all(cow.nodes[:, :2] == 0, axis=1)), 1)
+        merged = example.merge_by_adapter(cow, example.get_no_cow_mesh())
+        self.assertGreater(merged.element_count, cow.element_count)
+        self.assertTrue(np.all(merged.element_types[cow.element_count:] == 4))
+        self.assertEqual(len(example.EditorMesh2D.outlines(merged)), 1)
+
     def test_custom_layers_and_empty_input(self):
         lines = example._get_fillet_pattern_lines([[0, 0, 100, 100]], layers=((10, 2),))
         self.assertIn(((-20, -10), (120, -10)), lines)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..model import Mesh2D
+from ._constraints import on_outline
 from ._input import prepare
 from ._planning import plan
 from ._types import ImprintLineError
@@ -50,28 +51,39 @@ def _validate(mesh, domain, constraints=None):
     """Linear-size topology checks; no quadratic all-element intersection scan."""
     e = mesh.elements
     edges = np.stack((e, np.roll(e, -1, axis=1)), axis=-1).reshape(-1, 2)
-    edges = edges[edges[:, 0] != edges[:, 1]]
+    nonzero = edges[:, 0] != edges[:, 1]
+    edges = edges[nonzero]
     ordered = np.sort(edges, axis=1)
-    unique, counts = np.unique(ordered, axis=0, return_counts=True)
+    unique, first, counts = np.unique(ordered, axis=0, return_index=True, return_counts=True)
     if np.any(counts > 2):
         raise ImprintLineError("nonmanifold mesh edge", code="invalid_topology", stage="validation")
     # With valid CCW cells, opposite directed incidence is necessary at every seam.
     directed = np.unique(edges, axis=0)
     if len(directed) != len(edges):
         raise ImprintLineError("duplicate directed mesh edge", code="invalid_topology", stage="validation")
-    boundary = mesh.nodes[unique[counts == 1], :2]
-    accepted = np.zeros(len(boundary), dtype=bool)
-    outline = domain.loops[0]
-    for a, b in zip(outline, np.roll(outline, -1, axis=0)):
-        fixed = 0 if a[0] == b[0] else 1
-        varying = 1 - fixed
-        accepted |= (np.all(boundary[:, :, fixed] == a[fixed], axis=1)
-                     & np.all(boundary[:, :, varying] >= min(a[varying], b[varying]), axis=1)
-                     & np.all(boundary[:, :, varying] <= max(a[varying], b[varying]), axis=1))
+    boundary_edges = unique[counts == 1]
+    boundary = mesh.nodes[boundary_edges, :2]
+    accepted = on_outline(boundary, domain.loops[0])
     if not np.all(accepted):
         raise ImprintLineError("unmatched interior edge or hanging node", code="invalid_topology",
                                stage="validation", edge=boundary[np.flatnonzero(~accepted)[0]].tolist())
+    boundary_count = np.unique(boundary_edges).size
+    if boundary_count % 2:
+        raise ImprintLineError("exterior node count must be even", code="invalid_boundary_parity",
+                               stage="validation", boundary_nodes=boundary_count)
+    owners = np.flatnonzero(nonzero)[first[counts == 1]] // 4
+    if np.any(e[owners, 2] == e[owners, 3]):
+        raise ImprintLineError("exterior edges require Quad4 cells", code="exterior_triangle",
+                               stage="validation")
+    del nonzero, first, owners, boundary_edges
     points = mesh.nodes[e, :2]
+    for axis in (0, 1):
+        if domain.bounds[axis] < 0 < domain.bounds[axis + 2]:
+            coordinates = points[:, :, axis]
+            if np.any((coordinates.min(axis=1) < 0) & (coordinates.max(axis=1) > 0)):
+                raise ImprintLineError("cell crosses a symmetry axis", code="constraint_not_preserved",
+                                       stage="validation", source="symmetry_axes", source_index=axis)
+            del coordinates
     local = points - points[:, :1]
     nxt = np.roll(local, -1, axis=1)
     areas = .5 * np.sum(local[:, :, 0] * nxt[:, :, 1] - local[:, :, 1] * nxt[:, :, 0], axis=1)
@@ -96,6 +108,9 @@ def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_ou
     E is straight extension *before* the transition, not its depth.
 
     All geometry is orthogonal; the exterior is a simple loop without holes.
+    Its distinct node count is even and every exterior edge belongs to a Quad4.
+    Both world axes (x=0 and y=0) are covered by conforming edges wherever
+    they meet the domain. Their intersection is a shared node when present.
     Pattern endpoints are fixed at their original float64 coordinates, including
     during input normalization. Finite patterns are clipped to the exterior;
     their retained segments and endpoints are checked before return. Conflicting

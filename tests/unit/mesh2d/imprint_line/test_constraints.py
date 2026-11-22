@@ -74,6 +74,17 @@ else:
         with self.assertRaises(ValueError):
             self.mesh(patterns=[[[1, 5], [10, 5.0005]]])
 
+    def test_exact_axis_conflicts_with_a_nearby_fixed_pattern(self):
+        with self.assertRaises(GeometryToleranceError) as raised:
+            self.mesh(patterns=[[[.0005, 1], [.0005, 5]]],
+                      outer_outline=[[-3, -3], [6, -3], [6, 6], [-3, 6]])
+        self.assertEqual(raised.exception.code, 'fixed_constraint_conflict')
+        # Normalization can move a near exterior onto a fixed support across zero.
+        with self.assertRaises(GeometryToleranceError) as raised:
+            self.mesh(patterns=[[[-.0001, 2], [-.0001, 3]]],
+                      outer_outline=[[.0004, 1], [6, 1], [6, 6], [.0004, 6]])
+        self.assertEqual(raised.exception.code, 'fixed_constraint_conflict')
+
     def test_concave_corner_is_retained_on_transition(self):
         outer = np.array([[0, 0], [12, 0], [12, 5], [8, 5], [8, 12], [0, 12]])
         for transpose in (False, True):

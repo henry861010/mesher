@@ -17,7 +17,7 @@ from mesher.mesh2d.imprint_line import get_pair_line, imprint_lines
 from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.editor import EditorMesh2D
 
-JSON_PATH = Path(__file__).parent / "data" / "mm2_symmetric_package.json"
+JSON_PATH = Path(__file__).parent / "data" / "package_footprint2.json"
 GLOBAL_ELEMENT_SIZE = 1000
 FOCUS_ELEMENT_SIZE = 5
 ADAPTER_KOZ_SIZE = 1000
@@ -241,10 +241,10 @@ def merge_by_adapter(cow_mesh: Mesh2D, non_cow_mesh: Mesh2D) -> Mesh2D:
         element_size=0.8 * GLOBAL_ELEMENT_SIZE,
         expand_size=40 * FOCUS_ELEMENT_SIZE,
         small_element_size=30,
-        max_transition_count=20,
+        max_transition_count=10,
         dense_mapping_angle=30,
-        min_size_ratio=0.9,
-        max_size_ratio=1.25
+        min_size_ratio=0.5,
+        max_size_ratio=1.5
     )
     generate_layer_adaptive_mesh(
         mesh=working,
@@ -262,6 +262,6 @@ if __name__ == "__main__":
     from mesher.mesh2d.visualization import view_mesh
 
     cow_mesh = get_cow_mesh()
-    view_mesh(cow_mesh)
-    # non_cow_mesh = get_no_cow_mesh()
-    # view_mesh(merge_by_adapter(cow_mesh, non_cow_mesh))
+    # view_mesh(cow_mesh)
+    non_cow_mesh = get_no_cow_mesh()
+    view_mesh(merge_by_adapter(cow_mesh, non_cow_mesh))

@@ -220,19 +220,30 @@ def candidate(domain, band, index, side, patterns, size, minimum, snap, constrai
         return Transition(index, band.axis, side, box, splits)
 
 
-def boundary_feedback(builder, transitions, bands, size, constraints):
-    """Hard cut contacts either become whole unit dividers or move the front."""
-    # Parallel neighbouring end caps should share a front. Moving each cap past
-    # the other's outer corner independently would make them chase one another
-    # all the way to the exterior. A visibility chord proves they are neighbours.
-    aligned = False
+def neighbouring_caps(builder, transitions):
+    """Pairs linked by a transverse visibility chord or a shared lateral wall."""
     for cut in builder.cuts.values():
         owners = (cut.interval.start_owner, cut.interval.end_owner)
-        if not all(owners) or owners[0] == owners[1]:
-            continue
-        first, second = (transitions[o - 1] for o in owners)
-        if (first.axis != second.axis or first.side != second.side
-                or cut.axis == first.axis or first.inner == second.inner):
+        if all(owners) and owners[0] != owners[1]:
+            first, second = (transitions[o - 1] for o in owners)
+            if first.axis == second.axis and cut.axis != first.axis:
+                yield first, second
+    starts = {}
+    for t in transitions:
+        starts.setdefault((t.axis, t.bounds[1 - t.axis]), []).append(t)
+    for t in transitions:
+        transverse = 1 - t.axis
+        for other in starts.get((t.axis, t.bounds[transverse + 2]), ()):
+            yield t, other
+
+
+def boundary_feedback(builder, transitions, bands, size, constraints):
+    """Hard cut contacts either become whole unit dividers or move the front."""
+    # Align parallel neighbouring caps together so they cannot chase each
+    # other's corners to the exterior.
+    aligned = False
+    for first, second in neighbouring_caps(builder, transitions):
+        if first.side != second.side or first.inner == second.inner:
             continue
         axis = first.axis
         if min(first.bounds[axis + 2], second.bounds[axis + 2]) <= max(first.bounds[axis], second.bounds[axis]):
@@ -286,6 +297,36 @@ def boundary_feedback(builder, transitions, bands, size, constraints):
                 band.splits[t.side].update(map(float, splits))
             changed = True
     return changed
+
+
+def repair_exterior_parity(builder, transitions, bands, size, count):
+    # Each internal edge is counted twice. With rectangular background cells,
+    # the exterior parity is exactly the parity of the number of unit triangles,
+    # even when a reservation shares part of the exterior.
+    odd, even = [], []
+    for owner, t in enumerate(transitions, 1):
+        for i, chain in enumerate(t.chains):
+            group = odd if len(chain) % 2 else even
+            group.append((owner, t, i, chain))
+    if len(odd) % 2 == 0:
+        return True
+    # Prefer removing an existing triangle. An even chain can also absorb a
+    # cut when no odd chain sees the exterior.
+    for owner, t, i, chain in odd + even:
+        # One extra dense node adds two unit cells to an odd chain, one to an even chain.
+        extra_cells = 1 + len(chain) % 2
+        remaining = builder.budget.limit - count - extra_cells
+        if remaining < 1:
+            continue
+        repaired = builder.exterior_cut(owner, t, chain, size, remaining)
+        if repaired is not None:
+            t.chains[i] = repaired
+            return True
+    # This end now continues straight to the exterior. Rebuild the partition
+    # before counting again: removing a reservation can change other chains.
+    _, t, _, _ = odd[0]
+    bands[t.band].active[t.side] = False
+    return False
 
 
 def plan(domain, bands, cores, patterns, size, minimum, snap, policy, budget):
@@ -360,6 +401,8 @@ def plan(domain, bands, cores, patterns, size, minimum, snap, policy, budget):
                 t.chains.append(chain)
         count = builder.index.leaf_count + sum((3 * len(chain) - 4) // 2
                                                 for t in transitions for chain in t.chains)
+        if not repair_exterior_parity(builder, transitions, bands, size, count):
+            continue
         budget.check(count, "imprint_assembly")
         retry = False
         for t in transitions:
@@ -368,13 +411,14 @@ def plan(domain, bands, cores, patterns, size, minimum, snap, policy, budget):
                 bounds = list(t.bounds)
                 bounds[transverse], bounds[transverse + 2] = low, high
                 try:
-                    t.units.append(build_unit(tuple(bounds), t.axis, t.side, chain, policy.absolute))
+                    t.units.append(build_unit(tuple(bounds), t.axis, t.side, chain, policy.absolute,
+                                              outline=domain.loops[0]))
                 except ImprintLineError as error:
-                    if error.code != "unit_below_resolution":
+                    if error.code not in ("unit_below_resolution", "exterior_triangle"):
                         raise
                     band = bands[t.band]
                     depth = t.bounds[t.axis + 2] - t.bounds[t.axis]
-                    if depth >= size * (1 - 32 * np.finfo(float).eps):
+                    if error.code == "exterior_triangle" or depth >= size * (1 - 32 * np.finfo(float).eps):
                         band.active[t.side] = False
                     else:
                         band.fronts[t.side] = t.bounds[t.axis + (0 if t.side == 0 else 2)]
