@@ -239,7 +239,7 @@ def merge_by_adapter(cow_mesh: Mesh2D, non_cow_mesh: Mesh2D) -> Mesh2D:
         mesh=working,
         outline_i=cow_boundary,
         element_size=0.8 * GLOBAL_ELEMENT_SIZE,
-        expand_size=40 * FOCUS_ELEMENT_SIZE,
+        expand_size=0.4 * GLOBAL_ELEMENT_SIZE,
         small_element_size=30,
         max_transition_count=10,
         dense_mapping_angle=30,

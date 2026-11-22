@@ -49,6 +49,14 @@ class SectionRingTests(unittest.TestCase):
                     (3, 3): _candidate(.1, 2, alignment=.01)} for _ in sections]
         self.assertEqual(solve_section_ring(sections, states, options), ((3, 3),) * 3)
 
+    def test_use_ordinary_spacing_when_the_ring_can_close_without_a_parity_split(self):
+        sections, states = _ring()
+        split = _candidate()
+        split.diagnostics["parity_split_index"] = 1
+        options = [{(2, 2): split, (3, 3): _candidate(error=1, angle=30)}
+                   for _ in sections]
+        self.assertEqual(solve_section_ring(sections, states, options), ((3, 3),) * 3)
+
     def test_later_peak_allows_lower_total_error_prefix_to_win(self):
         sections, states = _ring(4)
         options = [

@@ -4,6 +4,7 @@ import copy
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -105,7 +106,63 @@ class DebugFilletTests(unittest.TestCase):
         points = cow.nodes[cow.elements, :2]
         self.assertFalse(np.any((points.min(axis=1) < 0) & (points.max(axis=1) > 0)))
         self.assertEqual(np.count_nonzero(np.all(cow.nodes[:, :2] == 0, axis=1)), 1)
-        merged = example.merge_by_adapter(cow, example.get_no_cow_mesh())
+        generate = example.generate_layer_adaptive_mesh
+        first_outline = []
+
+        def boundary_edges(loop):
+            return {tuple(sorted((a, b))) for a, b in zip(loop, np.roll(loop, -1))}
+
+        def check_layer(**kwargs):
+            start = kwargs["mesh"].element_count
+            result = generate(**kwargs)
+            quads = result.mesh.elements[start:]
+            edges = np.stack((quads, np.roll(quads, -1, axis=1)), axis=2)
+            keys, counts = np.unique(np.sort(edges.reshape(-1, 2), axis=1), axis=0, return_counts=True)
+            self.assertLessEqual(counts.max(), 2)
+            self.assertEqual(set(map(tuple, keys[counts == 1])),
+                             boundary_edges(kwargs["outline_i"]) | boundary_edges(result.outline))
+            self.assertGreater(result.diagnostics["quality"]["min_scaled_jacobian"], 0.)
+            if kwargs.get("fixed_outer_boundary"):
+                self.assertEqual(kwargs["outline_i"], first_outline)
+                self.assertEqual(boundary_edges(result.outline), boundary_edges(kwargs["outline_o"]))
+                return result
+            first_outline.extend(result.outline)
+            ratios = {"dense": [], "ordinary": []}
+            splits = []
+            dense_layouts = []
+            for section in result.diagnostics["section_details"]:
+                if section["kind"] != "LINE":
+                    continue
+                cells = result.mesh.elements[section["element_start"]:section["element_end"]]
+                xy = result.mesh.nodes[cells, :2]
+                lengths = np.linalg.norm(np.roll(xy, -1, axis=1) - xy, axis=2)
+                group = "dense" if "midline_ids" in section else "ordinary"
+                aspect = lengths.max(axis=1) / lengths.min(axis=1)
+                ratios[group].append(aspect)
+                if group == "dense":
+                    middle = result.mesh.nodes[section["midline_ids"], :2]
+                    gaps = np.linalg.norm(np.diff(middle, axis=0), axis=1)
+                    self.assertGreater(gaps.min(), 5. + 1e-8)
+                    for i in section["unit_ids"]:
+                        unit = result.diagnostics["units"][i]
+                        if unit["sublayer"] == 2:
+                            a = unit["element_start"] - section["element_start"]
+                            b = unit["element_end"] - section["element_start"]
+                            self.assertGreaterEqual(lengths[a:b].min(), 10. - 1e-8)
+                            self.assertLessEqual(aspect[a:b].max(), 20. + 1e-8)
+                    dense_layouts.append((len(section["source_chains"][0]) - 1, len(gaps),
+                                          len(section["outer_ids"]) - 1))
+                if "parity_split_node" in section:
+                    splits.append(section["parity_split_node"])
+            self.assertEqual(len(set(splits)), 4)
+            self.assertIn((37, 5, 1), dense_layouts)
+            self.assertTrue(set(splits).issubset(first_outline))
+            self.assertLess(np.concatenate(ratios["dense"]).max(), 80.)
+            self.assertLess(np.median(np.concatenate(ratios["ordinary"])), 4.91)
+            return result
+
+        with patch.object(example, "generate_layer_adaptive_mesh", side_effect=check_layer):
+            merged = example.merge_by_adapter(cow, example.get_no_cow_mesh())
         self.assertGreater(merged.element_count, cow.element_count)
         self.assertTrue(np.all(merged.element_types[cow.element_count:] == 4))
         self.assertEqual(len(example.EditorMesh2D.outlines(merged)), 1)

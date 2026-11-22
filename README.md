@@ -598,8 +598,8 @@ nodes, the end unit absorbs them. Every cut shared by two LINE units connects
 the source directly to the outer edge. Local refinement and coarsening units
 may contain interior nodes.
 
-- `max_transition_count=20` caps the number of source segments assigned to
-  each outer segment. One source segment may refine into multiple outer segments.
+- `max_transition_count=20` caps the number of input segments assigned to
+  each output segment within one strip. One input segment may refine into multiple output segments.
 - `min_size_ratio=0.5` and `max_size_ratio=1.25` define the allowed outer spacing
   in ordinary and mixed LINE sections as multiples of `element_size`.
   The upper ratio must be finite and at least 1.
@@ -614,7 +614,7 @@ and `generate_full_adaptive_mesh`) accept optional dense-run partitioning:
 ```python
 result = generate_layer_adaptive_mesh(
     mesh, outline_i, element_size=1000,
-    max_transition_count=20,       # Each outer edge can receive up to 20 source edges.
+    max_transition_count=20,       # Each strip can coarsen up to 20 input edges per output edge.
     small_element_size=10,         # Opt in; default None preserves the partition.
     dense_mapping_angle=30.0,      # Degrees; outward-only dense endpoint mapping.
 )
@@ -634,6 +634,15 @@ For a resampled LINE contained entirely in a dense run, `element_size` is a
 preferred spacing. Outer gaps can fall below the minimum or exceed the maximum.
 The transition cap, mandatory anchors, Quad4 parity and element budget still
 apply. A LINE with both short and ordinary source edges keeps the size band.
+Each fully dense resampled LINE has two equal-height sublayers. The first
+groups source edges onto the midline using the dense LINE planner. The second
+uses those exact midline edges as input and applies the same cap again.
+For example, with a cap of 10, a run of 37 source edges can coarsen to five
+midline edges and then to one final edge. When the shared seam midpoints force a
+parity conflict in an adjacent LINE, its longest outer gap is bisected.
+`section_details` reports the dense `midline_ids`, the peak assignments for each
+sublayer in `sublayer_max_transition_counts`, and any `parity_split_node`.
+Fixed outer boundaries use the existing single-layer construction.
 The old `dense_region_tolerance` keyword has been removed without an alias.
 
 The full adapter sends these seam contacts to the global generator before the
@@ -647,8 +656,9 @@ not guarantee good internal cell quality under extreme coarsening.
 [Dense-section example](examples/dense_adaptive_sections.py) compares the old
 cap, the relaxed cap, and explicit dense sections on the same 5-versus-1000
 fixture. The last two cases use a cap of 1000. With the default cap of 20,
-each fully dense run of 60 source edges needs at least three outer edges to
-span its 300-unit width. Ordinary sections keep their 500–1250 size band.
+each fully dense run of 60 source edges in this fixture coarsens to four
+midline edges and then to two outer edges across its 300-unit width.
+Ordinary sections keep their 500–1250 size band.
 Run the illustrated comparison with the following command.
 
 ```sh

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import numpy as np
 
 from .._limits import ElementLimitExceeded, check_element_limit, section_element_lower_bound
 from .._line_policy import DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT, validate_line_parameters
 from .aligned import plan_resampled
+from .sampling import LineSampling
 from .strip import build_strip, fixed_cut_plans
+from .sublayers import build_sublayers
 from .units import SectionPatch, xyz_chain
 
 
@@ -21,6 +25,8 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
               min_size_ratio: float = 0.5,
               max_size_ratio: float = DEFAULT_MAX_SIZE_RATIO,
               size_band_active: bool = True,
+              dense_sublayers: bool = False,
+              allow_parity_split: bool = False,
               _sampling_cache: dict | None = None) -> list[SectionPatch]:
     """Build bounded alternatives for one pair of prescribed section seams.
 
@@ -52,10 +58,45 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
            for chain in (source, outer, left, right)):
         raise ValueError("LINE boundary contains a zero-length segment")
 
-    cache = {} if _sampling_cache is None else _sampling_cache
-    if fixed_outer_boundary:
+    stats = {} if _diagnostics is None else _diagnostics
+    stats.update(line_planner="projection", unit_trial_count=0, local_repair_count=0,
+                 outer_count_attempts=0, direct_quad_count=0)
+    strips = partial(_strip_candidates, h=h, tol=tol, cap=cap, min_ratio=min_ratio,
+                     max_ratio=max_ratio, size_band_active=size_band_active,
+                     fixed_outer_boundary=fixed_outer_boundary, allow_parity_split=allow_parity_split,
+                     stats=stats)
+    if dense_sublayers:
+        options = build_sublayers(source, outer, left, right, strips, max_added_elements)
+    else:
+        cache = {} if _sampling_cache is None else _sampling_cache
+        options = strips(source, outer, left, right, cache=cache, max_added_elements=max_added_elements)
+    candidates = []
+    for patch in options:
+        candidates.append(patch)
+        if best_only:
+            break
+    for patch in candidates:
+        patch.diagnostics.update(stats)
+    return candidates
+
+
+def _strip_candidates(source, outer, left, right, *, h, tol, cap, min_ratio, max_ratio,
+                      size_band_active, fixed_outer_boundary, allow_parity_split,
+                      stats, cache, max_added_elements):
+    """Yield valid single-strip patches in the projection planner's preferred order."""
+    parity_split = None
+    if allow_parity_split and size_band_active and not fixed_outer_boundary:
+        if "sampling" not in cache:
+            cache["sampling"] = LineSampling(source, outer, h, tol, cap, min_ratio, max_ratio)
+        parity_split = cache["sampling"].split_for_parity(len(left), len(right), max_added_elements)
+
+    if parity_split is not None:
+        _, split_sampling = parity_split
+        front = split_sampling.anchors
+        plans = ((front, cuts) for cuts in fixed_cut_plans(source, front, left, right, tol, cap))
+    elif fixed_outer_boundary:
         if (len(source) + len(outer) + len(left) + len(right)) % 2:
-            return []
+            return
         lower = section_element_lower_bound(len(source) - 1, len(outer) - 1, len(left), len(right))
         check_element_limit(lower, max_added_elements, stage="section_count_preflight",
                             count_kind="lower_bound")
@@ -65,11 +106,8 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
                                size_band_active=size_band_active, cache=cache,
                                max_added_elements=max_added_elements)
 
-    stats = {} if _diagnostics is None else _diagnostics
-    stats.update(line_planner="projection", unit_trial_count=0, local_repair_count=0,
-                 outer_count_attempts=0, direct_quad_count=0)
     build_cache = cache.setdefault("unit_geometry", {})
-    candidates = []
+    yielded = False
     limit_error = None
     for front, cuts in plans:
         stats["outer_count_attempts"] += 1
@@ -87,14 +125,12 @@ def plan_line(source: np.ndarray, outer: np.ndarray, left: np.ndarray,
         if fixed_outer_boundary:
             patch.diagnostics["size_band_active"] = False
         else:
-            sampling = cache["sampling"]
+            sampling = split_sampling if parity_split is not None else cache["sampling"]
             sampling.validate_sample(patch.nodes[patch.outer_ids])
             patch.diagnostics.update(sampling.diagnostics, line_sampling="projection")
-        candidates.append(patch)
-        if best_only:
-            break
-    for patch in candidates:
-        patch.diagnostics.update(stats)
-    if not candidates and limit_error is not None:
+            if parity_split is not None:
+                patch.diagnostics["parity_split_index"] = parity_split[0]
+        yielded = True
+        yield patch
+    if not yielded and limit_error is not None:
         raise limit_error
-    return candidates

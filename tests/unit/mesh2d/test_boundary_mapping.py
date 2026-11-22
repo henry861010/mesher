@@ -95,6 +95,8 @@ class BoundaryMappingTests(unittest.TestCase):
             if detail['kind'] != 'LINE':
                 continue
             self.assertFalse(detail['size_band_active'])
+            self.assertNotIn('midline_ids', detail)
+            self.assertNotIn('parity_split_node', detail)
             if detail['section_id'] in dense_ids:
                 self.assertEqual(detail['max_actual_transition_count'], 2)
                 self.assertAlmostEqual(detail['min_outer_spacing'], 10.)

@@ -7,6 +7,7 @@ from heapq import heapify, heappop, heappush
 import numpy as np
 from .....tolerance import subdivision_count
 
+from .._limits import check_element_limit, section_element_lower_bound
 from .._types import QuadLayerError
 from .._line_policy import DEFAULT_MAX_SIZE_RATIO, DEFAULT_MAX_TRANSITION_COUNT
 
@@ -178,6 +179,27 @@ class LineSampling:
         above = subdivision_count(target, 1.)
         above += (parity - above) % 2
         return sorted({n for n in (below, above) if lower <= n <= upper})
+
+    def split_for_parity(self, left_nodes, right_nodes, limit):
+        """Split one ordinary gap only if the size band forces the wrong parity."""
+        count = self.lower_count
+        source_segments = len(self.source) - 1
+        if count != self.upper_count or (source_segments + count + left_nodes + right_nodes) % 2 == 0:
+            return None
+        lower = section_element_lower_bound(source_segments, count + 1, left_nodes, right_nodes)
+        check_element_limit(lower, limit, stage="section_count_preflight", count_kind="lower_bound")
+        ordinary, _ = self.sample(count)
+        lengths = np.linalg.norm(np.diff(ordinary, axis=0), axis=1)
+        longest = int(np.argmax(lengths))
+        if lengths[longest] / 2 <= self.tol:
+            return None
+        index = longest + 1
+        midpoint = (ordinary[longest] + ordinary[index]) / 2
+        anchors = np.insert(ordinary, index, midpoint, axis=0)
+        # The ordinary sample passed the size band; only the two new gaps
+        # can acquire an additional minimum-spacing exception.
+        return index, LineSampling(self.source, anchors, self.h, self.tol,
+                                   self.max_transition_count, self.min_size_ratio, self.max_size_ratio)
 
     def _allocate(self, count):
         counts = self._minimum.copy()

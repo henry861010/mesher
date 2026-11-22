@@ -91,13 +91,23 @@ def preflight_element_limit(plan, data, dense_section_ids):
         lengths = np.linalg.norm(np.diff(outer, axis=0), axis=1)
         line_bounds = None
         if section.kind == "LINE" and not data.get("fixed_outer_boundary", False):
+            cap = data.get("max_transition_count", DEFAULT_MAX_TRANSITION_COUNT)
+            if section.id in dense_section_ids:
+                # Each half has two one-edge sides. Its input and output
+                # segment counts must have equal parity, and the cap starts
+                # afresh on the shared midline.
+                middle = (source_segments + cap - 1) // cap
+                middle += (source_segments - middle) % 2
+                final = max(len(lengths), (middle + cap - 1) // cap)
+                final += (middle - final) % 2
+                lower_bound += (section_element_lower_bound(source_segments, middle, 2, 2)
+                                + section_element_lower_bound(middle, final, 2, 2))
+                continue
             from ._construction.sampling import line_count_bounds
             try:
                 line_bounds = line_count_bounds(
                     lengths, source_segments, data["h"], data["tol"],
-                    data.get("max_transition_count", DEFAULT_MAX_TRANSITION_COUNT),
-                    data.get("min_size_ratio", .5), data.get("max_size_ratio", DEFAULT_MAX_SIZE_RATIO),
-                    size_band_active=section.id not in dense_section_ids)
+                    cap, data.get("min_size_ratio", .5), data.get("max_size_ratio", DEFAULT_MAX_SIZE_RATIO))
             except QuadLayerError as error:
                 error.context.setdefault("section_id", section.id)
                 raise

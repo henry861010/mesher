@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fractions import Fraction
+from typing import Literal
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -46,6 +47,37 @@ def _area_sign(points):
 
 def _orientation_sign(a, b, c):
     return _area_sign(np.stack((a, b, c), axis=1))
+
+
+def _quad_jacobian_ratios(points, sampling):
+    # Cross products of consecutive edges are four times the corner det(J).
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        edges = np.roll(points, -1, axis=1) - points
+        following = np.roll(edges, -1, axis=1)
+        left = edges[..., 0] * following[..., 1]
+        right = edges[..., 1] * following[..., 0]
+        corners = left - right
+        uncertainty = 8 * np.finfo(float).eps * (abs(left) + abs(right)) + np.finfo(float).tiny
+    uncertain = ~np.isfinite(corners) | (abs(corners) <= uncertainty)
+    for row in np.flatnonzero(uncertain.any(axis=1)):
+        # Preserve relative determinant magnitudes even outside float64's range.
+        vertices = [tuple(map(Fraction, vertex)) for vertex in points[row]]
+        sides = [(b[0] - a[0], b[1] - a[1])
+                 for a, b in zip(vertices, vertices[1:] + vertices[:1])]
+        turns = [a[0] * b[1] - a[1] * b[0]
+                 for a, b in zip(sides, sides[1:] + sides[:1])]
+        scale = max(map(abs, turns))
+        corners[row] = [float(turn / scale) for turn in turns] if scale else 0.0
+
+    low, high = corners.min(axis=1), corners.max(axis=1)
+    if sampling == "gauss":
+        # For a bilinear Quad4, det(J) is affine in (xi, eta). Its extreme
+        # corners are opposite, and the Gauss square is scaled by 1/sqrt(3).
+        weight = (1 - 1 / np.sqrt(3.0)) / 2
+        low, high = (1 - weight) * low + weight * high, weight * low + (1 - weight) * high
+
+    ratios = np.where(low < 0, -1.0, 0.0)
+    return np.divide(low, high, out=ratios, where=high > 0)
 
 
 def _self_intersections(points, elements):
@@ -110,6 +142,50 @@ class EditorMesh2D:
     """
 
     __slots__ = ()
+
+    @staticmethod
+    def jacobian_ratios(
+        mesh: Mesh2D, indices: ArrayLike | None = None, *,
+        sampling: Literal["corner", "gauss"] = "corner",
+    ) -> NDArray[np.float64]:
+        """Return one signed Jacobian ratio per selected element, in input order.
+
+        Omitting indices selects the whole mesh. Explicit indices must be a
+        one-dimensional sequence of unique, zero-based element IDs.
+        Quad4 samples use the four corners or the 2x2 Gauss points. Tri3
+        has a constant determinant, so both sampling modes give the same ratio.
+
+        Return min(detJ) / max(detJ) when the sampled maximum is positive.
+        All-zero samples score 0. Other entirely nonpositive samples score -1.
+        Nonfinite referenced XY coordinates or unknown sampling raise ValueError.
+        """
+        if not isinstance(sampling, str) or sampling not in ("corner", "gauss"):
+            raise ValueError("sampling must be 'corner' or 'gauss'")
+        elements = _select_boundary_elements(mesh, indices)
+        ratios = np.empty(len(elements), dtype=np.float64)
+        for begin in range(0, len(elements), _BATCH_SIZE):
+            block = elements[begin:begin + _BATCH_SIZE]
+            points = mesh.nodes[block, :2]
+            if not np.isfinite(points).all():
+                raise ValueError("referenced nodes must contain finite XY coordinates")
+            triangle = block[:, 2] == block[:, 3]
+            result = ratios[begin:begin + len(block)]
+            if triangle.any():
+                result[triangle] = _area_sign(points[triangle, :3])
+            if not triangle.all():
+                result[~triangle] = _quad_jacobian_ratios(points[~triangle], sampling)
+        return ratios
+
+    @staticmethod
+    def min_jacobian_ratio(
+        mesh: Mesh2D, indices: ArrayLike | None = None, *,
+        sampling: Literal["corner", "gauss"] = "corner",
+    ) -> float:
+        """Return the lowest selected ratio. An empty selection raises ValueError."""
+        ratios = EditorMesh2D.jacobian_ratios(mesh, indices, sampling=sampling)
+        if not ratios.size:
+            raise ValueError("minimum Jacobian ratio requires at least one element")
+        return float(ratios.min())
 
     @staticmethod
     def delete_element(mesh: Mesh2D, indices: ArrayLike) -> Mesh2D:

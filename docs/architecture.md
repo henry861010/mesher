@@ -182,8 +182,14 @@ IDs. The full orchestrator exports dense seam contacts as global front anchors
 and saves their canonical world coordinates, keyed by source edge and chain
 position. Final construction reuses those contacts even if global meshing added
 a closer point. Chain positions survive repair-node renumbering between boundary
-builds. Dense splitting is opt-in; the default transition cap is relaxed to 20
-independently. Internal thin-cell quality under large coarsening is unchanged.
+builds. A fully dense resampled LINE uses two equal-height strips with a shared
+midline. The single-strip planner first coarsens the source onto that midline,
+then coarsens the resulting edges onto the mandatory final anchors. Each
+strip has its own transition cap. The builder tries another midline if the
+outer strip cannot fit, and records source-to-final assignments for diagnostics.
+The cyclic solver minimizes the number of
+outer parity splits before comparing alignment, spacing and quality. Fixed
+interfaces use the single-strip builder.
 
 Both APIs enable slot repair by default. Original-input and pattern validation
 precede closure detection. Parallel-slot closure uses the gap between the actual
@@ -293,7 +299,7 @@ distribution available when required anchors or segment-count constraints
 prevent exact projection. Ordinary and mixed LINE outer spacing lies in
 `[min_size_ratio * element_size, max_size_ratio * element_size]`. Adjacent
 mandatory anchors closer than the minimum form one unsplit interval. Each outer
-segment has a source assignment bounded by `max_transition_count`.
+segment in a resampled strip accepts at most `max_transition_count` input edges from that strip.
 
 Projection is computed once per section and reused for its seam states.
 A regular row can be emitted directly. For coarsening, the planner reserves

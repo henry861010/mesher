@@ -337,16 +337,18 @@ def generate_layer_adaptive_mesh(mesh: Mesh2D, outline_i: ArrayLike, element_siz
     exceeds the limit. This is not a memory or execution-time guarantee.
 
     ``max_transition_count`` is a positive Python or NumPy integer, default 20.
-    Each resampled LINE outer segment may receive at most this many source
-    segments; reverse refinement is unrestricted. ``min_size_ratio`` is finite
+    Each output segment in a resampled strip may receive at most this many
+    input segments. Reverse refinement is unrestricted. ``min_size_ratio`` is finite
     and in (0, 1], default 0.5. ``max_size_ratio`` is finite and at least 1,
     default 1.25. In ordinary and mixed LINE sections, outer spacing lies
     between the two ratios times ``element_size``, within numerical roundoff.
-    Adjacent mandatory anchors closer than that minimum form one unsplit
-    segment recorded as an exception. In fully dense LINE sections, the
-    planner uses ``element_size`` as a preferred spacing and allows gaps below
-    the minimum or above the maximum. The transition cap applies to every
-    resampled LINE section.
+    Adjacent mandatory anchors closer than that minimum form a recorded short
+    interval. A neighboring dense seam can require one parity correction on
+    the free front: the longest sampled gap is bisected and both new gaps are
+    checked with their local spacing exception. Fully dense resampled LINEs
+    use ``element_size`` as a preference. Their seam midpoints define two
+    equal-height sublayers. The first coarsens the source onto the midline.
+    The second uses that midline as its input and applies the same cap again.
     These constraints do not change layer thickness, source edges, corner
     sections, or repair interiors. LINE units favor normal projections of their
     source nodes and share single full-height edges. The first and last units

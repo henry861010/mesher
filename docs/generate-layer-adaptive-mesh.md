@@ -80,7 +80,7 @@ assert result.diagnostics['added_elements'] > 0
 | `expand_ratio` | `1.0` | 有限數值，≥1 | 搜尋平行 pattern 的距離範圍倍率 |
 | `tolerance` | `GeometryTolerance(0.001)` | 有限正絕對距離或共用容差物件 | source 邏輯邊對軸向的實際偏離距離；與邊長無關、不移動 source |
 | `max_added_elements` | `1_000_000` | 正的 Python／NumPy 整數 | 本次 repair 與轉接新增 Quad4 的共同上限；等於上限可接受 |
-| `max_transition_count` | `20` | 正的 Python／NumPy 整數 | 所有可重採樣 LINE（含密集區）每段外框最多承接的 source 邊數 |
+| `max_transition_count` | `20` | 正的 Python／NumPy 整數 | 可重採樣 LINE 的每條輸出邊最多承接幾條輸入邊，密集區的兩個 sublayer 各自套用 |
 | `min_size_ratio` | `0.5` | 有限數值，`0 < value ≤ 1` | 一般及混合 LINE 的外框間距下限相對 `element_size` 的比例 |
 | `max_size_ratio` | `1.25` | 有限數值，`value ≥ 1` | 一般及混合 LINE 的外框間距上限相對 `element_size` 的比例 |
 | `repair_slots` | `True` | Python／NumPy boolean | 先修補受擴展覆蓋的支援槽口與孤立階梯轉角 |
@@ -140,9 +140,20 @@ adapter 會對接觸這些元素的新增內點做一輪局部平滑。每個點
 corner 與 pattern 已確立的分界優先保留。
 
 重採樣時，整個 LINE 都落在密集段內，外框間距就可以小於尺寸下限或大於尺寸上限。
-`element_size` 仍是候選間距的偏好，`max_transition_count` 控制每一外框段最多承接幾條 source 邊。
-例如 60 條長度為 5 的 source 邊，設上限為 20，至少需要 3 段外框。實際分段還要配合必要接點、
-共用接線的奇偶與 Quad4 配對。若分區混有普通邊，整個分區仍套用兩個尺寸比例。
+`element_size` 仍是候選間距的偏好。實際分段還要配合必要接點、共用接線的奇偶與 Quad4 配對。
+若分區混有普通邊，整個分區仍套用兩個尺寸比例。
+
+可重採樣的完整密集 LINE 會沿厚度對半分。兩條側邊各有三點，中點連成兩個
+sublayer 共用的節點鏈。第一層用密集 LINE 的轉接規則將 source 邊合併到中線，第二層直接以
+該中線為輸入，再轉接到外框，並保留外框的必要接點。`max_transition_count` 在每層各自生效。
+例如在 `debug_imprint_line.py`，厚度 400 分成兩層各 200，上限為 10 時，37 條 source 邊
+先轉為 5 條中線邊，再轉為 1 條外框邊。若某條中線無法接到外框，會再試下一個中線候選。
+若側邊的必要 pattern 節點與幾何中點衝突，建網會回報 section 和 seam ID。
+
+若相鄰普通 LINE 因共邊中點而無法滿足奇偶，會將該 LINE 最長的可分割外框段對半分。
+例如內側是兩段 50、外側是一段 100 時，外側會補成兩段 50。新增節點會出現在
+`result.outline` 和該 section 的 `parity_split_node`，其他間距仍依原規則檢查。
+固定外框模式沿用單層接合。
 
 以正規化 LINE 的行進方向作為正方向，法線朝向外框為 0°：
 
@@ -323,6 +334,10 @@ repair 邊界取樣以既有邊段長度中位數為目標，並以 `element_siz
 | `edge_expansion`、`snapped_patterns` | 實際厚度與自動擴展採用的 pattern；指定外框時後者皆為 `None` |
 | `section_details[].max_alignment_angle` | LINE 內部接線相對外框法線的最大偏角，單位為度 |
 | `section_details[].size_band_active` | 該 LINE 是否套用尺寸比例，完整密集區及固定外框為 `False` |
+| `section_details[].midline_ids` | 完整密集區的兩個 sublayer 共用的中線節點 ID，依左至右排序 |
+| `section_details[].sublayer_max_transition_counts` | 兩個 sublayer 各自每條輸出邊承接的最大輸入邊數，依內、外層排序 |
+| `section_details[].max_actual_transition_count` | 每條最終外框邊承接的原始 source 邊數的最大值。密集區的跨層統計可大於單層上限 |
+| `section_details[].parity_split_node` | 相鄰 LINE 為滿足奇偶額外插入的外框節點 ID，只在補點時出現 |
 | `section_details[].min_outer_spacing`、`max_outer_spacing` | 該 LINE 最終外框的最小、最大間距，採用原模型長度單位 |
 | `quality` | 新元素最差長寬比、最小 scaled Jacobian 等品質資訊 |
 
@@ -382,6 +397,6 @@ PYTHONPATH=src venv/bin/python -m unittest \
 求解器設定及測點結果為比對基準。
 
 密集轉接也需要檢查形狀品質。在專案的 dense benchmark 中，`element_size=1000`、
-`small_element_size=10`、`max_transition_count=1000` 產生的 Quad4 四角 Jacobian 都為正，
-但最小 scaled Jacobian 只有 0.00922，`MeshQualityChecker` 在預設容差下將 54 個新增元素
-標記為退化。同一輸入使用預設轉接上限 20 時，這項計數為零。
+`small_element_size=10`、`max_transition_count=1000` 的雙層轉接，新增 Quad4 的最小
+scaled Jacobian 約為 0.00305，最大邊長比約為 327.68。使用預設轉接上限 20 時，
+最小 scaled Jacobian 約為 0.02000，最大邊長比約為 100。

@@ -135,13 +135,22 @@ class DenseSectionTests(unittest.TestCase):
                         self.assertEqual(detail['forced_short_intervals'], [])
                         self.assertAlmostEqual(gaps.sum(), 300.)
                         self.assertLess(gaps.max(), 500.)
-                        loads = [count for index in detail['unit_ids']
-                                 for count in diagnostics['units'][index]['source_segments_per_outer']]
+                        units = [diagnostics['units'][index] for index in detail['unit_ids']]
+                        stage_loads = [[n for unit in units if unit['sublayer'] == stage
+                                        for n in unit['sublayer_segments_per_outer']] for stage in (1, 2)]
+                        inner, outer = stage_loads
+                        self.assertEqual(sum(inner), 60)
+                        self.assertEqual(sum(outer), len(inner))
+                        self.assertEqual(detail['sublayer_max_transition_counts'], [max(inner), max(outer)])
+                        self.assertLessEqual(max(map(max, stage_loads)), cap)
+                        loads = [n for unit in units for n in unit['source_segments_per_outer']]
                         self.assertEqual(len(loads), len(gaps))
-                        self.assertEqual(sum(loads), 60)
-                        self.assertLessEqual(max(loads), cap)
+                        np.testing.assert_equal(loads, np.diff(np.cumsum([0, *inner])[np.cumsum([0, *outer])]))
+                        self.assertEqual(detail['max_actual_transition_count'], max(loads))
+                        self.assertGreater(max(loads), cap)
                         if cap == 20:
-                            np.testing.assert_allclose(gaps, [75.] * 4)
+                            middle = mesh.nodes[detail['midline_ids'], :2]
+                            np.testing.assert_allclose(np.linalg.norm(np.diff(middle, axis=0), axis=1), [75.] * 4)
                             self.assertAlmostEqual(detail['max_alignment_angle'], 0.)
                     else:
                         self.assertGreaterEqual(gaps.min(), 500. - 1e-8)
@@ -164,6 +173,71 @@ class DenseSectionTests(unittest.TestCase):
             else:
                 self.assertLessEqual(gaps.max(), 10. + 1e-8)
 
+    def test_dense_sublayers_share_midline_and_split_only_the_conflicting_front(self):
+        # A 100-wide ordinary section with two source edges lies between a
+        # single short edge and a run of twenty, as in debug_imprint_line.
+        xs = np.r_[0, 1000, 2000, 2025, 2075, 2125, np.arange(2130, 2230, 5), 3000, 4000]
+        mesh, outline = rectangle(xs, height=1000)
+        nodes, cells = mesh.nodes.copy(), mesh.elements.copy()
+        result = generate_layer_adaptive_mesh(mesh, outline, 800, expand_size=400,
+                                              small_element_size=30, max_transition_count=10,
+                                              max_size_ratio=1.5)
+        self.assert_built_partition(mesh, nodes, cells, result)
+        details = result.diagnostics["section_details"]
+        dense = [s for s in details if "midline_ids" in s]
+        self.assertEqual(len(dense), 4)
+        for s in dense:
+            middle = s["midline_ids"]
+            for ids, midpoint in ((s["left_ids"], middle[0]), (s["right_ids"], middle[-1])):
+                self.assertEqual(len(ids), 3)
+                self.assertEqual(ids[1], midpoint)
+                np.testing.assert_allclose(mesh.nodes[midpoint], mesh.nodes[ids[::2]].mean(axis=0))
+            n = len(s["source_chains"][0]) - 1
+            self.assertEqual((len(middle) - 1, len(s["outer_ids"]) - 1), (1, 1) if n == 1 else (2, 2))
+            units = [result.diagnostics["units"][i] for i in s["unit_ids"]]
+            for layer in (1, 2):
+                incidence = Counter(tuple(sorted((a, b))) for unit in units if unit["sublayer"] == layer
+                                    for q in mesh.elements[unit["element_start"]:unit["element_end"]]
+                                    for a, b in zip(q, np.roll(q, -1)))
+                self.assertTrue(all(incidence[tuple(sorted(edge))] == 1 for edge in zip(middle, middle[1:])))
+            loads = [value for unit in units for value in unit["source_segments_per_outer"]]
+            self.assertEqual(sum(loads), n)
+            self.assertLessEqual(max(s["sublayer_max_transition_counts"]), 10)
+
+        splits = [s for s in details if "parity_split_node" in s]
+        self.assertEqual(len(splits), 2)  # Both long faces of the fixture.
+        for s in splits:
+            outer = s["outer_ids"]
+            self.assertEqual(s["parity_split_node"], outer[1])
+            self.assertIn(outer[1], result.outline)
+            np.testing.assert_allclose(np.linalg.norm(np.diff(mesh.nodes[outer], axis=0), axis=1), [50, 50])
+            self.assertEqual(s["element_end"] - s["element_start"], 4)
+            self.assertTrue(s["size_band_active"])
+            np.testing.assert_allclose([gap["length"] for gap in s["forced_short_intervals"]], [50, 50])
+
+    def test_dense_seam_respects_mandatory_pattern_nodes(self):
+        for offset in (100, 200):
+            with self.subTest(offset=offset):
+                mesh, outline = rectangle()
+                nodes, cells = mesh.nodes, mesh.elements
+                joint = [4000, 2000 + offset]
+                kwargs = dict(expand_size=400, small_element_size=10,
+                              pattern_lines=[[[4000, 2000], joint], [joint, [4000, 2400]]])
+                if offset == 100:
+                    with self.assertRaises(QuadLayerError) as caught:
+                        generate_layer_adaptive_mesh(mesh, outline, 1000, **kwargs)
+                    self.assertEqual(caught.exception.code, "unmeshable_section_layout")
+                    self.assertIn("seam_id", caught.exception.context)
+                    self.assertIn("section_id", caught.exception.context)
+                    self.assertEqual(caught.exception.context["pattern_ids"], [0, 1])
+                    self.assertIs(mesh.nodes, nodes)
+                    self.assertIs(mesh.elements, cells)
+                else:
+                    result = generate_layer_adaptive_mesh(mesh, outline, 1000, **kwargs)
+                    seam, = [s for s in result.diagnostics["seam_states"] if s["pattern_ids"]]
+                    self.assertEqual(seam["node_count"], 3)
+                    np.testing.assert_allclose(seam["points"][1], joint)
+
     def test_a_wholly_dense_line_gets_the_exemption_without_any_new_seams(self):
         mesh, outline = rectangle(np.arange(0., 305., 5.))
         result = generate_layer_adaptive_mesh(mesh, outline, 1000., small_element_size=10.)
@@ -174,7 +248,7 @@ class DenseSectionTests(unittest.TestCase):
             detail = diagnostics['section_details'][record['section_id']]
             self.assertFalse(detail['size_band_active'])
             self.assertLess(detail['max_outer_spacing'], 500.)
-            self.assertLessEqual(detail['max_actual_transition_count'], 20)
+            self.assertLessEqual(max(detail['sublayer_max_transition_counts']), 20)
 
     def test_dense_layer_over_budget_fails_atomically(self):
         mesh, outline = rectangle()

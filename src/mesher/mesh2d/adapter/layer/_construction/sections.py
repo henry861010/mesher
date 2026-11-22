@@ -21,13 +21,22 @@ def _xyz(points):
     return np.column_stack((np.asarray(points), np.zeros(len(points))))
 
 
-def seam_states(seam, tol):
-    """Canonical mandatory chain, optionally with one longest-interval midpoint."""
+def seam_states(seam, tol, *, dense_section_id=None, numeric_tol=0.):
+    """Prescribe a midpoint for dense sublayers; otherwise offer both seam states."""
     points = _xyz(seam.points)
     lengths = np.linalg.norm(np.diff(points[:, :2], axis=0), axis=1)
     if not len(lengths) or np.any(lengths <= tol):
         raise QuadLayerError("a section seam has no usable length",
                              code="unmeshable_section_layout", seam_id=seam.id)
+    if dense_section_id is not None:
+        midpoint = (points[0] + points[-1]) / 2
+        if len(points) == 2 and lengths[0] / 2 > tol:
+            return {3: np.vstack((points[0], midpoint, points[-1]))}
+        if len(points) == 3 and np.linalg.norm(points[1] - midpoint) <= numeric_tol:
+            return {3: points}
+        raise QuadLayerError("dense sublayers require exactly one usable midpoint on each seam",
+                             code="unmeshable_section_layout", section_id=dense_section_id,
+                             seam_id=seam.id, pattern_ids=list(seam.pattern_ids))
     longest = int(np.argmax(lengths))
     midpoint = np.r_[(points[longest, :2] + points[longest + 1, :2]) / 2, 0.0]
     return {len(points): points,
@@ -35,7 +44,7 @@ def seam_states(seam, tol):
 
 
 def solve_section_ring(sections, states, candidates):
-    """Minimize the worst LINE cut angle of a closed ring, then additive errors."""
+    """Minimize parity splits, then the worst LINE cut angle and additive errors."""
     for section, following in zip(sections, sections[1:] + sections[:1]):
         if section.right_seam != following.left_seam:
             raise QuadLayerError("sections do not form a shared-seam ring",
@@ -43,18 +52,22 @@ def solve_section_ring(sections, states, candidates):
     first_states = sorted(states[sections[0].left_seam])
     # A later, larger angle can mask an earlier peak. Determine the feasible
     # bottleneck first, then optimize the additive costs under that limit.
-    peak_limit = float("inf")
+    unreachable = (float("inf"), float("inf"))
+    optimum = unreachable
     for initial in first_states:
-        peaks = {initial: 0.0}
+        peaks = {initial: (0, 0.0)}
         for options in candidates:
             following = {}
             for (left, right), patch in options.items():
                 if left in peaks:
-                    angle = getattr(patch, "diagnostics", {}).get("max_alignment_angle", 0.0)
-                    peak = max(peaks[left], angle)
-                    following[right] = min(following.get(right, float("inf")), peak)
+                    info = patch.diagnostics
+                    splits, peak = peaks[left]
+                    score = (splits + ("parity_split_index" in info),
+                             max(peak, info.get("max_alignment_angle", 0.0)))
+                    following[right] = min(following.get(right, unreachable), score)
             peaks = following
-        peak_limit = min(peak_limit, peaks.get(initial, float("inf")))
+        optimum = min(optimum, peaks.get(initial, unreachable))
+    _, peak_limit = optimum
     if not np.isfinite(peak_limit):
         raise QuadLayerError("no compatible seam states close the section ring",
                              code="unmeshable_seam_assignment", stage="seam_solver",
@@ -62,7 +75,7 @@ def solve_section_ring(sections, states, candidates):
 
     solutions = []
     for initial in first_states:
-        current = {initial: (0.0, 0.0, 0.0)}
+        current = {initial: (0, 0.0, 0.0, 0.0)}
         parents = []
         for options in candidates:
             following, previous = {}, {}
@@ -70,8 +83,9 @@ def solve_section_ring(sections, states, candidates):
                 if (left not in current or
                         getattr(patch, "diagnostics", {}).get("max_alignment_angle", 0.0) > peak_limit):
                     continue
-                alignment, error, quality = current[left]
-                score = (alignment + getattr(patch, "alignment_error", 0.0),
+                splits, alignment, error, quality = current[left]
+                score = (splits + ("parity_split_index" in patch.diagnostics),
+                         alignment + getattr(patch, "alignment_error", 0.0),
                          error + patch.size_error, max(quality, patch.quality))
                 if right not in following or score < following[right]:
                     following[right], previous[right] = score, left
@@ -108,7 +122,12 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
     fixed_outer_boundary = data.get("fixed_outer_boundary", False)
     dense_section_ids = {record["section_id"] for record in plan.diagnostics["dense_sections"]}
     preflight_element_limit(plan, data, dense_section_ids)
-    states = {seam.id: seam_states(seam, tol) for seam in plan.seams}
+    dense_seams = {} if fixed_outer_boundary else {
+        record[key]: record["section_id"] for record in plan.diagnostics["dense_sections"]
+        for key in ("left_seam", "right_seam")}
+    states = {seam.id: seam_states(seam, tol, dense_section_id=dense_seams.get(seam.id),
+                                  numeric_tol=data["numeric_tol"])
+              for seam in plan.seams}
     candidates = []
     line_stats = {}
     limit_errors = []
@@ -137,6 +156,9 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
                                             min_size_ratio=data.get("min_size_ratio", .5),
                                             max_size_ratio=data.get("max_size_ratio", DEFAULT_MAX_SIZE_RATIO),
                                             size_band_active=section.id not in dense_section_ids,
+                                            dense_sublayers=not fixed_outer_boundary and section.id in dense_section_ids,
+                                            allow_parity_split=(section.left_seam in dense_seams or
+                                                                section.right_seam in dense_seams),
                                             _sampling_cache=sampling_cache)
                     else:
                         corner = np.r_[plan.front[section.corner], 0.0]
@@ -238,6 +260,11 @@ def fill_sections(nodes, plan, data, *, element_offset=0):
         if section.kind == "LINE":
             sampling_details = {key: value for key, value in patch.diagnostics.items()
                                 if key not in line_stats[section.id]}
+            if "midline_ids" in sampling_details:
+                sampling_details["midline_ids"] = mapping[sampling_details["midline_ids"]].tolist()
+            if "parity_split_index" in sampling_details:
+                index = sampling_details.pop("parity_split_index")
+                sampling_details["parity_split_node"] = int(mapping[patch.outer_ids[index]])
         if "line_sampling" in sampling_details:
             forced_ids = []
             forced = patch.diagnostics["forced_short_intervals"]

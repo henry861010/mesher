@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher.mesh2d.adapter.layer._construction.line import plan_line
+from mesher.mesh2d.adapter.layer._limits import ElementLimitExceeded
 from mesher.mesh2d.adapter.layer._construction.units import build_unit_patch, quality_score
 from mesher import Mesh2D
 from mesher.mesh2d.adapter.unit import build_unit_1_x_y_z
@@ -70,6 +71,37 @@ class SectionLineTests(unittest.TestCase):
                         self.assertEqual(len(patch.left_ids), left)
                         self.assertEqual(len(patch.right_ids), right)
                         self.assert_conforming(patch)
+
+    def test_dense_sublayers_retry_the_middle_and_keep_the_final_anchor(self):
+        source, outer, left, right = _fixture(37, 185., 400., 3, 3)
+        outer = np.insert(outer, 1, [19.5, 400., 0.], axis=0)
+        settings = dict(best_only=True, max_transition_count=10, size_band_active=False)
+        first, = plan_line(source, [left[1], right[1]], left[:2], right[:2], 800., .001, **settings)
+        preferred = first.nodes[first.outer_ids]
+        result, = plan_line(source, outer, left, right, 800., .001, dense_sublayers=True, **settings)
+        np.testing.assert_array_equal(result.nodes[result.diagnostics["midline_ids"]], preferred)
+        self.assertTrue(np.any(np.all(result.nodes[result.outer_ids] == outer[1], axis=1)))
+
+        def reject_first_middle(bottom, *args, **kwargs):
+            if np.array_equal(bottom, preferred):
+                return None
+            return strip.build_strip(bottom, *args, **kwargs)
+
+        with patch("mesher.mesh2d.adapter.layer._construction.line.build_strip", side_effect=reject_first_middle):
+            result, = plan_line(source, outer, left, right, 800., .001, dense_sublayers=True, **settings)
+        self.assertFalse(np.array_equal(result.nodes[result.diagnostics["midline_ids"]], preferred))
+        self.assertTrue(np.any(np.all(result.nodes[result.outer_ids] == outer[1], axis=1)))
+        self.assert_conforming(result)
+
+    def test_both_dense_sublayers_share_one_element_budget(self):
+        args = _fixture(1, 5., 400., 3, 3)
+        settings = dict(best_only=True, dense_sublayers=True, size_band_active=False, max_transition_count=1)
+        result, = plan_line(*args, 800., .001, max_added_elements=2, **settings)
+        self.assertEqual(len(result.quads), 2)
+        with self.assertRaises(ElementLimitExceeded) as caught:
+            plan_line(*args, 800., .001, max_added_elements=1, **settings)
+        self.assertEqual(caught.exception.context["required_elements"], 2)
+        self.assertEqual(caught.exception.context["limit"], 1)
 
     def test_split_endpoints_leave_single_full_depth_quads_in_the_middle(self):
         for left in (2, 3):
