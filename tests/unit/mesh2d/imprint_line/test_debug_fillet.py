@@ -95,7 +95,7 @@ class DebugFilletTests(unittest.TestCase):
         mesh = imprint_lines(1000, [], lines,
                              outer_outline=[[-500, -500], [1500, -500],
                                             [1500, 1500], [-500, 1500]],
-                             min_transition_size=20)
+                             tag="mesh_snap", min_transition_size=20)
         edges = np.stack((mesh.elements, np.roll(mesh.elements, -1, axis=1)), axis=-1)
         edges = np.unique(np.sort(edges.reshape(-1, 2), axis=1), axis=0)
         coverage = union_all([LineString(points) for points in mesh.nodes[edges, :2]])
@@ -103,8 +103,9 @@ class DebugFilletTests(unittest.TestCase):
             self.assertTrue(line.difference(coverage).is_empty)
 
     def test_package_corner_uses_one_outward_layer(self):
-        with patch.object(example, "imprint_lines", _prepare_plan):
+        with patch.object(example, "IMPRINT_TAG", "mesh_snap"), patch.object(example, "imprint_lines", _prepare_plan):
             _, plan, _, _ = example.get_cow_mesh()
+        self.assertEqual(len(plan.transitions), 90)
         corner, = (end for end in plan.transitions if end.axis == 0 and end.side == 0
                    and plan.bands[end.band].start == 12867.5 and end.bounds[1] == 10935)
         self.assertAlmostEqual(corner.inner, 11623.846153846154)
@@ -116,7 +117,8 @@ class DebugFilletTests(unittest.TestCase):
                              {(end.bounds[axis], end.bounds[axis + 2])})
 
     def test_package_axes_and_two_quad_adapter_layers(self):
-        cow = example.get_cow_mesh()
+        with patch.object(example, "IMPRINT_TAG", "mesh_snap"):
+            cow = example.get_cow_mesh()
         exterior, = example.EditorMesh2D.outlines(cow)
         self.assertEqual(len(exterior) % 2, 0)
         points = cow.nodes[cow.elements, :2]

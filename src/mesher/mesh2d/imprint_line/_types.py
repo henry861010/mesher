@@ -75,6 +75,8 @@ class Band:
     sources: tuple[int, ...]
     # An inactive end carries its dense lines to their exterior contacts.
     active: list[bool] = field(default_factory=lambda: [True, True])
+    # Transverse dividers required by the reserved rectangles in pattern_cut.
+    splits: list[set[float]] = field(default_factory=lambda: [set(), set()])
 
     @property
     def bounds(self):
@@ -87,11 +89,21 @@ class Transition:
     axis: int
     side: int
     bounds: tuple[float, float, float, float]
-    cells: tuple[tuple[float, float, float, float], ...]
 
     @property
     def inner(self):
         return self.bounds[self.axis + (2 if self.side == 0 else 0)]
+
+
+@dataclass
+class CellTransition(Transition):
+    cells: tuple[tuple[float, float, float, float], ...]
+
+
+@dataclass
+class CutTransition(Transition):
+    splits: np.ndarray
+    chains: list[np.ndarray] = field(default_factory=list)
 
 
 @dataclass

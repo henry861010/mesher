@@ -18,6 +18,7 @@ from mesher.mesh2d.generators import generate_rectilinear_mesh
 from mesher.mesh2d.editor import EditorMesh2D
 
 JSON_PATH = Path(__file__).parent / "data" / "package_footprint2.json"
+IMPRINT_TAG = "mesh_snap"  # "pattern_cut" uses the original adapter cuts.
 GLOBAL_ELEMENT_SIZE = 1000
 FOCUS_ELEMENT_SIZE = 5
 ADAPTER_KOZ_SIZE = 1000
@@ -162,6 +163,7 @@ def get_cow_mesh() -> Mesh2D:
         pattern_lines = pattern_lines,
         outer_outline = cow_outline,
         min_transition_size = 20,
+        tag=IMPRINT_TAG,
     )
     
     return mesh

@@ -19,7 +19,7 @@ pair = fixtures.pair
 class ConstraintTests(unittest.TestCase):
     def mesh(self, pairs=(), patterns=(), **kwargs):
         options = dict(outer_outline=[[0, 0], [12, 0], [12, 12], [0, 12]],
-                       min_transition_size=.5)
+                       tag="mesh_snap", min_transition_size=.5)
         options.update(kwargs)
         return imprint_lines(2, pairs, patterns, **options)
 
@@ -29,7 +29,7 @@ from mesher.mesh2d.imprint_line import imprint_lines, ImprintLineError
 try:
     imprint_lines(.00104, [], [[[.002,0],[.002,.002]],[[.0041,0],[.0041,.002]]],
         outer_outline=[[0,0],[.0061,0],[.0061,.002],[0,.002]],
-        min_transition_size=.00102, max_elements=100)
+        tag="mesh_snap", min_transition_size=.00102, max_elements=100)
 except ImprintLineError as error:
     assert error.code == 'feature_below_resolution', error
 else:
@@ -102,7 +102,7 @@ else:
             x = 1.5 if side == 0 else 3.5
             args = _prepare_plan(1, [p], [[[x, 0], [x, 10]]],
                                  outer_outline=[[0, 0], [10, 0], [10, 10], [0, 10]],
-                                 min_transition_size=.2)
+                                 tag="mesh_snap", min_transition_size=.2)
             mesh = _assemble(*args)
             fixtures.ImprintTests.assert_segment(self, mesh, 1, x, 0, 10)
             end = next(t for t in args[1].transitions if t.side == side)
@@ -143,7 +143,7 @@ else:
         for move_axis, old, new in ((1, 5, 5.1), (0, 1, 1.1)):
             args = _prepare_plan(2, [], [[[2, 9], [9, 9]], [[1, 5], [10, 5]]],
                                  outer_outline=[[0, 0], [12, 0], [12, 12], [0, 12]],
-                                 min_transition_size=.5)
+                                 tag="mesh_snap", min_transition_size=.5)
             mesh = _assemble(*args)
             mesh.nodes[mesh.nodes[:, move_axis] == old, move_axis] = new
             with self.assertRaises(ImprintLineError) as raised:
@@ -164,7 +164,7 @@ else:
         vertical = pair(1, (4, 3, 6, 5), [4, 5, 6], expand=(0, 1.0005))
         horizontal = pair(0, (3, 5, 7, 7), [5, 6, 7], expand=0)
         args = _prepare_plan(2, [vertical, horizontal], outer_outline=[[0, 0], [12, 0], [12, 12], [0, 12]],
-                             min_transition_size=.5)
+                             tag="mesh_snap", min_transition_size=.5)
         mesh = _assemble(*args)
         end = next(t for t in args[1].transitions if t.axis == 1 and t.side == 1)
         self.assertGreaterEqual(end.inner, 6.0005)
@@ -191,7 +191,7 @@ else:
         patterns = np.array([[[3.0011, 0], [3.0011, 10]]]) + origin
         mesh = imprint_lines(1, [p], patterns,
                              outer_outline=np.array([[0, 0], [10, 0], [10, 10], [0, 10]]) + origin,
-                             min_transition_size=.00102)
+                             tag="mesh_snap", min_transition_size=.00102)
         fixtures.ImprintTests.assert_segment(self, mesh, 1, patterns[0, 0, 0], origin, origin + 10)
 
 

@@ -1,22 +1,29 @@
 """Standalone line-control imprinting; no process-flow integration."""
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 
 from ..model import Mesh2D
 from ._constraints import on_outline
 from ._input import prepare
-from ._planning import plan
+from ._pattern_cut import plan as plan_pattern_cut
+from ._planning import plan as plan_mesh_snap
 from ._types import ImprintLineError
 
 
 def _prepare_plan(element_size, line_pairs, pattern_lines=(), *, outer_outline,
-                  min_transition_size, tolerance=None,
-                  max_elements=1_000_000):
+                  min_transition_size, tag, tolerance=None, max_elements=1_000_000):
+    if not isinstance(tag, str) or tag not in ("pattern_cut", "mesh_snap"):
+        raise ValueError("tag must be 'pattern_cut' or 'mesh_snap'")
     args = prepare(element_size, line_pairs, pattern_lines, outer_outline,
                    min_transition_size, tolerance, max_elements)
     domain, bands, cores, patterns, size, minimum, policy, budget = args
-    result = plan(domain, bands, cores, patterns, size, minimum, budget)
+    if tag == "pattern_cut":
+        result = plan_pattern_cut(domain, bands, cores, patterns, size, minimum, policy, budget)
+    else:
+        result = plan_mesh_snap(domain, bands, cores, patterns, size, minimum, budget)
     return domain, result, policy, budget
 
 
@@ -96,7 +103,8 @@ def _validate(mesh, domain, constraints=None):
 
 
 def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_outline,
-                  min_transition_size: float, tolerance=None, max_elements: int = 1_000_000) -> Mesh2D:
+                  min_transition_size: float, tag: Literal["pattern_cut", "mesh_snap"],
+                  tolerance=None, max_elements: int = 1_000_000) -> Mesh2D:
     """Create a new conforming mixed mesh from directional rectangular controls.
 
     ``direction='x'`` uses two vertical cross sections with matching Y spans;
@@ -112,7 +120,10 @@ def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_ou
     Pattern endpoints are fixed at their original float64 coordinates, including
     during input normalization. Finite patterns are clipped to the exterior;
     their retained segments and endpoints are checked before return. Conflicting
-    fixed supports are rejected. Each end extends to the first eligible reference
+    fixed supports are rejected.
+
+    With ``tag="pattern_cut"``, the planner reserves adapter rectangles and cuts
+    the surrounding grid along their boundaries. With ``tag="mesh_snap"``, each end extends to the first eligible reference
     mesh edge at or beyond its requested expansion. The adjacent outward layer
     must cover the band width and meet the minimum depth. All its cells are
     rebuilt in full. The reference grid comes from the outline, patterns,
@@ -132,5 +143,5 @@ def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_ou
     Runtime is output-sensitive, not bounded by the number of pairs alone.
     """
     return _assemble(*_prepare_plan(element_size, line_pairs, pattern_lines,
-                                   outer_outline=outer_outline, min_transition_size=min_transition_size,
+                                   outer_outline=outer_outline, min_transition_size=min_transition_size, tag=tag,
                                    tolerance=tolerance, max_elements=max_elements))

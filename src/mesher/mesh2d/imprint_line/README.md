@@ -19,6 +19,7 @@ mesh = imprint_lines(
     }],
     pattern_lines=[],
     outer_outline=[[-2, -2], [14, -2], [14, 12], [-2, 12]],
+    tag="mesh_snap",
     min_transition_size=0.5,
 )
 ```
@@ -51,6 +52,7 @@ pairs = get_pair_line(
 )
 mesh = imprint_lines(
     2.0, pairs, outer_outline=outer,
+    tag="mesh_snap",
     min_transition_size=0.5,
 )
 ```
@@ -112,7 +114,19 @@ and threshold must be finite and nonnegative. Supplying only one of
 outline/threshold raises `ValueError`. Empty input returns an empty list;
 inputs are never modified.
 
-## Placement and topology
+## Choosing a transition
+
+Pass the required keyword `tag` to each `imprint_lines()` call.
+
+| Tag | Placement |
+| --- | --- |
+| `"pattern_cut"` | Reserve the adapter rectangle and cut its boundaries into the background grid. This reproduces the original cut method with pattern attraction distance zero. A 25-unit corner offset can create a 25-unit strip. |
+| `"mesh_snap"` | Extend to the first eligible outward mesh edge and rebuild its adjacent layer of complete cells. |
+
+Both modes use the same controls, fixed pattern geometry, and mesh validation.
+Set `IMPRINT_TAG` in `examples/debug_imprint_line.py` to compare the same package in either mode.
+
+## Mesh-snap placement and topology
 
 The mesher first builds a reference grid from the exterior, finite input
 patterns, the symmetry axes and `element_size`. For each end of a line pair,

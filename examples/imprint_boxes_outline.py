@@ -148,10 +148,10 @@ def main():
     pairs = get_pair_line(specs, EXPAND_SIZE, outer_outline=outer,
                           distance=DISTANCE)
     mesh = imprint_lines(ELEMENT_SIZE, pairs, outer_outline=outer,
-                         min_transition_size=1)
+                         tag="mesh_snap", min_transition_size=1)
     baseline_pairs = get_pair_line(specs, EXPAND_SIZE)
     baseline = imprint_lines(ELEMENT_SIZE, baseline_pairs, outer_outline=outer,
-                             min_transition_size=1)
+                             tag="mesh_snap", min_transition_size=1)
     extensions = selected_extensions(pairs, outer)
     verified = verify_extension_edges(mesh, pairs, extensions)
 

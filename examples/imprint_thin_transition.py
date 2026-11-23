@@ -173,7 +173,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     pairs = model()
     mesh = imprint_lines(SIZE, pairs, outer_outline=OUTER,
-                         min_transition_size=MINIMUM)
+                         tag="mesh_snap", min_transition_size=MINIMUM)
     report = dict(box=BOX, expand=EXPAND, element_size=SIZE, min_transition_size=MINIMUM,
                   spacing=SPACING, elements=mesh.element_count, verified_sides=verify(mesh, pairs))
     baseline = None

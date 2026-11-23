@@ -8,7 +8,7 @@ from ...tolerance import subdivision_count
 from ._types import ImprintLineError
 
 
-class Background(_Builder):
+class ImprintGrid(_Builder):
     def __init__(self, domain, budget, constraints):
         super().__init__(domain, budget)
         self.constraints = constraints
@@ -40,6 +40,8 @@ class Background(_Builder):
                 count += 1
         return count
 
+
+class Background(ImprintGrid):
     def partition(self, patterns, size):
         self.seed(patterns, size)
         for bounds in self.index.rectangles():

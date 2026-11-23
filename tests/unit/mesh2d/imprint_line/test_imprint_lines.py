@@ -22,10 +22,33 @@ def pair(axis, bounds, coordinates=None, expand=2, count=6):
 
 
 class ImprintTests(unittest.TestCase):
+    def test_transition_tag_is_required_and_validated(self):
+        options = dict(outer_outline=((0, 0), (10, 0), (10, 10), (0, 10)), min_transition_size=.5)
+        with self.assertRaisesRegex(TypeError, "tag"):
+            imprint_lines(2, [], **options)
+        for tag in ("unknown", None):
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "pattern_cut.*mesh_snap"):
+                imprint_lines(2, [], tag=tag, **options)
+
+    def test_corner_cut_and_snap_preserve_the_same_fixed_pattern(self):
+        control = pair(0, (3975, -25, 4025, 25), range(-25, 26, 5), expand=1000)
+        pattern = [[[1000, 25], [3975, 25]]]
+        outer = [[1000, -2000], [8000, -2000], [8000, 3000], [1000, 3000]]
+        for tag, counts in (("pattern_cut", (120, 104)), ("mesh_snap", (135, 122))):
+            with self.subTest(tag=tag):
+                mesh = imprint_lines(1000, [control], pattern, outer_outline=outer,
+                                     min_transition_size=20, tag=tag)
+                self.assertEqual((mesh.node_count, mesh.element_count), counts)
+                axis_nodes = mesh.nodes[mesh.nodes[:, 1] == 0, 0]
+                self.assertEqual(set(axis_nodes) & {2975, 5025}, {2975, 5025} if tag == "pattern_cut" else set())
+                self.assert_segment(mesh, 0, 25, 1000, 3975)
+                outline, = EditorMesh2D.outlines(mesh)
+                self.assertEqual(len(outline) % 2, 0)
+
     def run_case(self, pairs, patterns=(), outer=((-2, -2), (12, -2), (12, 12), (-2, 12)),
                  size=2, minimum=.5, **kwargs):
         args = _prepare_plan(size, pairs, patterns, outer_outline=outer,
-                             min_transition_size=minimum, **kwargs)
+                             tag="mesh_snap", min_transition_size=minimum, **kwargs)
         mesh = _assemble(*args)
         assert_ccw(mesh)
         plan = args[1]
@@ -356,7 +379,7 @@ class ImprintTests(unittest.TestCase):
     def test_inputs_unchanged_and_new_mesh_owned(self):
         pairs = [pair(0, (4, 4, 6, 6))]
         before = copy.deepcopy(pairs)
-        kwargs = dict(outer_outline=[[-2, -2], [12, -2], [12, 12], [-2, 12]], min_transition_size=.5)
+        kwargs = dict(outer_outline=[[-2, -2], [12, -2], [12, 12], [-2, 12]], tag="mesh_snap", min_transition_size=.5)
         a = imprint_lines(2, pairs, **kwargs)
         b = imprint_lines(2, pairs, **kwargs)
         self.assertEqual(pairs, before)

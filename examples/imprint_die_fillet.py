@@ -39,7 +39,7 @@ def main():
     outer = [[0,0],[14000,0],[14000,14000],[0,14000]]
     start = perf_counter()
     mesh = imprint_lines(1000, pairs, patterns, outer_outline=outer,
-                         min_transition_size=100)
+                         tag="mesh_snap", min_transition_size=100)
     seconds = perf_counter() - start
     import matplotlib
     matplotlib.use('Agg')

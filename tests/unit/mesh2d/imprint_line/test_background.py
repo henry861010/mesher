@@ -9,7 +9,7 @@ from . import test_imprint_lines as fixtures
 
 class WholeCellTests(unittest.TestCase):
     options = dict(outer_outline=[[1000, -2000], [8000, -2000], [8000, 3000], [1000, 3000]],
-                   min_transition_size=20)
+                   tag="mesh_snap", min_transition_size=20)
 
     def mesh(self, pairs, patterns=()):
         args = _prepare_plan(1000, pairs, patterns, **self.options)
@@ -66,7 +66,7 @@ class WholeCellTests(unittest.TestCase):
 
     def test_nearby_sizing_line_moves_only_at_the_required_contact(self):
         options = dict(outer_outline=[[0, 0], [12, 0], [12, 12], [0, 12]],
-                       min_transition_size=.5)
+                       tag="mesh_snap", min_transition_size=.5)
         patterns = [[[11, 6.0005], [11.5, 6.0005]]]
         base = _assemble(*_prepare_plan(2, [], patterns, **options))
         control = fixtures.pair(0, (4, 4, 6, 8), [4, 5, 6.0012, 7, 8])
@@ -79,7 +79,7 @@ class WholeCellTests(unittest.TestCase):
 
     def test_two_fixed_lines_within_tolerance_of_one_coarse_row(self):
         options = dict(outer_outline=[[0, 0], [18, 0], [18, 16], [0, 16]],
-                       min_transition_size=.4)
+                       tag="mesh_snap", min_transition_size=.4)
         horizontal = fixtures.pair(0, (6.00002, 4.00072, 8.00002, 8.00072), expand=1.28)
         vertical = fixtures.pair(1, (10.00072, 7.99970, 12.00072, 11.99970), expand=1.85)
         mesh = _assemble(*_prepare_plan(2, [horizontal, vertical], **options))
@@ -91,7 +91,7 @@ class WholeCellTests(unittest.TestCase):
         control = fixtures.pair(0, (4, 2, 6, 4), expand=(0, 2.0002))
         remote = fixtures.pair(1, (8.0005, 8, 10, 10), expand=0)
         args = _prepare_plan(2, [control, remote], outer_outline=[[0, 0], [14, 0], [14, 14], [0, 14]],
-                             min_transition_size=.5)
+                             tag="mesh_snap", min_transition_size=.5)
         mesh = _assemble(*args)
         right = next(t for t in args[1].transitions if t.axis == 0 and t.side == 1)
         self.assertEqual(right.cells, ((10, 2, 12, 4),))

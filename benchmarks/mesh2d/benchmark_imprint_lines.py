@@ -53,7 +53,7 @@ def worker(kind):
     pairs, patterns = fixture(kind)
     start = perf_counter()
     mesh = imprint_lines(2, pairs, patterns, outer_outline=[[0, 0], [640, 0], [640, 640], [0, 640]],
-                         min_transition_size=.5)
+                         tag="mesh_snap", min_transition_size=.5)
     seconds = perf_counter() - start
     digest = hashlib.sha256(mesh.nodes.tobytes() + mesh.elements.tobytes()).hexdigest()
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
