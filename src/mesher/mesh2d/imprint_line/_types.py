@@ -73,9 +73,8 @@ class Band:
     coordinates: np.ndarray
     fronts: list[float]
     sources: tuple[int, ...]
-    # Fronts only move outwards. None means that end runs to the domain edge.
+    # An inactive end carries its dense lines to their exterior contacts.
     active: list[bool] = field(default_factory=lambda: [True, True])
-    splits: list[set[float]] = field(default_factory=lambda: [set(), set()])
 
     @property
     def bounds(self):
@@ -88,9 +87,7 @@ class Transition:
     axis: int
     side: int
     bounds: tuple[float, float, float, float]
-    splits: np.ndarray
-    chains: list[np.ndarray] = field(default_factory=list)
-    units: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
+    cells: tuple[tuple[float, float, float, float], ...]
 
     @property
     def inner(self):
@@ -102,5 +99,6 @@ class ImprintPlan:
     bands: list[Band]
     transitions: list[Transition]
     rectangles: np.ndarray
+    units: list[tuple[np.ndarray, np.ndarray]]
     diagnostics: dict
     constraints: Constraints

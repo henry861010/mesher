@@ -23,9 +23,9 @@ def pair(axis, bounds, coordinates=None, expand=2, count=6):
 
 class ImprintTests(unittest.TestCase):
     def run_case(self, pairs, patterns=(), outer=((-2, -2), (12, -2), (12, 12), (-2, 12)),
-                 size=2, minimum=.5, snap=.2, **kwargs):
+                 size=2, minimum=.5, **kwargs):
         args = _prepare_plan(size, pairs, patterns, outer_outline=outer,
-                             min_transition_size=minimum, pattern_snap_distance=snap, **kwargs)
+                             min_transition_size=minimum, **kwargs)
         mesh = _assemble(*args)
         assert_ccw(mesh)
         plan = args[1]
@@ -37,15 +37,10 @@ class ImprintTests(unittest.TestCase):
         for triangle in triangles:
             self.assertFalse(any(frozenset(edge) in boundary_edges
                                  for edge in zip(triangle, np.roll(triangle, -1))))
-            vertices = mesh.nodes[triangle, :2]
-            self.assertTrue(any(np.all(vertices >= t.bounds[:2]) and np.all(vertices <= t.bounds[2:])
-                                for t in plan.transitions))
         vertices = mesh.nodes[mesh.elements, :2]
         self.assertFalse(np.any((vertices.min(axis=1) < 0) & (vertices.max(axis=1) > 0)))
-        expected_triangles = 0
         for transition in plan.transitions:
             a = transition.axis
-            t = 1 - a
             b = transition.bounds
             self.assertGreaterEqual(b[a + 2] - b[a] + 1e-9 * minimum, minimum)
             self.assertLessEqual(b[a + 2] - b[a], size * (1 + 1e-9))
@@ -56,15 +51,10 @@ class ImprintTests(unittest.TestCase):
                 index = int(np.argmin(ends) if transition.side == 0 else np.argmax(ends))
                 actual = (ends[index] - transition.inner if transition.side == 0 else transition.inner - ends[index])
                 self.assertGreaterEqual(actual + 1e-9 * max(1, abs(ends[index])), distances[index])
-            for (lo, hi), chain in zip(zip(transition.splits, transition.splits[1:]), transition.chains):
-                expected_triangles += len(chain) % 2
-                # The three non-dense edges must contain only their two corners.
-                xy = mesh.nodes[:, :2]
-                outer_coordinate = b[a + (0 if transition.side == 0 else 2)]
-                self.assertEqual(np.count_nonzero((xy[:, a] == outer_coordinate) & (xy[:, t] >= lo) & (xy[:, t] <= hi)), 2)
-                for edge in (lo, hi):
-                    self.assertEqual(np.count_nonzero((xy[:, t] == edge) & (xy[:, a] >= b[a]) & (xy[:, a] <= b[a + 2])), 2)
-        self.assertEqual(np.count_nonzero(mesh.element_types == 3), expected_triangles)
+            self.assertTrue(transition.cells)
+            for cell in transition.cells:
+                self.assertEqual((cell[a], cell[a + 2]), (b[a], b[a + 2]))
+                self.assertGreater(min(cell[3 - a], b[3 - a]), max(cell[1 - a], b[1 - a]))
         for source in pairs:
             a = 0 if source["direction"] == "x" else 1
             t = 1 - a
@@ -94,48 +84,49 @@ class ImprintTests(unittest.TestCase):
         self.assertEqual(mesh.element_count, 113)
         self.assertEqual(np.count_nonzero(mesh.element_types == 3), 0)
 
-    def test_shifted_focus_merge_and_align_without_chasing_exterior(self):
-        pairs = [pair(a, b) for b in ((4, 5, 6, 7), (10, 4, 12, 6)) for a in (0, 1)]
-        _, plan = self.run_case(pairs, size=3, outer=((-4, -4), (20, -4), (20, 15), (-4, 15)))
-        self.assertEqual(plan.diagnostics["band_count"], 3)
-        self.assertEqual(plan.diagnostics["transition_count"], 6)
-        horizontal = [b for b in plan.bands if b.axis == 0]
-        self.assertEqual(len(horizontal), 1)
-        self.assertEqual((horizontal[0].low, horizontal[0].high), (4, 7))
-        self.assertEqual(len(horizontal[0].coordinates), 12)
-        vertical = [t for t in plan.transitions if t.axis == 1]
-        self.assertEqual({t.inner for t in vertical if t.side == 1}, {9})
-        self.assertEqual({t.inner for t in vertical if t.side == 0}, {2})
+    def test_shifted_focus_ends_can_claim_the_same_cell(self):
+        pairs = [pair(a, b) for b in ((4, 5, 6, 7), (12, 4, 14, 6)) for a in (0, 1)]
+        _, plan = self.run_case(pairs, size=2, outer=((-4, -4), (20, -4), (20, 16), (-4, 16)))
+        horizontal = [t for t in plan.transitions if t.axis == 0]
+        right = next(t for t in horizontal if t.side == 1 and t.inner == 8)
+        left = next(t for t in horizontal if t.side == 0 and t.inner == 10)
+        self.assertTrue(set(right.cells) & set(left.cells))
+        self.assertEqual(len(plan.transitions), 8)
 
     def test_fillet_nonuniform_5_to_20_intervals(self):
         ys = np.r_[0, np.cumsum([5, 10, 15, 20] * 10)]
         mesh, plan = self.run_case([pair(0, (3000, 0, 7000, 500), ys, 2000)], size=1000, minimum=200,
                                    outer=((-1000, -1000), (11000, -1000), (11000, 1500), (-1000, 1500)))
         self.assertEqual(plan.diagnostics["transition_count"], 2)
-        self.assertEqual(np.count_nonzero(mesh.element_types == 3), 2)
+        self.assertTrue(all(len(t.cells) >= 1 for t in plan.transitions))
         self.assertEqual({t.inner for t in plan.transitions}, {1000, 9000})
         # 40 intervals remain straight across the original length.
         self.assert_segment(mesh, 0, 5, 3000, 7000)
 
-    def test_thin_control_and_finite_pattern_push_transition_and_snap_outer(self):
+    def test_finite_patterns_and_dense_lines_survive_outward_alignment(self):
         patterns = [[[5.5, 4.1], [8.1, 4.1]], [[10.1, 0], [10.1, 10]]]
         mesh, plan = self.run_case([pair(0, (3, 4, 5, 6), expand=1),
                                     pair(1, (6.2, 1, 6.5, 9), [6.2, 6.3, 6.4, 6.5], .5)],
                                    patterns, outer=((-2, 0), (12.1, 0), (12.1, 10), (-2, 10)))
         right = next(t for t in plan.transitions if t.axis == 0 and t.side == 1)
-        self.assertEqual(right.bounds, (8.1, 4., 10.1, 6.))
-        self.assertEqual(len([t for t in plan.transitions if t.axis == 1]), 2)
+        self.assertEqual(right.inner, 6.8)
+        self.assert_segment(mesh, 0, 4., 3., right.inner)
+        self.assertFalse(any(t.axis == 1 for t in plan.transitions))
+        for x in (6.2, 6.3, 6.4, 6.5):
+            self.assert_segment(mesh, 1, x, 0, 10)
         self.assert_segment(mesh, 0, 4.1, 5.5, 8.1)
         self.assert_segment(mesh, 1, 10.1, 0, 10)
 
-    def test_thin_pair_transitions_without_widening_in_both_directions(self):
+    def test_thin_pair_rebuilds_wider_cells_in_both_directions(self):
         for axis in (0, 1):
             with self.subTest(axis=axis):
                 bounds = (3, 4, 5, 4.2) if axis == 0 else (4, 3, 4.2, 5)
                 _, plan = self.run_case([pair(axis, bounds, count=4)], minimum=.5)
                 self.assertEqual(len(plan.transitions), 2)
-                self.assertEqual({t.inner for t in plan.transitions}, {1, 7})
+                self.assertEqual({t.inner for t in plan.transitions}, {0, 8})
                 self.assertEqual((plan.bands[0].low, plan.bands[0].high), (4, 4.2))
+                for end in plan.transitions:
+                    self.assertTrue(any(b[1-axis] < 4 or b[3-axis] > 4.2 for b in end.cells))
 
     def test_short_box_sides_transition_after_requested_expansion(self):
         for box in ([0, 0, 50, 2000], [0, 0, 2000, 50]):
@@ -146,13 +137,13 @@ class ImprintTests(unittest.TestCase):
                          x_points=[[x1, y] for y in np.arange(y1, y2 + 1, 10)],
                          y_points=[[x, y1] for x in np.arange(x1, x2 + 1, 10)]),
                 ], expand_size=1000)
-                _, plan = self.run_case(pairs, size=1000, minimum=100, snap=0,
+                _, plan = self.run_case(pairs, size=1000, minimum=100,
                                        outer=((-5000, -5000), (7000, -5000),
                                               (7000, 7000), (-5000, 7000)))
                 self.assertEqual(len(plan.transitions), 4)
                 self.assertFalse(plan.diagnostics['boundary_ends'])
                 for t in plan.transitions:
-                    expected = box[t.axis] - 1000 if t.side == 0 else box[t.axis + 2] + 1000
+                    expected = -1000 if t.side == 0 else 1000 * (1 + np.ceil(box[t.axis + 2] / 1000))
                     self.assertEqual(t.inner, expected)
 
     def test_thin_pair_still_requires_minimum_expansion_depth(self):
@@ -182,7 +173,7 @@ class ImprintTests(unittest.TestCase):
                         p["line1"], p["line2"] = p["line2"], p["line1"]
                     _, plan = self.run_case([p])
                     self.assertEqual({t.inner for t in plan.transitions},
-                                     {1, 7} if reversed_lines else {3, 9})
+                                     {0, 8} if reversed_lines else {2, 10})
 
     def test_endpoint_distance_fields_are_required(self):
         for name in ("line1_expand_size", "line2_expand_size"):
@@ -212,40 +203,70 @@ class ImprintTests(unittest.TestCase):
 
     def test_large_transverse_span_splits_into_single_grid_cells(self):
         _, plan = self.run_case([pair(0, (4, 2, 6, 8), count=20)])
-        self.assertEqual(plan.diagnostics["transition_count"], 6)
-        self.assertTrue(all(np.max(np.diff(t.splits)) <= 2 for t in plan.transitions))
+        for t in plan.transitions:
+            self.assertGreaterEqual(len(t.cells), 3)
+            self.assertTrue(all(b[3] - b[1] <= 2 for b in t.cells))
 
     def test_parallel_pattern_can_become_unit_divider(self):
         mesh, plan = self.run_case([pair(0, (4, 4, 6, 6))], [[[0, 5], [10, 5]]])
-        self.assertEqual(plan.diagnostics["transition_count"], 4)
+        for t in plan.transitions:
+            self.assertTrue(all(b[3] <= 5 or b[1] >= 5 for b in t.cells))
         self.assert_segment(mesh, 0, 5, 0, 10)
 
     def test_parallel_pattern_can_split_off_width_below_minimum(self):
         mesh, plan = self.run_case([pair(0, (4, 4, 6, 6))], [[[0, 4.1], [10, 4.1]]])
         self.assertEqual({t.inner for t in plan.transitions}, {2, 8})
         for t in plan.transitions:
-            np.testing.assert_array_equal(t.splits, [4, 4.1, 6])
+            self.assertTrue(all(b[3] <= 4.1 or b[1] >= 4.1 for b in t.cells))
         self.assert_segment(mesh, 0, 4.1, 0, 10)
 
     def test_perpendicular_pattern_can_bound_a_smaller_valid_grid_cell(self):
         mesh, plan = self.run_case([pair(0, (4, 4, 6, 6))], [[[9, 3], [9, 7]]])
         self.assert_segment(mesh, 1, 9, 3, 7)
         right = next(t for t in plan.transitions if t.side == 1)
-        self.assertEqual(right.bounds, (8., 4., 9., 6.))
+        self.assertEqual(right.bounds, (9., 4., 10.5, 6.))
 
     def test_repeated_perpendicular_patterns_do_not_force_boundary_fallback(self):
         patterns = [[[x, 3], [x, 7]] for x in (8.5, 9.5, 10.5, 11.5)]
         _, plan = self.run_case([pair(0, (4, 4, 6, 6))], patterns)
         right = next(t for t in plan.transitions if t.side == 1)
-        self.assertEqual(right.bounds, (8., 4., 8.5, 6.))
+        self.assertEqual(right.bounds, (8.5, 4., 9.5, 6.))
+
+    def test_nearest_mesh_edge_wins_regardless_of_pattern_origin(self):
+        control = pair(0, (900, 200, 1000, 400), expand=1000)
+        outer = ((200, 0), (3200, 0), (3200, 600), (200, 600))
+        for pattern_x in ((2450,), (2200, 2450)):
+            with self.subTest(pattern_x=pattern_x):
+                patterns = [[[x, 0], [x, 600]] for x in pattern_x]
+                mesh, plan = self.run_case([control], patterns, outer, size=250, minimum=50)
+                right, = plan.transitions
+                self.assertEqual(right.bounds, (2200, 200, 2450, 400))
+                self.assert_segment(mesh, 0, 240, 1000, 2200)
+                self.assertFalse(np.any(mesh.nodes[:, 0] == 2000))
+                self.assert_segment(mesh, 1, 2450, 0, 600)
+
+    def test_shallow_outward_layers_are_skipped_whole(self):
+        control = pair(0, (4, 4, 6, 6), expand=2)
+        patterns = [[[x, 0], [x, 12]] for x in (8, 8.2, 8.4, 10)]
+        mesh, plan = self.run_case([control], patterns, minimum=.5)
+        right = next(t for t in plan.transitions if t.side == 1)
+        self.assertEqual(right.bounds, (8.4, 4, 10, 6))
+        self.assert_segment(mesh, 0, 4.4, 6, 8.4)
+
+    def test_edge_in_a_disconnected_arm_is_not_a_candidate(self):
+        outer = [[0, 0], [18, 0], [18, 4], [3, 4], [3, 8], [18, 8], [18, 12], [0, 12]]
+        control = pair(0, (5, 1, 7, 3), expand=3)
+        mesh, plan = self.run_case([control], [[[10, 9], [10, 11]]], outer, size=4)
+        right, = plan.transitions
+        self.assertEqual(right.cells, ((10.5, 0, 14.25, 4),))
+        self.assert_segment(mesh, 1, 10, 9, 11)
 
     def test_remote_pattern_endpoint_splits_narrow_width_without_moving_transition(self):
         mesh, plan = self.run_case([pair(0, (4, 4, 6, 6))], [[[900, 4.1], [900, 4.2]]],
-                                   outer=((0, 0), (1000, 0), (1000, 10), (0, 10)), snap=0)
+                                   outer=((0, 0), (1000, 0), (1000, 10), (0, 10)))
         right = next(t for t in plan.transitions if t.side == 1)
         self.assertEqual(right.inner, 8)
-        np.testing.assert_array_equal(right.splits, [4, 4.1, 4.2, 6])
-        self.assertLessEqual(plan.diagnostics["planning_iterations"], 3)
+        self.assertTrue(any(b[1] == 4.1 and b[3] == 4.2 for b in right.cells))
         self.assert_segment(mesh, 1, 900, 4.1, 4.2)
 
     def test_concave_exterior_and_outside_pattern_clipping(self):
@@ -260,39 +281,36 @@ class ImprintTests(unittest.TestCase):
         self.assertTrue(np.all(mesh.element_types == 4))
         self.assert_segment(mesh, 1, 1, 0, 10)
 
-    def test_odd_exterior_cut_terminates_at_a_dense_side(self):
+    def test_odd_exterior_repaired_on_the_contacted_coarse_edge(self):
         p = pair(0, (1, 1, 3, 3), expand=(10, .75), count=3)
         outer = ((-3, -3), (7, -3), (7, 7), (-3, 7))
-        mesh, plan = self.run_case([p], outer=outer, snap=0, max_elements=55)
+        mesh, plan = self.run_case([p], outer=outer)
         exterior, = EditorMesh2D.outlines(mesh)
-        self.assertEqual(len(exterior), 28)  # Previously 27 with both axes supplied.
+        self.assertEqual(len(exterior) % 2, 0)
         transition, = plan.transitions
-        self.assert_segment(mesh, 0, 1.5, -3, transition.inner)
-        self.assertTrue(np.all(mesh.element_types == 4))
-        smaller, _ = self.run_case([p], outer=outer, snap=0, max_elements=54)
-        self.assertLessEqual(smaller.element_count, 54)
+        self.assert_segment(mesh, 0, 2, -3, transition.inner)
+        self.assertTrue(all(np.any(mesh.nodes[mesh.nodes[:, 0] == -3, 1] == y) for y in (1, 2, 3)))
 
-    def test_unresolvable_parity_cut_extends_the_band(self):
+    def test_narrow_dense_side_keeps_a_local_transition(self):
         p = pair(0, (1, 1, 3, 1.003), expand=(10, .75), count=3)
         mesh, plan = self.run_case([p], outer=((-3, -3), (7, -3), (7, 7), (-3, 7)))
-        self.assertFalse(plan.transitions)
-        self.assert_segment(mesh, 0, p["points"][1][1], -3, 7)
+        end, = plan.transitions
+        self.assert_segment(mesh, 0, p["points"][1][1], -3, end.inner)
 
-    def test_triangle_orientation_and_replanning_at_exterior_walls(self):
-        # With one wall the odd units can point their triangles inward. With
-        # both lateral walls locked, neither orientation leaves the exterior free.
-        for low, high, triangles in ((0, 5, 2), (-4, 2, 2), (0, 2, 0)):
+    def test_exterior_walls_have_only_quad_owners(self):
+        for low, high in ((0, 5), (-4, 2), (0, 2)):
             with self.subTest(low=low, high=high):
                 p = pair(0, (4, 0, 6, 2), expand=.5, count=3)
-                mesh, _ = self.run_case([p], outer=((0, low), (10, low), (10, high), (0, high)), size=3)
-                self.assertEqual(np.count_nonzero(mesh.element_types == 3), triangles)
+                mesh, plan = self.run_case([p], outer=((0, low), (10, low), (10, high), (0, high)), size=3)
+                self.assertTrue(plan.transitions)
+                self.assert_segment(mesh, 0, 1, 3.5, 6.5)
 
-    def test_touching_transitions_share_a_front_and_preserve_boundary_anchors(self):
+    def test_touching_transitions_preserve_their_fronts_and_boundary_anchors(self):
         p = [pair(0, (1, 1, 3, 2), expand=(10, 1), count=3),
              pair(0, (1, 2, 3, 3), expand=(10, 2), count=3)]
         outer = ((-3, -3), (80, -3), (80, 7), (-3, 7))
-        mesh, plan = self.run_case(p, [[[-3, 5.25], [-3, 9]]], outer=outer, snap=0)
-        self.assertEqual([t.inner for t in plan.transitions], [5, 5])
+        mesh, plan = self.run_case(p, [[[-3, 5.25], [-3, 9]]], outer=outer)
+        self.assertEqual([t.inner for t in plan.transitions], [4, 6])
         self.assertTrue(np.any(np.all(mesh.nodes[:, :2] == (-3, 5.25), axis=1)))
 
     def test_axes_through_dense_lines_transitions_and_background(self):
@@ -338,7 +356,7 @@ class ImprintTests(unittest.TestCase):
     def test_inputs_unchanged_and_new_mesh_owned(self):
         pairs = [pair(0, (4, 4, 6, 6))]
         before = copy.deepcopy(pairs)
-        kwargs = dict(outer_outline=[[-2, -2], [12, -2], [12, 12], [-2, 12]], min_transition_size=.5, pattern_snap_distance=.2)
+        kwargs = dict(outer_outline=[[-2, -2], [12, -2], [12, 12], [-2, 12]], min_transition_size=.5)
         a = imprint_lines(2, pairs, **kwargs)
         b = imprint_lines(2, pairs, **kwargs)
         self.assertEqual(pairs, before)
@@ -371,9 +389,10 @@ class ImprintTests(unittest.TestCase):
             p["line2_expand_size"] *= scale
             outer = np.asarray([[-2, -2], [12, -2], [12, 12], [-2, 12]]) * scale + origin
             mesh, plan = self.run_case([p], outer=outer, size=2 * scale, minimum=.5 * scale,
-                                       snap=.2 * scale, tolerance=1e-5 * scale)
+                                       tolerance=1e-5 * scale)
             self.assertEqual(plan.diagnostics["transition_count"], 2)
-            self.assertTrue(np.all(mesh.element_types == 4))
+            self.assertGreater(np.count_nonzero(mesh.element_types == 4),
+                               np.count_nonzero(mesh.element_types == 3))
 
     def test_seeded_crossings_and_roundtrip_support_regression(self):
         # Seed 29 exposed two computed copies of a support differing by one ULP.

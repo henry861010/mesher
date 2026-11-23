@@ -210,7 +210,7 @@ class GetPairLineTests(unittest.TestCase):
                     specs = [dict(box=box, **{field: points})]
                     pairs = get_pair_line(specs, 2)
                     original_pairs = copy.deepcopy(pairs)
-                    kwargs = dict(outer_outline=outer, min_transition_size=2, pattern_snap_distance=0)
+                    kwargs = dict(outer_outline=outer, min_transition_size=2)
                     mesh = imprint_lines(20, pairs, **kwargs)
                     self.assertEqual(len(pairs), 1)
                     self.assertEqual(pairs, original_pairs)
@@ -234,7 +234,7 @@ class GetPairLineTests(unittest.TestCase):
                                 "y_points": [[x, 4] for x in (1, 1.6, 2.2, 2.8, 3)]}],
                               .5, outer, 2)
         mesh = imprint_lines(2, pairs, outer_outline=outer,
-                             min_transition_size=.5, pattern_snap_distance=.2)
+                             min_transition_size=.5)
         self.assert_cross_sections(mesh, pairs)
 
     def assert_cross_sections(self, mesh, pairs):

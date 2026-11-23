@@ -33,11 +33,10 @@ def contains_box(domain, box):
 
 
 def prepare(element_size, line_pairs, pattern_lines, outer_outline,
-            min_transition_size, pattern_snap_distance, tolerance, max_elements):
+            min_transition_size, tolerance, max_elements):
     policy = resolve_tolerance(tolerance)
     size = scalar(element_size, "element_size")
     minimum = scalar(min_transition_size, "min_transition_size")
-    snap = scalar(pattern_snap_distance, "pattern_snap_distance", zero=True)
     if minimum <= policy.absolute or size < minimum:
         raise ValueError("tolerance < min_transition_size <= element_size is required")
     budget = _ElementBudget(max_elements)
@@ -153,4 +152,4 @@ def prepare(element_size, line_pairs, pattern_lines, outer_outline,
         bands.append(band)
         cores.append(band.bounds)
     bands.sort(key=lambda b: (b.axis, b.start, b.end, b.low, b.high, tuple(b.coordinates)))
-    return domain, bands, cores, patterns, size, minimum, snap, policy, budget
+    return domain, bands, cores, patterns, size, minimum, policy, budget

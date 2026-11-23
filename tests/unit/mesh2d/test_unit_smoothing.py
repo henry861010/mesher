@@ -50,10 +50,10 @@ class UnitSmoothingTests(unittest.TestCase):
             j1, a1 = quality(unit.nodes - before[0], unit.quads)
             self.assertIn(7, moved)
             np.testing.assert_allclose((unit.nodes[7, :2] - before[7, :2]) @ rotation.T,
-                                       [0, 74.53324], atol=1e-4)
+                                       [0, 15.85929], atol=1e-4)
             np.testing.assert_array_equal(unit.nodes[:6], before[:6])
-            self.assertAlmostEqual(j0, .12146, places=5)
-            self.assertAlmostEqual(j1, .23559, places=5)
+            self.assertAlmostEqual(j0, .29094, places=5)
+            self.assertAlmostEqual(j1, .30973, places=5)
             self.assertAlmostEqual(a0, a1, places=8)
 
     def test_two_short_segments_next_to_a_corner(self):
@@ -135,6 +135,19 @@ class UnitSmoothingTests(unittest.TestCase):
         j1, a1 = quality(after.mesh.nodes, added)
         self.assertGreaterEqual(j1, j0 - 1e-12)
         self.assertLess(a1, a0 - 1)
+
+    def test_short_end_quality_reaches_the_committed_layer(self):
+        mesh, outline = rectangle([0, .4, .97, 1], height=1.)
+        source, cells = mesh.nodes.copy(), mesh.elements.copy()
+        result = _mesher.generate_layer_adaptive_mesh(mesh, outline, 1., repair_slots=False)
+        np.testing.assert_array_equal(mesh.nodes[:len(source)], source)
+        np.testing.assert_array_equal(mesh.elements[:len(cells)], cells)
+        added = mesh.elements[len(cells):]
+        self.assertEqual(len(added), 26)
+        j, a = quality(mesh.nodes, added)
+        self.assertGreater(j, .52)  # Arc-length placement followed by layer smoothing gave .433.
+        self.assertAlmostEqual(a, 1 / .06)
+        self.assertAlmostEqual(result.diagnostics["quality"]["min_scaled_jacobian"], j)
 
     def test_layer_restores_original_points_if_final_geometry_rejects_a_move(self):
         with patch.object(smoothing, "_THRESHOLD", np.inf):

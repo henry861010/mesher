@@ -10,7 +10,7 @@ from ....model import Mesh2D, _validate_zero_z
 from ...unit.build_unit_1_1_1_x import _build_unit_1_1_1_x as build_unit_1_1_1_x
 from ...unit.build_unit_1_1_x_y import _build_unit_1_1_x_y as build_unit_1_1_x_y
 from ...unit.build_unit_1_x_y_z import _build_unit_1_x_y_z as build_unit_1_x_y_z
-from ...unit.build_unit_1_1_1_x import _physical_boundary, _physical_quads
+from ...unit.build_unit_1_1_1_x import _physical_boundary, _physical_quads, _represented_ring_check
 from ...unit.build_unit_1_1_x_y import _validate_patch
 from .._registry import _BoundedCoordinates
 
@@ -101,9 +101,13 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
     effective_tol = tol / scale
     policy = _physical_boundary(boundary, np.arange(len(boundary)), tol)
 
+    def to_world(xy):
+        return origin + scale * xy
+
+    check_move = _represented_ring_check(boundary, policy, to_world, lambda xy: (xy - origin) / scale)
+
     def restore_nodes(raw_nodes):
-        nodes = np.column_stack((origin + scale * raw_nodes[:, :2],
-                                 np.zeros(len(raw_nodes))))
+        nodes = np.column_stack((to_world(raw_nodes[:, :2]), np.zeros(len(raw_nodes))))
         # Every fixed coordinate survives normalization exactly, on either path.
         nodes[:len(boundary)] = boundary
         return nodes
@@ -141,7 +145,7 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
     for builder in templates:
         attempt = Mesh2D(mesh.nodes, np.empty((0, 4), dtype=np.int64))
         try:
-            builder(attempt, *ids, tolerance=effective_tol)
+            builder(attempt, *ids, tolerance=effective_tol, _check_move=check_move)
             # 11xy already performs the complete patch checks. The smaller
             # 111x public builder checks convexity only, so complete that here.
             if builder is build_unit_1_1_1_x:
@@ -157,7 +161,7 @@ def build_unit_patch(sides: tuple[np.ndarray, ...], tol: float, *,
         check = (None if validate_unit is None else
                  lambda points, cells: validate_unit(restore_nodes(points), cells))
         build_unit_1_x_y_z(mesh, *ids, tolerance=effective_tol, _diagnostics=diagnostics,
-                           _fixed_interior=midpoints, _validate_candidate=check)
+                           _fixed_interior=midpoints, _validate_candidate=check, _check_move=check_move)
         details = (diagnostics["method"], tuple(midpoints))
         result = restored(mesh.nodes, mesh.elements, details)
     if _cache is not None:

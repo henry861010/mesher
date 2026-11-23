@@ -148,10 +148,10 @@ def main():
     pairs = get_pair_line(specs, EXPAND_SIZE, outer_outline=outer,
                           distance=DISTANCE)
     mesh = imprint_lines(ELEMENT_SIZE, pairs, outer_outline=outer,
-                         min_transition_size=1, pattern_snap_distance=0)
+                         min_transition_size=1)
     baseline_pairs = get_pair_line(specs, EXPAND_SIZE)
     baseline = imprint_lines(ELEMENT_SIZE, baseline_pairs, outer_outline=outer,
-                             min_transition_size=1, pattern_snap_distance=0)
+                             min_transition_size=1)
     extensions = selected_extensions(pairs, outer)
     verified = verify_extension_edges(mesh, pairs, extensions)
 
@@ -202,7 +202,7 @@ def main():
         boxes=len(boxes), pairs=len(pairs), selected_sides=len(extensions),
         verified_extension_lines=verified,
         parameters=dict(expand_size=EXPAND_SIZE, distance=DISTANCE, spacing=SPACING,
-                        element_size=ELEMENT_SIZE, min_transition_size=1, pattern_snap_distance=0),
+                        element_size=ELEMENT_SIZE, min_transition_size=1),
         mesh=dict(nodes=mesh.node_count, elements=mesh.element_count,
                   triangles=int(np.count_nonzero(mesh.element_types == 3))),
         baseline=dict(nodes=baseline.node_count, elements=baseline.element_count),

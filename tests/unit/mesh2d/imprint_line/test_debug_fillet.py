@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mesher.mesh2d.imprint_line import imprint_lines
+from mesher.mesh2d.imprint_line.mesher import _prepare_plan
 
 
 HAS_GEOMETRY = all(importlib.util.find_spec(name) is not None
@@ -78,7 +79,9 @@ class DebugFilletTests(unittest.TestCase):
         self.assertEqual(boxes, before)
         self.assertEqual([len(loop) for loop in loops], [20])
         self.assertTrue(Polygon(loops[0]).equals(filled))
-        self.assertEqual(filled.bounds, (-26022.5, -41340, 26022.5, 41340))
+        bounds = np.asarray(boxes)
+        np.testing.assert_array_equal(filled.bounds, [*bounds[:, :2].min(axis=0),
+                                                     *bounds[:, 2:].max(axis=0)])
         cow = Polygon(example._get_cow_outline())
         band = filled.buffer(300, join_style="mitre").difference(filled)
         self.assertEqual(len(lines), len(set(lines)))
@@ -92,12 +95,25 @@ class DebugFilletTests(unittest.TestCase):
         mesh = imprint_lines(1000, [], lines,
                              outer_outline=[[-500, -500], [1500, -500],
                                             [1500, 1500], [-500, 1500]],
-                             min_transition_size=20, pattern_snap_distance=0)
+                             min_transition_size=20)
         edges = np.stack((mesh.elements, np.roll(mesh.elements, -1, axis=1)), axis=-1)
         edges = np.unique(np.sort(edges.reshape(-1, 2), axis=1), axis=0)
         coverage = union_all([LineString(points) for points in mesh.nodes[edges, :2]])
         for line in map(LineString, lines):
             self.assertTrue(line.difference(coverage).is_empty)
+
+    def test_package_corner_uses_one_outward_layer(self):
+        with patch.object(example, "imprint_lines", _prepare_plan):
+            _, plan, _, _ = example.get_cow_mesh()
+        corner, = (end for end in plan.transitions if end.axis == 0 and end.side == 0
+                   and plan.bands[end.band].start == 12867.5 and end.bounds[1] == 10935)
+        self.assertAlmostEqual(corner.inner, 11623.846153846154)
+        self.assertAlmostEqual(corner.bounds[0], 10655.192307692309)
+        self.assertEqual(len(corner.cells), 3)
+        for end in plan.transitions:
+            axis = end.axis
+            self.assertEqual({(cell[axis], cell[axis + 2]) for cell in end.cells},
+                             {(end.bounds[axis], end.bounds[axis + 2])})
 
     def test_package_axes_and_two_quad_adapter_layers(self):
         cow = example.get_cow_mesh()

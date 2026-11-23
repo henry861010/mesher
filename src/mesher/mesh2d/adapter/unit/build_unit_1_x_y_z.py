@@ -37,7 +37,7 @@ def _check_ccw_boundary(nodes: np.ndarray, edges: _Edges) -> None:
         raise ValueError("a cut must leave two counterclockwise patches")
 
 
-def _stage_template(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
+def _stage_template(nodes: np.ndarray, edges: _Edges, tolerance=None, *, check_move=None) -> _Patch:
     """Try compatible existing templates, isolated from all previous attempts."""
     long = [index for index, edge in enumerate(edges) if len(edge) > 2]
     builders = ()
@@ -51,14 +51,14 @@ def _stage_template(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
     for builder in builders:
         work = Mesh2D(nodes, np.empty((0, 4), dtype=np.int64))
         try:
-            builder(work, *edges, tolerance=tolerance)
+            builder(work, *edges, tolerance=tolerance, _check_move=check_move)
             return _checked_patch(work.nodes, work.elements, edges)
         except ValueError as error:
             last_error = error
     raise ValueError("no existing template fills this patch") from last_error
 
 
-def _stage_layers(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
+def _stage_layers(nodes: np.ndarray, edges: _Edges, tolerance=None, *, check_move=None) -> _Patch:
     """Peel both sides equally, reserving their last segments for the tail."""
     last_error = None
     for index, edge in enumerate(edges):
@@ -82,19 +82,19 @@ def _stage_layers(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
         try:
             _validate_quads(nodes, quads)
             _check_ccw_boundary(nodes, remaining)
-            tail_nodes, tail_quads = _stage_template(nodes, remaining, tolerance)
+            tail_nodes, tail_quads = _stage_template(nodes, remaining, tolerance, check_move=check_move)
             return _checked_patch(tail_nodes, np.vstack((quads, tail_quads)), edges)
         except ValueError as error:
             last_error = error
     raise ValueError("synchronous layers cannot fill this patch") from last_error
 
 
-def _stage_local_patch(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patch:
+def _stage_local_patch(nodes: np.ndarray, edges: _Edges, tolerance=None, *, check_move=None) -> _Patch:
     """A cap or tail always retains at least one one-segment side."""
     try:
-        return _stage_template(nodes, edges, tolerance)
+        return _stage_template(nodes, edges, tolerance, check_move=check_move)
     except ValueError:
-        return _stage_layers(nodes, edges, tolerance)
+        return _stage_layers(nodes, edges, tolerance, check_move=check_move)
 
 
 def _distance_to_segment_squared(point: np.ndarray, segment: np.ndarray) -> float:
@@ -104,7 +104,7 @@ def _distance_to_segment_squared(point: np.ndarray, segment: np.ndarray) -> floa
     return float(delta @ delta)
 
 
-def _stage_sweep(nodes: np.ndarray, edges: _Edges, tolerance=None, *, midpoints) -> _Patch:
+def _stage_sweep(nodes: np.ndarray, edges: _Edges, tolerance=None, *, midpoints, check_move=None) -> _Patch:
     """Advance a primary node by one segment and match the nearest valid node."""
     frontier, left, opposite, back = edges
     right = back[::-1]
@@ -160,7 +160,7 @@ def _stage_sweep(nodes: np.ndarray, edges: _Edges, tolerance=None, *, midpoints)
                     # connector stays inside the current boundary.
                     _check_ccw_boundary(candidate_nodes, cap)
                     _check_ccw_boundary(candidate_nodes, remaining)
-                    cap_nodes, cap_quads = _stage_local_patch(candidate_nodes, cap, tolerance)
+                    cap_nodes, cap_quads = _stage_local_patch(candidate_nodes, cap, tolerance, check_move=check_move)
                 except ValueError as error:
                     last_error = error
                     continue
@@ -180,7 +180,7 @@ def _stage_sweep(nodes: np.ndarray, edges: _Edges, tolerance=None, *, midpoints)
             raise ValueError("no valid primary-to-opposite cut") from last_error
 
     remaining = (frontier, left[i:], opposite, right[j:][::-1])
-    nodes, tail = _stage_local_patch(nodes, remaining, tolerance)
+    nodes, tail = _stage_local_patch(nodes, remaining, tolerance, check_move=check_move)
     staged_quads.append(tail)
     return _checked_patch(nodes, np.concatenate(staged_quads), edges)
 
@@ -242,7 +242,7 @@ def _stage_inner_ring(nodes: np.ndarray, edges: _Edges, tolerance=None) -> _Patc
 
 
 def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = None, tolerance=None,
-                 *, fixed_interior=None, validate_candidate=None) -> _Patch:
+                 *, fixed_interior=None, validate_candidate=None, check_move=None) -> _Patch:
     def selected(patch: _Patch, method: str) -> _Patch:
         _physical_quads(*patch, tolerance)
         if validate_candidate is not None:
@@ -252,7 +252,7 @@ def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = No
         return patch
 
     try:
-        return selected(_stage_template(nodes, edges, tolerance), "template")
+        return selected(_stage_template(nodes, edges, tolerance, check_move=check_move), "template")
     except ValueError:
         pass
     for index, edge in enumerate(edges):
@@ -261,14 +261,14 @@ def _stage_patch(nodes: np.ndarray, edges: _Edges, diagnostics: dict | None = No
         try:
             midpoints = []
             result = selected(_stage_sweep(nodes, edges[index:] + edges[:index], tolerance,
-                                           midpoints=midpoints), "sweep")
+                                           midpoints=midpoints, check_move=check_move), "sweep")
             if fixed_interior is not None:
                 fixed_interior.extend(midpoints)
             return result
         except ValueError:
             pass
     try:
-        return selected(_stage_layers(nodes, edges, tolerance), "layers")
+        return selected(_stage_layers(nodes, edges, tolerance, check_move=check_move), "layers")
     except ValueError:
         pass
     try:
@@ -287,6 +287,7 @@ def _build_unit_1_x_y_z(
     _diagnostics: dict | None = None,
     _fixed_interior=None,
     _validate_candidate=None,
+    _check_move=None,
     tolerance=None,
 ) -> Mesh2D:
     """Append convex Quad4 cells inside four cyclic boundary chains.
@@ -326,7 +327,8 @@ def _build_unit_1_x_y_z(
 
     staged_diagnostics: dict = {}
     nodes, quads = _stage_patch(mesh.nodes, edges, staged_diagnostics, policy,
-                                fixed_interior=_fixed_interior, validate_candidate=_validate_candidate)
+                                fixed_interior=_fixed_interior, validate_candidate=_validate_candidate,
+                                check_move=_check_move)
     _checked_patch(nodes, quads, (edge1, edge2, edge3, edge4))
     mesh.replace_data(nodes=nodes, elements=np.vstack((mesh.elements, quads)))
     if _diagnostics is not None:

@@ -11,18 +11,18 @@ from ._types import ImprintLineError
 
 
 def _prepare_plan(element_size, line_pairs, pattern_lines=(), *, outer_outline,
-                  min_transition_size, pattern_snap_distance, tolerance=None,
+                  min_transition_size, tolerance=None,
                   max_elements=1_000_000):
     args = prepare(element_size, line_pairs, pattern_lines, outer_outline,
-                   min_transition_size, pattern_snap_distance, tolerance, max_elements)
-    domain, bands, cores, patterns, size, minimum, snap, policy, budget = args
-    result = plan(domain, bands, cores, patterns, size, minimum, snap, policy, budget)
+                   min_transition_size, tolerance, max_elements)
+    domain, bands, cores, patterns, size, minimum, policy, budget = args
+    result = plan(domain, bands, cores, patterns, size, minimum, budget)
     return domain, result, policy, budget
 
 
 def _assemble(domain, result, policy, budget):
     rectangles = result.rectangles
-    counts = [(3 * len(chain) - 4) // 2 for t in result.transitions for chain in t.chains]
+    counts = [len(elements) for _, elements in result.units]
     budget.check(len(rectangles) + sum(counts), "imprint_assembly")
     if len(rectangles) and np.any(rectangles[:, 2:] - rectangles[:, :2] <= policy.absolute):
         raise ImprintLineError("background contains an unresolved edge", code="feature_below_resolution",
@@ -30,11 +30,10 @@ def _assemble(domain, result, policy, budget):
     nodes = [rectangles[:, [0, 1, 2, 1, 2, 3, 0, 3]].reshape(-1, 2)]
     cells = [np.arange(4 * len(rectangles), dtype=np.int64).reshape(-1, 4)]
     offset = len(nodes[0])
-    for transition in result.transitions:
-        for xy, elements in transition.units:
-            nodes.append(xy)
-            cells.append(elements + offset)
-            offset += len(xy)
+    for xy, elements in result.units:
+        nodes.append(xy)
+        cells.append(elements + offset)
+        offset += len(xy)
     xy, inverse = np.unique(np.concatenate(nodes), axis=0, return_inverse=True)
     if len(xy) > np.iinfo(np.int32).max:
         raise ImprintLineError("node count exceeds int32 capacity", code="node_limit", stage="assembly")
@@ -97,15 +96,14 @@ def _validate(mesh, domain, constraints=None):
 
 
 def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_outline,
-                  min_transition_size: float, pattern_snap_distance: float,
-                  tolerance=None, max_elements: int = 1_000_000) -> Mesh2D:
+                  min_transition_size: float, tolerance=None, max_elements: int = 1_000_000) -> Mesh2D:
     """Create a new conforming mixed mesh from directional rectangular controls.
 
     ``direction='x'`` uses two vertical cross sections with matching Y spans;
     points contribute their Y coordinates. ``'y'`` is the transposed case.
     ``line1_expand_size`` and ``line2_expand_size`` are required finite,
     nonnegative scalar distances associated with line1 and line2 respectively.
-    E is straight extension *before* the transition, not its depth.
+    Each expand size is the minimum straight extension before the transition.
 
     All geometry is orthogonal; the exterior is a simple loop without holes.
     Its distinct node count is even and every exterior edge belongs to a Quad4.
@@ -114,26 +112,25 @@ def imprint_lines(element_size: float, line_pairs, pattern_lines=(), *, outer_ou
     Pattern endpoints are fixed at their original float64 coordinates, including
     during input normalization. Finite patterns are clipped to the exterior;
     their retained segments and endpoints are checked before return. Conflicting
-    fixed supports are rejected rather than moved. ``pattern_snap_distance``
-    moves generated boundaries only. Each transition occupies one coarse cell,
-    has three two-node sides, and contains only quads except for one triangle
-    when its dense side has an odd number of nodes. No single band is widened.
-    Same-direction overlapping envelopes merge; blocked ends
-    extend to the exterior if no admissible transition remains.
+    fixed supports are rejected. Each end extends to the first eligible reference
+    mesh edge at or beyond its requested expansion. The adjacent outward layer
+    must cover the band width and meet the minimum depth. All its cells are
+    rebuilt in full. The reference grid comes from the outline, patterns,
+    symmetry axes and element size. Adapters sharing a coarse cell contribute
+    to one local mesh with conforming coarse-side edges.
 
     ``min_transition_size`` limits transition depth along the expansion
     direction only, not line length or transverse cell width. Transverse widths
-    must exceed the geometric tolerance. Both size parameters use world units. Require
-    ``tolerance < min_transition_size <= element_size``; snap distance may be
-    zero. ``tolerance`` follows the package policy (default 1e-3). All arrays are
-    privately owned, and input mappings/arrays are never modified.
+    must exceed the geometric tolerance. Both size parameters use world units.
+    Require ``tolerance < min_transition_size <= element_size``. ``tolerance``
+    follows the package policy (default 1e-3). All arrays are privately owned,
+    and input mappings/arrays are never modified.
     ``max_elements`` bounds final cells and intermediate rectangular partitions.
     Sizing must make progress; incompatible size and resolution requirements
-    raise a structured error. Unresolvable transition units are replanned before
-    assembly, with dense lines continuing to the exterior if necessary.
+    raise a structured error. Ends without room for the minimum transition
+    depth carry their dense lines to the exterior.
     Runtime is output-sensitive, not bounded by the number of pairs alone.
     """
     return _assemble(*_prepare_plan(element_size, line_pairs, pattern_lines,
                                    outer_outline=outer_outline, min_transition_size=min_transition_size,
-                                   pattern_snap_distance=pattern_snap_distance,
                                    tolerance=tolerance, max_elements=max_elements))

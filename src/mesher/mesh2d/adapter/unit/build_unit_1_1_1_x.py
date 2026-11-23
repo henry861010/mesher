@@ -6,6 +6,11 @@ import numpy as np
 from ....tolerance import GeometryToleranceError, resolve_tolerance, within_distance
 
 from ...model import Mesh2D, _validate_zero_z
+from .._quality import SHAPE_EPS, improves_ring, quad_shape
+
+
+# Keep an end at exactly one quarter of the mean on the arc-length path after rotation.
+_SHORT_END_RATIO = 0.25 * (1 - SHAPE_EPS)
 
 
 def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -154,10 +159,49 @@ def _validate_quads(nodes: np.ndarray, quads: np.ndarray) -> None:
         raise ValueError("generated quadrilaterals are degenerate or inverted")
 
 
+def _ring_improves(current, trial, min_edge, span):
+    aspect, jacobian = quad_shape(np.concatenate((current, trial)), min_edge=min_edge, span=span)
+    count = len(current)
+    return improves_ring(aspect[:count].max(), jacobian[:count].min(),
+                         aspect[count:].max(), jacobian[count:].min())
+
+
+def _represented_ring_check(boundary, policy, to_world, to_local):
+    """Validate a move after rounding generated points and restoring fixed points exactly."""
+    def check(ring, current, trial, span):
+        with np.errstate(over="ignore", invalid="ignore"):
+            world = to_world(np.stack((current, trial)))
+        fixed = ring < len(boundary)
+        world[:, fixed] = boundary[ring[fixed], :2]
+        if not np.all(np.isfinite(world)):
+            return False
+        if np.any(within_distance(world[1], np.roll(world[1], -1, axis=1), policy)):
+            return False
+        before, after = to_local(world)
+        if np.array_equal(after, trial) and np.array_equal(before, current):
+            return True  # The local shape check used these exact coordinates.
+        return _ring_improves(before, after, 0., span)
+
+    return check
+
+
+def _adjust_short_ends(nodes, quads, candidates, *, min_edge, span, check_move):
+    for node, first_quad, candidate in candidates:
+        # Only this peel and the next peel (or closing quad) touch the node.
+        nearby = quads[first_quad:first_quad + 6]
+        ring = nearby[np.any(nearby == node, axis=1)]
+        current = nodes[ring, :2]
+        trial = current.copy()
+        trial[ring == node] = candidate
+        if (_ring_improves(current, trial, min_edge, span)
+                and (check_move is None or check_move(ring, current, trial, span))):
+            nodes[node, :2] = candidate
+
+
 def _stage_unit_1_1_1_x(
-    nodes: np.ndarray, edges: tuple[np.ndarray, ...], long_index: int
+    nodes: np.ndarray, edges: tuple[np.ndarray, ...], long_index: int, *, boundary, min_edge, check_move
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Generate the template on a validated CCW boundary without changing a mesh."""
+    """Return all staged nodes and the new quads on a validated CCW boundary."""
     edges = edges[long_index:] + edges[:long_index]
     lower = edges[0].tolist()
     top_right = int(edges[1][-1])
@@ -165,6 +209,7 @@ def _stage_unit_1_1_1_x(
     original_node_count = len(nodes)
     added_nodes: list[np.ndarray] = []
     added_quads: list[list[int]] = []
+    candidates: list[tuple[int, int, np.ndarray]] = []
 
     def coordinate(index: int) -> np.ndarray:
         return nodes[index, :2] if index < original_node_count else added_nodes[index - original_node_count]
@@ -188,6 +233,13 @@ def _stage_unit_1_1_1_x(
         )
         left_index = original_node_count + len(added_nodes)
         right_index = left_index + 1
+        short_limit = _SHORT_END_RATIO * total_length / len(lengths)
+        if lengths[0] < short_limit:
+            target = upper_left + (upper_right - upper_left) / len(lengths)
+            candidates.append((left_index, len(added_quads), 0.5 * (lower_points[1] + target)))
+        if lengths[-1] < short_limit:
+            target = upper_right + (upper_left - upper_right) / len(lengths)
+            candidates.append((right_index, len(added_quads), 0.5 * (lower_points[-2] + target)))
         added_nodes.extend((new_left, new_right))
         added_quads.extend(
             (
@@ -202,8 +254,13 @@ def _stage_unit_1_1_1_x(
     added_quads.append([lower[0], lower[1], top_right, top_left])
     new_xy = np.asarray(added_nodes, dtype=np.float64).reshape(-1, 2)
     new_nodes = np.column_stack((new_xy, np.zeros(len(new_xy))))
+    combined_nodes = np.concatenate((nodes, new_nodes), axis=0)
     new_quads = np.asarray(added_quads, dtype=np.int64)
-    return new_nodes, new_quads
+    if candidates:
+        span = np.ptp(nodes[boundary, :2], axis=0).max()
+        _adjust_short_ends(combined_nodes, new_quads, candidates, min_edge=min_edge,
+                           span=span, check_move=check_move)
+    return combined_nodes, new_quads
 
 
 def _physical_boundary(nodes, boundary, tolerance, *, represented=False):
@@ -242,14 +299,16 @@ def _build_unit_1_1_1_x(
     edge2: np.ndarray,
     edge3: np.ndarray,
     edge4: np.ndarray,
-    *, tolerance=None,
+    *, tolerance=None, _check_move=None,
 ) -> Mesh2D:
     """Append an all-Quad4 patch bounded by three one-segment edges.
 
     The fourth edge has an odd number of segments. Each layer consumes one
     segment from either end of that edge and adds three quads. Coordinates of
     new nodes are halfway from the next boundary node to its arc-length-aligned
-    point on the opposite edge. A final quad closes the patch.
+    point on the opposite edge. For an end segment shorter than one quarter of
+    the mean, an evenly spaced opposite-edge point is tried if it improves the
+    incident quads. A final quad closes the patch.
 
     All inputs are validated before the mesh is changed. The patch interior is
     assumed to be empty; existing nodes and elements are preserved.
@@ -268,8 +327,8 @@ def _build_unit_1_1_1_x(
         edges = tuple(edge[::-1] for edge in edges[::-1])
         long_index = 3 - long_index
 
-    new_nodes, new_quads = _stage_unit_1_1_1_x(mesh.nodes, edges, long_index)
-    combined_nodes = np.concatenate((mesh.nodes, new_nodes), axis=0)
+    combined_nodes, new_quads = _stage_unit_1_1_1_x(
+        mesh.nodes, edges, long_index, boundary=boundary, min_edge=policy.absolute, check_move=_check_move)
     _validate_quads(combined_nodes, new_quads)
     _physical_quads(combined_nodes, new_quads, policy)
     combined_elements = np.concatenate((mesh.elements, new_quads), axis=0)
@@ -304,17 +363,24 @@ def _public_unit(mesh, edges, builder, tolerance, **kwargs):
     diagnostics = kwargs.get("_diagnostics")
     if diagnostics is not None:
         kwargs["_diagnostics"] = {}
-    builder(staged, *local_edges, tolerance=local_tol, **kwargs)
+
+    def to_world(xy):
+        return np.ldexp(xy * span + origin, exponent)
+
+    def to_local(xy):
+        return (np.ldexp(xy, -exponent) - origin) / span
+
+    builder(staged, *local_edges, tolerance=local_tol,
+            _check_move=_represented_ring_check(points, policy, to_world, to_local), **kwargs)
     with np.errstate(over="ignore", invalid="ignore"):
-        added = np.column_stack((np.ldexp(staged.nodes[len(boundary):, :2] * span + origin,
-                                         exponent), np.zeros(len(staged.nodes) - len(boundary))))
+        added = np.column_stack((to_world(staged.nodes[len(boundary):, :2]),
+                                 np.zeros(len(staged.nodes) - len(boundary))))
     if not np.all(np.isfinite(added)):
         raise GeometryToleranceError("unit coordinates cannot be represented",
                                      code="numeric_resolution_exceeded", stage="unit_construction")
     restored = np.vstack((points, added))
     # Validate the actually represented result in the same safe frame.
-    represented = np.column_stack(((np.ldexp(restored[:, :2], -exponent) - origin) / span,
-                                    np.zeros(len(restored))))
+    represented = np.column_stack((to_local(restored[:, :2]), np.zeros(len(restored))))
     try:
         _validate_quads(represented, staged.elements)
     except ValueError as error:

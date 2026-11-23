@@ -161,8 +161,7 @@ def get_cow_mesh() -> Mesh2D:
         line_pairs = line_pairs, 
         pattern_lines = pattern_lines,
         outer_outline = cow_outline,
-        min_transition_size = 20, 
-        pattern_snap_distance=0
+        min_transition_size = 20,
     )
     
     return mesh

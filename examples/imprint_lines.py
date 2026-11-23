@@ -92,7 +92,7 @@ def main():
     for ax, case in zip(axes.flat, cases()):
         name, _, size, pairs, patterns, outer, minimum = case
         mesh = imprint_lines(size, pairs, patterns, outer_outline=outer,
-                             min_transition_size=minimum, pattern_snap_distance=.2)
+                             min_transition_size=minimum)
         plot_case(ax, case, mesh)
         single, single_ax = plt.subplots(figsize=(11, 8))
         plot_case(single_ax, case, mesh)

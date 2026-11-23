@@ -4,31 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..._quality import SHAPE_EPS, improves_ring, quad_shape
 
 _THRESHOLD = 4.0
-_EPS = 64 * np.finfo(float).eps
-
-
-def quad_shape(cells, *, min_edge=None):
-    """Return each quad's edge aspect ratio and least signed scaled Jacobian.
-
-    For a proposed move, mark unresolved edges and turns with an invalid
-    Jacobian. The turn floor uses the same cell span as the layer validator.
-    """
-    edges = np.roll(cells, -1, axis=1) - cells
-    scale = np.ptp(cells, axis=1).max(axis=1)
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        edges /= scale[:, None, None]
-        lengths = np.hypot(edges[..., 0], edges[..., 1])
-        following = np.roll(edges, -1, axis=1)
-        turns = edges[..., 0] * following[..., 1] - edges[..., 1] * following[..., 0]
-        shortest = lengths.min(axis=1)
-        aspect = lengths.max(axis=1) / shortest
-        jacobian = (turns / (lengths * np.roll(lengths, -1, axis=1))).min(axis=1)
-        if min_edge is not None:
-            valid = (shortest > min_edge / scale) & (turns.min(axis=1) > _EPS)
-            jacobian[~valid] = -np.inf
-    return aspect, jacobian
 
 
 def smooth_selected_units(nodes, quads, units, *, element_offset, original_count, tol):
@@ -50,7 +28,7 @@ def smooth_selected_units(nodes, quads, units, *, element_offset, original_count
         # Moves use previously updated neighbors. Visit the first equally
         # poor quad when conversion of length units perturbs a score by ulps.
         poor_scores = scores[poor]
-        worst = np.argmax(poor_scores >= poor_scores.max() * (1 - _EPS))
+        worst = np.argmax(poor_scores >= poor_scores.max() * (1 - SHAPE_EPS))
         poor[0], poor[worst] = poor[worst], poor[0]
         fixed = set(unit["_polygon_ids"])
         fixed.update(unit.get("_fixed_interior", ()))
@@ -83,10 +61,7 @@ def smooth_selected_units(nodes, quads, units, *, element_offset, original_count
                 trial_aspect, trial_jacobian = quad_shape(ring_xy, min_edge=tol)
                 worst_aspect = trial_aspect.max()
                 least_jacobian = trial_jacobian.min()
-                if not (worst_aspect <= ring_aspect * (1 + _EPS)
-                        and least_jacobian >= ring_jacobian - _EPS):
-                    continue
-                if worst_aspect < ring_aspect * (1 - _EPS) or least_jacobian > ring_jacobian + _EPS:
+                if improves_ring(ring_aspect, ring_jacobian, worst_aspect, least_jacobian):
                     originals[node_id] = point.copy()
                     nodes[node_id, :2] = candidate
                     aspect[rows], jacobian[rows] = trial_aspect, trial_jacobian

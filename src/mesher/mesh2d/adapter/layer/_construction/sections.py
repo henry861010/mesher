@@ -9,7 +9,7 @@ import numpy as np
 from .corners import plan_corner
 from .line import plan_line
 from .sampling import validate_spacing
-from .smoothing import quad_shape
+from ..._quality import quad_shape
 from .strip import alignment_metrics
 from .._geometry import resolved_quad_turns
 from .._planning.mapping import dense_angle

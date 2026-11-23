@@ -11,8 +11,6 @@ from mesher.tolerance import GeometryToleranceError
 from mesher.mesh2d.imprint_line import imprint_lines, ImprintLineError
 from mesher.mesh2d.imprint_line.mesher import _prepare_plan, _assemble, _validate
 from mesher.mesh2d.imprint_line._background import Background
-from mesher.mesh2d.imprint_line._planning import partition
-from mesher.mesh2d.imprint_line._constraints import Constraints
 from . import test_imprint_lines as fixtures
 
 pair = fixtures.pair
@@ -21,7 +19,7 @@ pair = fixtures.pair
 class ConstraintTests(unittest.TestCase):
     def mesh(self, pairs=(), patterns=(), **kwargs):
         options = dict(outer_outline=[[0, 0], [12, 0], [12, 12], [0, 12]],
-                       min_transition_size=.5, pattern_snap_distance=0)
+                       min_transition_size=.5)
         options.update(kwargs)
         return imprint_lines(2, pairs, patterns, **options)
 
@@ -31,7 +29,7 @@ from mesher.mesh2d.imprint_line import imprint_lines, ImprintLineError
 try:
     imprint_lines(.00104, [], [[[.002,0],[.002,.002]],[[.0041,0],[.0041,.002]]],
         outer_outline=[[0,0],[.0061,0],[.0061,.002],[0,.002]],
-        min_transition_size=.00102, pattern_snap_distance=0, max_elements=100)
+        min_transition_size=.00102, max_elements=100)
 except ImprintLineError as error:
     assert error.code == 'feature_below_resolution', error
 else:
@@ -98,16 +96,19 @@ else:
             mesh = self.mesh([p], outer_outline=boundary)
             self.assertTrue(np.any(np.all(mesh.nodes[:, :2] == ([5, 8] if transpose else [8, 5]), axis=1)))
 
-    def test_shallow_unit_is_replanned(self):
+    def test_transition_starts_at_the_fixed_wall_and_preserves_dense_contacts(self):
         for side in (0, 1):
             p = pair(0, (2, 4, 3, 5), [4, 4.4994, 4.5006, 5], expand=0)
             x = 1.5 if side == 0 else 3.5
             args = _prepare_plan(1, [p], [[[x, 0], [x, 10]]],
                                  outer_outline=[[0, 0], [10, 0], [10, 10], [0, 10]],
-                                 min_transition_size=.2, pattern_snap_distance=0)
+                                 min_transition_size=.2)
             mesh = _assemble(*args)
             fixtures.ImprintTests.assert_segment(self, mesh, 1, x, 0, 10)
-            self.assertEqual(next(t for t in args[1].transitions if t.side == side).inner, x)
+            end = next(t for t in args[1].transitions if t.side == side)
+            self.assertEqual(end.inner, x)
+            for y in (4, 4.4994, 4.5006, 5):
+                fixtures.ImprintTests.assert_segment(self, mesh, 0, y, 2, 3)
 
     def test_patterns_clipped_to_concave_domain_and_boundary(self):
         patterns = [[[0, 0], [12, 0]], [[-2, 3], [14, 3]],
@@ -131,32 +132,18 @@ else:
             self.mesh()
         self.assertEqual(raised.exception.code, 'sizing_no_progress')
 
-    def test_repeated_planning_state_is_rejected(self):
-        with patch('mesher.mesh2d.imprint_line._planning.boundary_feedback', return_value=True), \
-                self.assertRaises(ImprintLineError) as raised:
-            self.mesh([pair(0, (4, 4, 6, 6))])
-        self.assertEqual(raised.exception.code, 'planning_limit')
-        self.assertEqual(raised.exception.context['reason'], 'no_progress')
-
     def test_unexpected_unit_failure_is_not_hidden_by_replanning(self):
         error = ImprintLineError('inverted', code='invalid_unit', stage='unit_construction')
-        with patch('mesher.mesh2d.imprint_line._planning.build_unit', side_effect=error), \
+        with patch('mesher.mesh2d.imprint_line._cell_mesh.build_unit', side_effect=error), \
                 self.assertRaises(ImprintLineError) as raised:
             self.mesh([pair(0, (4, 4, 6, 6))])
         self.assertIs(raised.exception, error)
-
-    def test_fixed_divider_requires_more_transition_cells(self):
-        constraints = Constraints((np.array([]), np.array([4, 6.0005, 8])), ())
-        splits = partition(4, 8, (), 2, constraints, 1, .001, 100)
-        self.assertEqual(len(splits), 4)
-        self.assertTrue(np.all(np.diff(splits) <= 2))
-        self.assertTrue(np.all(np.diff(splits) > .001))
 
     def test_validation_rejects_moved_patterns_and_missing_endpoints(self):
         for move_axis, old, new in ((1, 5, 5.1), (0, 1, 1.1)):
             args = _prepare_plan(2, [], [[[2, 9], [9, 9]], [[1, 5], [10, 5]]],
                                  outer_outline=[[0, 0], [12, 0], [12, 12], [0, 12]],
-                                 min_transition_size=.5, pattern_snap_distance=0)
+                                 min_transition_size=.5)
             mesh = _assemble(*args)
             mesh.nodes[mesh.nodes[:, move_axis] == old, move_axis] = new
             with self.assertRaises(ImprintLineError) as raised:
@@ -171,6 +158,27 @@ else:
                          [[[.5, 3.0005], [1, 3.0005]]])
         fixtures.ImprintTests.assert_segment(self, mesh, 0, 3.0005, .5, 1)
 
+    def test_generated_front_near_a_fixed_level_advances_outwards(self):
+        # Requested front 6.0005 lies just beyond the second control's Y=6.
+        # Rounding it backwards would shorten the required straight extension.
+        vertical = pair(1, (4, 3, 6, 5), [4, 5, 6], expand=(0, 1.0005))
+        horizontal = pair(0, (3, 5, 7, 7), [5, 6, 7], expand=0)
+        args = _prepare_plan(2, [vertical, horizontal], outer_outline=[[0, 0], [12, 0], [12, 12], [0, 12]],
+                             min_transition_size=.5)
+        mesh = _assemble(*args)
+        end = next(t for t in args[1].transitions if t.axis == 1 and t.side == 1)
+        self.assertGreaterEqual(end.inner, 6.0005)
+        fixtures.ImprintTests.assert_segment(self, mesh, 1, 5, 3, 6.0005)
+        fixtures.ImprintTests.assert_segment(self, mesh, 0, 6, 3, 7)
+
+    def test_boundary_fallback_stops_at_each_lines_first_outline(self):
+        outer = [[0, 0], [12, 0], [12, 8], [10, 8], [10, 3], [8, 3], [8, 8], [0, 8]]
+        control = pair(0, (2, 2, 4, 5), [2, 3, 4, 5], expand=40)
+        mesh = self.mesh([control], outer_outline=outer)
+        for level, end in ((2, 12), (4, 8), (5, 8)):
+            fixtures.ImprintTests.assert_segment(self, mesh, 0, level, 0, end)
+        self.assertFalse(np.any(np.all(mesh.nodes[:, :2] == (12, 5), axis=1)))
+
     def test_point_only_pattern_contact_is_retained(self):
         mesh = self.mesh(patterns=[[[-2, 0], [0, 0]]])
         self.assertTrue(np.any(np.all(mesh.nodes[:, :2] == [0, 0], axis=1)))
@@ -183,7 +191,7 @@ else:
         patterns = np.array([[[3.0011, 0], [3.0011, 10]]]) + origin
         mesh = imprint_lines(1, [p], patterns,
                              outer_outline=np.array([[0, 0], [10, 0], [10, 10], [0, 10]]) + origin,
-                             min_transition_size=.00102, pattern_snap_distance=0)
+                             min_transition_size=.00102)
         fixtures.ImprintTests.assert_segment(self, mesh, 1, patterns[0, 0, 0], origin, origin + 10)
 
 

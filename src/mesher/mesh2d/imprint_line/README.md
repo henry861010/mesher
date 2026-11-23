@@ -20,7 +20,6 @@ mesh = imprint_lines(
     pattern_lines=[],
     outer_outline=[[-2, -2], [14, -2], [14, 12], [-2, 12]],
     min_transition_size=0.5,
-    pattern_snap_distance=0.2,
 )
 ```
 
@@ -52,7 +51,7 @@ pairs = get_pair_line(
 )
 mesh = imprint_lines(
     2.0, pairs, outer_outline=outer,
-    min_transition_size=0.5, pattern_snap_distance=0.2,
+    min_transition_size=0.5,
 )
 ```
 
@@ -115,74 +114,52 @@ inputs are never modified.
 
 ## Placement and topology
 
-- Every successful mesh has an even number of distinct nodes around the
-  complete exterior loop. Every exterior edge belongs to a Quad4. Tri3s may
-  occur only inside transition units. When the loop would be odd, the mesher
-  first tries one extra cut from a transition's dense side to the exterior.
-  If no such cut fits, it replans the transition.
-- The world axes `x=0` and `y=0` are automatic fixed constraints. Mesh edges
-  cover every part of each axis inside or along the outline, including separate
-  spans in concave models. The origin is a shared node when it belongs to the
-  model. The same exact-coordinate and tolerance rules apply to user patterns
-  near these axes.
-- E is the minimum straight extension before a transition. Obstacles may
-  increase it. It does not include the transition's depth.
-- Same-direction overlapping control/extension/transition envelopes merge.
-  Their dense coordinates are united and carried across the common band.
-  Crossing directions remain independent, with a rectangular grid at crossings.
-- A single band never widens by itself. If an end has no legal transition
-  before the exterior, its lines continue to that exterior.
-- `min_transition_size` limits only the transition depth along the expansion
-  direction, not the line length or transverse cell width. Both width and depth
-  are at most `element_size` (apart from floating-point roundoff); transverse
-  widths must exceed the geometric tolerance. A wide band has multiple adjacent
-  transition cells. Both distance options use model units and are
-  required; require `tolerance < min_transition_size <= element_size`.
-- Patterns retain their **original float64 coordinates and endpoints**, even
-  during input normalization. Only exactly horizontal or vertical nonzero
-  patterns are accepted; nearly orthogonal segments are not projected.
-  Distinct fixed coordinates that conflict under the tolerance policy raise
-  `GeometryToleranceError(code="fixed_constraint_conflict")` instead of being
-  merged. Exact duplicates and reversed copies are deduplicated. Patterns can divide
-  transition cells when each resulting width is admissible. Otherwise the
-  transition moves beyond the obstruction. Nearby perpendicular patterns can
-  attract a generated boundary outwards by `pattern_snap_distance`. This option
-  never moves patterns. Portions outside the exterior are clipped geometrically;
-  retained endpoints, clipping intersections, and boundary-collinear parts remain
-  exact constraints.
-- Every transition cell has one dense side; the other three sides have only
-  their endpoints. Even dense-node counts use only quads. Odd counts use
-  exactly one triangle, stored as `[a, b, c, c]` in `Mesh2D`.
-- The rectangular unit uses the adapter's nested topology with depth
-  proportional to remaining dense-edge span. This avoids exponential depth
-  collapse, but is not a universal bound on individual element aspect ratios.
-  Units are constructed and checked during planning. An edge at or below the
-  tolerance triggers outward replanning; an end without an admissible unit
-  continues to the exterior. Exterior corners touching a unit are retained as
-  mandatory contacts, including at concave corners.
-- Input arrays are not mutated. Output nodes have exactly zero Z. Node and
-  element ordering is deterministic. The package's geometric tolerance policy
-  defaults to absolute distance `1e-3`. Exterior and control coordinates undergo
-  one normalization with patterns protected, then remain fixed throughout planning
-  and construction. Only generated coordinates can subsequently be adjusted.
+The mesher first builds a reference grid from the exterior, finite input
+patterns, the symmetry axes and `element_size`. For each end of a line pair,
+the requested expansion is the minimum straight distance. From that position
+the mesher searches outward for the first reference edge spanning the band.
+An exact match is eligible. All reference edges follow the same rule,
+including edges formed by input patterns. Dense lines continue to the selected
+edge. The adapter occupies the immediately adjoining outward layer and rebuilds
+each cell across the band in full.
 
-The background uses the existing generator's sparse visibility sweep and
-rectangle index. Fine lines stop at reserved transitions instead of becoming
-global grid coordinates. Generated sizing cuts respect locked unit edges;
-hard contacts trigger replanning. Every successful sizing iteration must split
-its target rectangle and increase the rectangle count. Candidate cuts are tried
-only finitely many times; a repeated planning state also terminates explicitly.
-Area, shared-edge, exact constraint coverage, and retained endpoint checks run
-before return. Constraint checks use sorted edge intervals rather than an
-all-elements scan for each pattern.
+- Each reference rectangle has one mesh. All controls contribute their fixed
+  lines and shared edge contacts before local construction, including parallel
+  and perpendicular adapters arriving in the same cell. Same-direction straight
+  regions with overlapping interiors combine their samples.
+- The outer face reconnects to the existing coarse nodes. A required contact on a shared edge
+  subdivides its neighbour. Where a generated grid level and a required control
+  coincide within tolerance, their shared vertex uses the exact control
+  coordinate locally. Distant coarse cells retain their reference coordinates.
+- `min_transition_size` sets the minimum longitudinal depth of the adjacent
+  layer. If a layer is too shallow, the search continues outward. When no
+  eligible layer fits before the outline, each dense line continues to its own
+  exterior contact.
+- Patterns and their retained endpoints keep their original float64 coordinates.
+  Mesh edges also cover `x=0` and `y=0` wherever they meet the domain.
+  Fixed coordinates follow the package tolerance
+  policy, including `fixed_constraint_conflict` for incompatible inputs.
+- A single dense face uses the nested rectangular unit where it fits. Cells
+  with internal lines or several incoming faces can contain Quad4s and padded
+  Tri3s (`[a, b, c, c]`). Every exterior edge belongs to a Quad4. If required
+  exterior contacts change boundary parity, one additional local boundary
+  node restores an even total. Generated edges must exceed the geometry
+  tolerance (default `1e-3`).
+- The output is deterministic, its nodes have zero Z, and inputs remain
+  privately owned by the caller. Area, oriented edge incidence, exact segment
+  coverage and fixed endpoints are checked before returning the mesh.
+  `max_elements` bounds intermediate partitions and final elements.
+  Planning and resolution errors carry an `ImprintLineError` code and context.
 
-Invalid input raises `ValueError` or the package's `GeometryToleranceError`.
-Planning/construction failures use `ImprintLineError` with `code` and `context`.
-No partial result is returned. `max_elements` (default one million) bounds
-intermediate rectangles and final cells. The planner has a finite retry budget;
-if exhausted it reports `planning_limit`, rather than silently discarding
-controls. Holes, diagonal constraints, and modifying an existing mesh are not
-supported in this first version.
+The comparison uses the same corner from `examples/debug_imprint_line.py` in
+both meshes. The source at X = 12867.5 requests an expansion of 1000 to the
+left. The first eligible mesh edge is at X ≈ 11623.846. The straight extension
+is about 1243.654, followed by one layer of three coarse cells.
+
+![Package corner before and after outward mesh alignment](../../../../docs/images/imprint-outward-mesh-snap.png)
+
+The [earlier corner comparison](../../../../docs/images/imprint-whole-cell-corner.png)
+shows the change from cutting pattern lines to rebuilding whole cells.
 
 Valid scalar parameters alone do not guarantee that the requested geometry can
 be meshed at that resolution. For example, a fixed gap of `0.0021` with
@@ -190,8 +167,7 @@ be meshed at that resolution. For example, a fixed gap of `0.0021` with
 is below the default `0.001` tolerance. This raises `feature_below_resolution`;
 neither the fixed constraints nor the size limit are relaxed. Other diagnostics
 include `sizing_no_progress` for a cut that fails to split its target,
-`locked_sizing_conflict` for exhausted sizing candidates, `planning_limit`
-with `reason="no_progress"` for repeated states, and `constraint_not_preserved`
+`locked_sizing_conflict` for exhausted sizing candidates, and `constraint_not_preserved`
 if the final mesh loses a required segment or endpoint. Errors include the
 stage and relevant bounds or source indices. Other mesh generators retain
 their existing normalization and snapping behavior.
@@ -218,7 +194,7 @@ only needed to render these examples.
 `imprint_thin_transition.py` uses a 50-by-2000 box with expansion 1000,
 `element_size=1000`, `min_transition_size=100`, and point spacing 10. It verifies
 actual straight mesh-edge coverage for the requested expansion on all four
-sides, slanted cells in each expected transition envelope, and coarse outer
+sides, slanted cells in each complete coarse-cell footprint, and coarse outer
 edge nodes. It saves the mesh NPZ, a JSON report, an equal-scale overview, and
 top/bottom close-ups with explicitly unequal display scales. An optional
 `--baseline /path/to/before.npz` adds a comparison against an actual old mesh

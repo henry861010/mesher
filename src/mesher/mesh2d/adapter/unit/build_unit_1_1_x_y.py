@@ -247,7 +247,7 @@ def _build_unit_1_1_x_y(
     edge2: np.ndarray,
     edge3: np.ndarray,
     edge4: np.ndarray,
-    *, tolerance=None,
+    *, tolerance=None, _check_move=None,
 ) -> Mesh2D:
     """Append Quad4 cells between two adjacent subdivided edges.
 
@@ -286,8 +286,8 @@ def _build_unit_1_1_x_y(
         staged_quads.append(pair)
 
     long_index = _validate_boundary(nodes, edges, require_convex=False)
-    tail_nodes, tail_quads = _stage_unit_1_1_1_x(nodes, edges, long_index)
-    nodes = np.concatenate((nodes, tail_nodes), axis=0)
+    nodes, tail_quads = _stage_unit_1_1_1_x(
+        nodes, edges, long_index, boundary=boundary, min_edge=policy.absolute, check_move=_check_move)
     staged_quads.append(tail_quads)
     quads = np.concatenate(staged_quads, axis=0)
     _validate_patch(nodes, quads, (edge1, edge2, edge3, edge4))
