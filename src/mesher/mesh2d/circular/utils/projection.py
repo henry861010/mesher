@@ -1,6 +1,6 @@
 """Project mesh boundary chains onto circular target boundaries."""
 
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 import numpy as np
 
@@ -300,7 +300,7 @@ class _ProjectionInputs(NamedTuple):
     radius: float
     indices: np.ndarray
     pattern_guides: _PatternGuideSet
-    requested_closed: bool | None
+    requested_closed: Optional[bool]
     selected_nodes: np.ndarray
     selected_xy: np.ndarray
     coordinate_scale: float

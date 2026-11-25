@@ -372,8 +372,15 @@ class OrthogonalDomain:
             return False
         intervals = self.intervals(0, float(point[1]))
         position = float(point[0])
-        index = bisect_left(intervals, position, key=lambda entry: entry.end)
-        return index < len(intervals) and intervals[index].start < position < intervals[index].end
+        # Find the first interval ending at or beyond the point in O(log n).
+        low, high = 0, len(intervals)
+        while low < high:
+            middle = (low + high) // 2
+            if intervals[middle].end < position:
+                low = middle + 1
+            else:
+                high = middle
+        return low < len(intervals) and intervals[low].start < position < intervals[low].end
 
     @staticmethod
     def _query(axis, coordinate):

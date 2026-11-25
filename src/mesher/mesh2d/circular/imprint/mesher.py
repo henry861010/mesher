@@ -7,6 +7,7 @@ retained only for focused unit tests inside this package.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -177,7 +178,7 @@ class _SelectedBand:
     inner_boundary: np.ndarray
     outer_boundary: np.ndarray
     closed: bool
-    arc_endpoints: np.ndarray | None
+    arc_endpoints: Optional[np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -757,8 +758,8 @@ def imprint_circle(
     center: ArrayLike,
     radius: float,
     band_width: float,
-    guide_segments: ArrayLike | None = None,
-    target_edge_size: float | None = None,
+    guide_segments: Optional[ArrayLike] = None,
+    target_edge_size: Optional[float] = None,
     min_quad_scaled_jacobian: float = 0.3,
     topology: str = "auto",
     tolerance=None,

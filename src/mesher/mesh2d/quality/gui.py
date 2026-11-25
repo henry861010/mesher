@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..._compat import zip_strict
 from .checker import ElementType
 from .gui_model import (
     QualityThresholds,
@@ -442,9 +443,7 @@ class ElementQualityWindow(QMainWindow):
             f"color: {status_color}; font-size: 17px; font-weight: 700;"
         )
         self._canvas.set_status(status.key)
-        for index, (label, point) in enumerate(
-            zip(self._coordinate_labels, self._nodes, strict=True)
-        ):
+        for index, (label, point) in enumerate(zip_strict(self._coordinate_labels, self._nodes)):
             label.setText(f"P{index + 1}   x {point[0]: .4f}   y {point[1]: .4f}")
 
 

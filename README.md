@@ -24,7 +24,7 @@ and [Migrating to 0.2](docs/migration-0.2.md) for breaking import and field chan
 
 ## Installation
 
-Install the NumPy-only core:
+Install the NumPy-only core, including line-pair imprinting, on Python 3.9 or later:
 
 ```bash
 python -m pip install .
@@ -37,6 +37,9 @@ python -m pip install '.[visualization]'
 python -m pip install '.[gui]'
 python -m pip install '.[process-flow]'
 ```
+
+The `visualization` extra requires Python 3.10 or later. The `process-flow`
+and `dev` extras require Python 3.11 or later.
 
 The basic `import mesher` path does not import PyVista, Matplotlib, PySide6,
 or `process_flow_kernel`.

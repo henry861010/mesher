@@ -29,6 +29,33 @@ class PackageBoundaryTests(unittest.TestCase):
         self.assertIs(mesh3d.MeshSet, MeshSet)
         self.assertFalse(hasattr(mesh3d, "ElementType3D"))
 
+    def test_utils_import_under_parent_package(self):
+        source_root = Path(__file__).resolve().parents[2] / "src"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                (
+                    "import sys\n"
+                    "from types import ModuleType\n"
+                    "host = ModuleType('_mesher_host')\n"
+                    "host.__path__ = [sys.argv[1]]\n"
+                    "sys.modules[host.__name__] = host\n"
+                    "sys.modules['mesher'] = None\n"
+                    "from _mesher_host.mesher.mesh2d.imprint_line import BoxPairSpec\n"
+                    "from _mesher_host.mesher.utils import mm2_control_area\n"
+                    "assert mm2_control_area.BoxPairSpec is BoxPairSpec\n"
+                ),
+                str(source_root),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_removed_top_level_domain_modules_are_not_shimmed(self):
         for module_name in (
             "mesher.circular",

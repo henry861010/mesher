@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntFlag, StrEnum
+from enum import IntFlag
 from numbers import Integral, Real
 from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from ..._compat import StrEnum
 from ..model import Mesh2D, _validate_zero_z
 from ...tolerance import GeometryTolerance, resolve_tolerance
 

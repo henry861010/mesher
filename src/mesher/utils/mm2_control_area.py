@@ -8,7 +8,7 @@ from typing import TypeVar
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from mesher.mesh2d.imprint_line import BoxPairSpec
+from ..mesh2d.imprint_line import BoxPairSpec
 
 _Line = TypeVar("_Line", bound=ArrayLike)
 

@@ -126,7 +126,9 @@ class UnitSmoothingTests(unittest.TestCase):
         np.testing.assert_array_equal(after.mesh.elements, before.mesh.elements)
         self.assertEqual(after.outline, before.outline)
         self.assertEqual(after.diagnostics["seam_states"], before.diagnostics["seam_states"])
-        for old, new in zip(before.diagnostics["units"], after.diagnostics["units"], strict=True):
+        old_units, new_units = before.diagnostics["units"], after.diagnostics["units"]
+        self.assertEqual(len(old_units), len(new_units))
+        for old, new in zip(old_units, new_units):
             self.assertEqual(old["polygon"], new["polygon"])
             self.assertNotIn("_fixed_interior", new)
         count = after.diagnostics["added_elements"]

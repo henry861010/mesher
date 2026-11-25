@@ -1,6 +1,7 @@
 """Planar predicates and spatial queries; these never create mesh elements."""
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -50,7 +51,7 @@ def area(p):
     return float(np.sum(cross(p, np.roll(p, -1, axis=0))) * 0.5)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **({"slots": True} if sys.version_info >= (3, 10) else {}))
 class _BoxNode:
     lower: np.ndarray
     upper: np.ndarray

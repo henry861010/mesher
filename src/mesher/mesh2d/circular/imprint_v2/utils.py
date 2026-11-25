@@ -10,11 +10,13 @@ nodes have Z=0, including newly inserted circle intersections.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 import warnings
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from ...._compat import zip_strict
 from ..._winding import ccw_elements
 from ...model import Mesh2D, _validate_zero_z
 from ....tolerance import GeometryToleranceError, resolve_tolerance, within_distance, circle_membership
@@ -67,7 +69,7 @@ def _normalize_nonnegative(value: float, name: str) -> float:
 
 def _normalize_indices(
     element_count: int,
-    indices: ArrayLike | None = None,
+    indices: Optional[ArrayLike] = None,
 ) -> NDArray[np.int64]:
     """Normalize an optional element-row selection to a one-dimensional array.
 
@@ -778,7 +780,7 @@ def _blocked_guide_paths(
 def _to_circle(
     mesh: Mesh2D, center: ArrayLike, radius: float,
     projection_distance: float, tolerance: float, guide_segments,
-    indices: ArrayLike | None = None,
+    indices: Optional[ArrayLike] = None,
 ) -> Mesh2D:
     """Project circle-band nodes with radial and fixed-junction guide barriers.
 
@@ -798,8 +800,8 @@ def _project_circle(
     projection_distance: float,
     tolerance: float,
     guide_segments,
-    indices: ArrayLike | None = None,
-    *, constraint_nodes: NDArray[np.float64] | None = None,
+    indices: Optional[ArrayLike] = None,
+    *, constraint_nodes: Optional[NDArray[np.float64]] = None,
 ) -> Mesh2D:
     """Move nodes near a circle onto its boundary, honoring pattern guides.
 
@@ -1110,7 +1112,7 @@ def _project_circle(
 
 def _imprint_circle(
     mesh: Mesh2D, center: ArrayLike, radius: float, tolerance: float,
-    indices: ArrayLike | None = None,
+    indices: Optional[ArrayLike] = None,
 ) -> Mesh2D:
     """Split selected simple Tri3/convex Quad4 cells along a circle atomically."""
     return _split_circle(mesh, center, radius, tolerance, indices)[0]
@@ -1121,7 +1123,7 @@ def _split_circle(
     center: ArrayLike,
     radius: float,
     tolerance: float,
-    indices: ArrayLike | None = None,
+    indices: Optional[ArrayLike] = None,
 ) -> tuple[Mesh2D, NDArray[np.int64], NDArray[np.int64]]:
     """Split selected elements where a circle properly crosses two edges.
 
@@ -2534,7 +2536,7 @@ def _repair_elements_data(
     """Repair collapsed or concave rows and discard unusable geometry."""
     repaired: list[list[int]] = []
     sources = []
-    for source, (element, triangle) in enumerate(zip(elements, is_triangle, strict=True)):
+    for source, (element, triangle) in enumerate(zip_strict(elements, is_triangle)):
         perimeter = element[:3] if triangle else element
         compact: list[int] = []
         for node_index_value in perimeter:

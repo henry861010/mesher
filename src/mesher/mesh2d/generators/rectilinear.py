@@ -1,3 +1,5 @@
+from typing import Union
+
 import numpy as np
 from numpy.typing import ArrayLike
 from ...tolerance import (GeometryTolerance, GeometryToleranceError,
@@ -39,7 +41,7 @@ def generate_rectilinear_mesh(
     x_coordinates: ArrayLike,
     y_coordinates: ArrayLike,
     *,
-    tolerance: GeometryTolerance | float | None = None,
+    tolerance: Union[GeometryTolerance, float, None] = None,
 ) -> Mesh2D:
     """Generate a planar rectilinear Quad4 mesh.
 

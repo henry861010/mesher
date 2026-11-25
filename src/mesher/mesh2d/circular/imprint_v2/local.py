@@ -10,6 +10,7 @@ from time import perf_counter
 
 import numpy as np
 
+from ...._compat import zip_strict
 from ...model import Mesh2D, _validate_zero_z
 from ..._winding import ccw_elements
 from ...quality import MeshQualityChecker
@@ -109,7 +110,7 @@ class _MergeClosure:
                      _coordinate_bin(float(y), self.width))
                     for x, y in xy
                 )
-        for node, key in zip(referenced.tolist(), keys, strict=True):
+        for node, key in zip_strict(referenced.tolist(), keys):
             self.cells.setdefault(key, []).append(node)
             self.keys[node] = key
         self.neighbours = tuple(

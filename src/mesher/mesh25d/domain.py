@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
 import numpy as np
 
+from .._compat import StrEnum
 from .geometry.primitives import _geometry_to_face
 from ..tolerance import resolve_tolerance
 

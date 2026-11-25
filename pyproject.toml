@@ -7,7 +7,7 @@ name = "mesher"
 version = "0.2.1"
 description = "Typed 2D/3D mesh generation and process-flow meshing workflows"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 license-files = ["LICENSE"]
 dependencies = [
     "numpy>=2.0",
